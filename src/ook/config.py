@@ -2,34 +2,54 @@
 
 __all__ = ["Configuration"]
 
-import os
-from dataclasses import dataclass
+from enum import Enum
+
+from pydantic import BaseSettings, Field
 
 
-@dataclass
-class Configuration:
+class ProfileEnum(str, Enum):
+    """Application run profile."""
+
+    production = "production"
+    development = "development"
+
+
+class LogLevelEnum(str, Enum):
+    """Logging level."""
+
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+    CRITICAL = "CRITICAL"
+
+
+class Configuration(BaseSettings):
     """Configuration for ook."""
 
-    name: str = os.getenv("SAFIR_NAME", "ook")
-    """The application's name, which doubles as the root HTTP endpoint path.
+    name: str = Field(
+        "ook",
+        env="SAFIR_NAME",
+        description=(
+            "The application's name, which doubles as the root HTTP "
+            "endpoint path."
+        ),
+    )
 
-    Set with the ``SAFIR_NAME`` environment variable.
-    """
+    profile: ProfileEnum = Field(
+        ProfileEnum.development,
+        env="SAFIR_PROFILE",
+        description="Application run profile: 'development' or 'production'.",
+    )
 
-    profile: str = os.getenv("SAFIR_PROFILE", "development")
-    """Application run profile: "development" or "production".
+    logger_name: str = Field(
+        "ook",
+        env="SAFIR_LOGGER",
+        description="The root name of the application's logger.",
+    )
 
-    Set with the ``SAFIR_PROFILE`` environment variable.
-    """
-
-    logger_name: str = os.getenv("SAFIR_LOGGER", "ook")
-    """The root name of the application's logger.
-
-    Set with the ``SAFIR_LOGGER`` environment variable.
-    """
-
-    log_level: str = os.getenv("SAFIR_LOG_LEVEL", "INFO")
-    """The log level of the application's logger.
-
-    Set with the ``SAFIR_LOG_LEVEL`` environment variable.
-    """
+    log_level: LogLevelEnum = Field(
+        LogLevelEnum.INFO,
+        env="SAFIR_LOG_LEVEL",
+        description="The log level of the application's logger.",
+    )
