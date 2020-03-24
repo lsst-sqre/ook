@@ -19,8 +19,16 @@ description = Run pytest against {envname}.
 deps =
     -r{toxinidir}/requirements/main.txt
     -r{toxinidir}/requirements/dev.txt
+whitelist_externals =
+    docker-compose
+setenv =
+    SAFIR_KAFKA_BROKER_URL=localhost:9092
+    SAFIR_SCHEMA_REGISTRY_URL=http://localhost:8081
 commands =
+    docker-compose up -d
+    holdup -t 60 -T 5 -i 1 -n --insecure http://localhost:8081/subjects
     coverage run -m pytest {posargs}
+    docker-compose down
 
 [testenv:coverage-report]
 description = Compile coverage from each test run.
