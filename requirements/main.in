@@ -12,3 +12,4 @@ aiodns
 cchardet
 importlib_metadata
 click
+pydantic
