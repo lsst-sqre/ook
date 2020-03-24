@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ook
+  labels:
+    app: ook
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: ook
+  template:
+    metadata:
+      labels:
+        name: ook
+    spec:
+      containers:
+        - name: app
+          imagePullPolicy: "Always"
+          # Use images field in a Kustomization to regularly set/update image tag
+          image: "lsstsqre/ook"
+          ports:
+            - containerPort: 8080
+              name: app
+          envFrom:
+            - configMapRef:
+                name: ook
