@@ -5,7 +5,8 @@
 #    pip-compile --build-isolation --output-file=requirements/main.txt requirements/main.in
 #
 aiodns==2.0.0             # via -r requirements/main.in
-aiohttp==3.6.2            # via -r requirements/main.in, safir
+aiohttp==3.6.2            # via -r requirements/main.in, aiojobs, safir
+aiojobs==0.2.2            # via -r requirements/main.in
 aiokafka==0.5.2           # via safir
 async-timeout==3.0.1      # via aiohttp
 attrs==19.3.0             # via aiohttp

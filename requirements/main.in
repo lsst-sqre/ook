@@ -13,3 +13,4 @@ cchardet
 importlib_metadata
 click
 pydantic
+aiojobs

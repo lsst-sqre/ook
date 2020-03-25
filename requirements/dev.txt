@@ -43,7 +43,7 @@ six==1.14.0               # via packaging, virtualenv
 toml==0.10.0              # via coverage, pre-commit
 typed-ast==1.4.1          # via mypy
 typing-extensions==3.7.4.1  # via mypy
-virtualenv==20.0.13       # via pre-commit
+virtualenv==20.0.14       # via pre-commit
 watchgod==0.6             # via aiohttp-devtools
 wcwidth==0.1.9            # via pytest
 yarl==1.4.2               # via aiohttp
