@@ -102,5 +102,5 @@ exclude = '''
 include_trailing_comma = true
 multi_line_output = 3
 known_first_party = ["ook", "tests"]
-known_third_party = ["aiohttp", "click", "pydantic", "safir", "setuptools"]
+known_third_party = ["aiohttp", "aiokafka", "click", "kafkit", "pydantic", "safir", "setuptools", "structlog"]
 skip = ["docs/conf.py"]

@@ -172,6 +172,10 @@ class Configuration(BaseSettings):
         ),
     )
 
+    kafka_consumer_group_id: str = Field(
+        "ook", env="OOK_GROUP_ID", description="Kafka consumer group ID."
+    )
+
     @validator("kafka_cluster_ca_path")
     def validate_kafka_cluster_ca_path(
         cls, v: ValueType, values: ValuesType
