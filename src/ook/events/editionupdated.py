@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Any, Dict
 
 from aiohttp import web
 
+from ook.classification import classify_ltd_site
+
 if TYPE_CHECKING:
     from structlog._config import BoundLoggerLazyProxy
 
@@ -30,3 +32,10 @@ async def process_edition_updated(
         The deserialized value of the Kafka message.
     """
     logger.info("In process_edition_updated")
+
+    content_type = await classify_ltd_site(
+        http_session=app["safir/http_session"],
+        product_slug=message["product"]["slug"],
+        published_url=message["edition"]["published_url"],
+    )
+    logger.info("Classified LTD site", content_type=content_type)

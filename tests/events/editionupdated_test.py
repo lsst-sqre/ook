@@ -26,17 +26,17 @@ async def test_process_edition_updated(
 
     message_value = {
         "event_type": "edition.updated",
-        "event_timestamp": datetime.datetime.now(),
+        "event_timestamp": datetime.datetime.utcnow(),
         "product": {
-            "published_url": "https://example.lsst.io/",
-            "url": "https://keeper.lsst.codes/products/example",
-            "slug": "example",
+            "published_url": "https://pipelines.lsst.io/",
+            "url": "https://keeper.lsst.codes/products/pipelines",
+            "slug": "pipelines",
         },
         "edition": {
             "published_url": "https://example.lsst.io/",
-            "url": "https://keeper.lsst.codes/editions/1234",
+            "url": "https://keeper.lsst.codes/editions/68",
             "slug": "main",
-            "build_url": "https://keeper.lsst.codes/builds/1",
+            "build_url": "https://keeper.lsst.codes/builds/11318",
         },
     }
 
@@ -69,4 +69,14 @@ async def test_process_edition_updated(
 
     assert await async_test_until(
         lambda: "In process_edition_updated" in caplog.text, timeout=10.0
+    )
+
+    assert await async_test_until(
+        lambda: "Classified LTD site" in caplog.text, timeout=10.0
+    )
+
+    assert await async_test_until(
+        lambda: "content_type=<ContentType.LTD_GENERIC: 'ltd_generic'>"
+        in caplog.text,
+        timeout=10.0,
     )
