@@ -1,0 +1,17 @@
+{
+  "name": "ltd.edition_key_v1",
+  "doc": "This schema is intended to be a key that is unique for a given product+edition combination.",
+  "type": "record",
+  "fields": [
+    {
+      "name": "product_slug",
+      "doc": "The URL slug of the product.",
+      "type": "string"
+    },
+    {
+      "name": "edition_slug",
+      "doc": "The URL slug of the edition.",
+      "type": "string"
+    }
+  ]
+}

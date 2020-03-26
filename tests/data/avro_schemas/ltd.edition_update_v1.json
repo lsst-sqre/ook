@@ -1,0 +1,75 @@
+{
+  "name": "ltd.edition_update_v1",
+  "doc": "An LSST the Docs edition was updated.",
+  "type": "record",
+  "fields": [
+    {
+      "name": "event_type",
+      "doc": "Name of the event.",
+      "type": "string"
+    },
+    {
+      "name": "event_timestamp",
+      "doc": "Time when the edition update was completed.",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      }
+    },
+    {
+      "name": "edition",
+      "doc": "Information about the edition.",
+      "type": {
+        "name": "edition",
+        "type": "record",
+        "fields": [
+          {
+            "name": "url",
+            "doc": "The API URL of the edition resource.",
+            "type": "string"
+          },
+          {
+            "name": "published_url",
+            "doc": "The URL of the edition's website.",
+            "type": "string"
+          },
+          {
+            "name": "slug",
+            "doc": "The edition's slug",
+            "type": "string"
+          },
+          {
+            "name": "build_url",
+            "doc": "The API URL of the build associated with the edition.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "product",
+      "doc": "Information about the product.",
+      "type": {
+        "name": "product",
+        "type": "record",
+        "fields": [
+          {
+            "name": "url",
+            "doc": "The API URL of the product resource.",
+            "type": "string"
+          },
+          {
+            "name": "published_url",
+            "doc": "The URL of the product's website (corresponds to the published_url of the main edition).",
+            "type": "string"
+          },
+          {
+            "name": "slug",
+            "doc": "The product's slug",
+            "type": "string"
+          }
+        ]
+      }
+    }
+  ]
+}

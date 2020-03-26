@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 
+import aiojobs
 import structlog
 from aiohttp import web
 from aiokafka import AIOKafkaConsumer
 from kafkit.registry import Deserializer
 from kafkit.registry.aiohttp import RegistryApi
+
+from ook.events.editionupdated import process_edition_updated
+
+if TYPE_CHECKING:
+    from structlog._config import BoundLoggerLazyProxy
 
 __all__ = ["consume_events"]
 
@@ -30,7 +36,7 @@ async def consume_events(app: web.Application) -> None:
         "bootstrap_servers": app["safir/config"].kafka_broker_url,
         "group_id": app["safir/config"].kafka_consumer_group_id,
         "auto_offset_reset": "latest",
-        "security_protocol": app["safir/kafka_protocol"],
+        "security_protocol": app["safir/config"].kafka_protocol,
     }
     if consumer_settings["security_protocol"] == "SSL":
         consumer_settings["ssl_context"] = app["safir/kafka_ssl_context"]
@@ -39,6 +45,8 @@ async def consume_events(app: web.Application) -> None:
     )
 
     topic_names = get_configured_topics(app)
+
+    scheduler = await aiojobs.create_scheduler()
 
     try:
         await consumer.start()
@@ -74,6 +82,7 @@ async def consume_events(app: web.Application) -> None:
             try:
                 await route_message(
                     app=app,
+                    scheduler=scheduler,
                     message=value_info["message"],
                     schema_id=value_info["id"],
                     schema=value_info["schema"],
@@ -94,6 +103,7 @@ async def consume_events(app: web.Application) -> None:
     finally:
         logger.info("consume_events task cancelling")
         await consumer.stop()
+        await scheduler.close()
 
 
 def get_configured_topics(app: web.Application) -> List[str]:
@@ -104,12 +114,93 @@ def get_configured_topics(app: web.Application) -> List[str]:
 async def route_message(
     *,
     app: web.Application,
+    scheduler: aiojobs.Scheduler,
     message: Dict[str, Any],
     schema_id: int,
     schema: Dict[str, Any],
     topic: str,
-    partition: Any,
+    partition: int,
     offset: int,
 ) -> None:
-    """Route a Kafka message to a processing function."""
-    pass
+    """Route a Kafka message to a processing function.
+
+    Parameters
+    ----------
+    app : `aiohttp.web.Application`
+        The app.
+    scheduler : `aiojobs.Scheduler`
+        The aiojobs scheduler for jobs that handle the Kafka events.
+    logger
+        A structlog logger that is bound with context about the Kafka message.
+    message : `dict`
+        The deserialized value of the Kafka message.
+    schema_id : `int`
+        The Schema Registry ID of the Avro schema used to serialie the message.
+    topic : `str`
+        The name of the Kafka topic that the message was consumed from.
+    partition : `int`
+        The partition of the Kafka topic that the message was consumed form.
+    offset : `int`
+        The offset of the Kafka message.
+    """
+    logger = structlog.get_logger(app["safir/config"].logger_name)
+    logger = logger.bind(
+        topic=topic, partition=partition, offset=offset, schema_id=schema_id
+    )
+
+    if topic == app["safir/config"].ltd_events_kafka_topic:
+        await route_ltd_events_message(
+            app=app,
+            scheduler=scheduler,
+            logger=logger,
+            message=message,
+            schema_id=schema_id,
+            schema=schema,
+            topic=topic,
+            partition=partition,
+            offset=offset,
+        )
+
+
+async def route_ltd_events_message(
+    *,
+    app: web.Application,
+    scheduler: aiojobs.Scheduler,
+    logger: BoundLoggerLazyProxy,
+    message: Dict[str, Any],
+    schema_id: int,
+    schema: Dict[str, Any],
+    topic: str,
+    partition: int,
+    offset: int,
+) -> None:
+    """Route a message known to be from the ltd.events topic.
+
+    Parameters
+    ----------
+    app : `aiohttp.web.Application`
+        The app.
+    scheduler : `aiojobs.Scheduler`
+        The aiojobs scheduler for jobs that handle the Kafka events.
+    logger
+        A structlog logger that is bound with context about the Kafka message.
+    message : `dict`
+        The deserialized value of the Kafka message.
+    schema_id : `int`
+        The Schema Registry ID of the Avro schema used to serialie the message.
+    topic : `str`
+        The name of the Kafka topic that the message was consumed from.
+    partition : `int`
+        The partition of the Kafka topic that the message was consumed form.
+    offset : `int`
+        The offset of the Kafka message.
+    """
+    event_type = message["event_type"]
+    if event_type == "edition.updated":
+        if message["edition"]["slug"] == "main":
+            # We index only the "main" editions of documentation products
+            await scheduler.spawn(
+                process_edition_updated(
+                    app=app, logger=logger, message=message
+                )
+            )
