@@ -165,6 +165,12 @@ class Configuration(BaseSettings):
         ),
     )
 
+    ingest_kafka_topic: str = Field(
+        "ook.ingest",
+        env="OOK_INGEST_KAFKA_TOPIC",
+        description="The name of the Kafka topic for the ingest queue.",
+    )
+
     schema_root_dir: Path = Field(
         Path(__file__).parent / "avro_schemas",
         description=(

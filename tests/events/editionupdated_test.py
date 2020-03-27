@@ -28,15 +28,15 @@ async def test_process_edition_updated(
         "event_type": "edition.updated",
         "event_timestamp": datetime.datetime.utcnow(),
         "product": {
-            "published_url": "https://pipelines.lsst.io/",
-            "url": "https://keeper.lsst.codes/products/pipelines",
-            "slug": "pipelines",
+            "published_url": "https://sqr-000.lsst.io",
+            "url": "https://keeper.lsst.codes/products/sqr-000",
+            "slug": "sqr-000",
         },
         "edition": {
-            "published_url": "https://example.lsst.io/",
-            "url": "https://keeper.lsst.codes/editions/68",
+            "published_url": "https://sqr-000.lsst.io",
+            "url": "https://keeper.lsst.codes/editions/21",
             "slug": "main",
-            "build_url": "https://keeper.lsst.codes/builds/11318",
+            "build_url": "https://keeper.lsst.codes/builds/2775",
         },
     }
 
@@ -76,7 +76,12 @@ async def test_process_edition_updated(
     )
 
     assert await async_test_until(
-        lambda: "content_type=<ContentType.LTD_GENERIC: 'ltd_generic'>"
-        in caplog.text,
+        lambda: "content_type=<ContentType.LTD_SPHINX_TECHNOTE: "
+        "'ltd_sphinx_technote'>" in caplog.text,
+        timeout=10.0,
+    )
+
+    assert await async_test_until(
+        lambda: "Produced an LTD document URL ingest request" in caplog.text,
         timeout=10.0,
     )
