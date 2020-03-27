@@ -1,0 +1,268 @@
+
+
+<!DOCTYPE html>
+<!--[if IE 8]><html class="no-js lt-ie9" lang="en" > <![endif]-->
+<!--[if gt IE 8]><!--> <html class="no-js" lang="en" > <!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>SQR-035: Deployment engineering for Kubernetes-based services.</title>
+
+
+
+
+
+
+
+
+
+
+
+
+
+  <link rel="stylesheet" href="_static/css/theme.css" type="text/css" />
+
+
+
+
+        <link rel="search" title="Search" href="search.html"/>
+    <link rel="top" title="SQR-035: Deployment engineering for Kubernetes-based services." href="#"/>
+
+
+  <script src="_static/js/modernizr.min.js"></script>
+
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+
+
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search"  style="background-color: #343131">
+
+
+          <a href="https://www.lsst.org">
+            <img src="_static/lsst-logo-dark.svg" class="logo" />
+
+            <span class="project-title">SQR-035: Deployment engineering for Kubernetes-based services.</span>
+          </a>
+
+          <ul class="edition-switcher">
+            <li>Edition: master</li>
+            <li><a href="/v">Switch editions</a></li>
+
+            <li><a href="https://github.com/lsst-sqre/sqr-035/blob/master/index.rst">Edit on GitHub</a></li>
+
+          </ul>
+
+
+
+
+        </div>
+
+        <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="main navigation">
+
+
+
+                <!-- Local TOC -->
+                <div class="local-toc"><ul>
+<li><a class="reference internal" href="#">1&nbsp;&nbsp;&nbsp;Context</a></li>
+<li><a class="reference internal" href="#elements">2&nbsp;&nbsp;&nbsp;Elements</a></li>
+<li><a class="reference internal" href="#deployment-add-ons">3&nbsp;&nbsp;&nbsp;Deployment add-ons</a></li>
+</ul>
+</div>
+
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+
+
+      <nav class="wy-nav-top" role="navigation" aria-label="top navigation">
+        <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+        <a href="#">SQR-035: Deployment engineering for Kubernetes-based services.</a>
+      </nav>
+
+
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="dd-masthead">
+  <h1 class="dd-title">SQR-035: Deployment engineering for Kubernetes-based services.</h1>
+  <ul class="dd-authors">
+
+
+        <li class="dd-authors-item">Frossie Economou,</li>
+
+
+
+        <li class="dd-authors-item">Jonathan Sick,</li>
+
+
+
+        <li class="dd-authors-item">Christine Banek,</li>
+
+
+
+        <li class="dd-authors-item">Adam Thornton,</li>
+
+
+
+        <li class="dd-authors-item">Josh Hoblitt,</li>
+
+
+
+        <li class="dd-authors-item">Angelo Fausti and</li>
+
+
+
+        <li class="dd-authors-item">Simon Krughoff</li>
+
+
+  </ul>
+  <p>Latest Revision: <a href="#change-record">2019-10-29</a></p>
+</div>
+           <div itemprop="articleBody">
+
+  <div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p><strong>This technote is not yet published.</strong></p>
+<p class="last">Configuration management and deployment infrastructure for Kubernetes-based services for the LSST Science Platform and SQuaRE Services.</p>
+</div>
+<div class="section" id="context">
+<h1>1&nbsp;&nbsp;&nbsp;Context<a class="headerlink" href="#context" title="Permalink to this headline">¶</a></h1>
+<p>This document does three things: lays out the elements and practice we use for kubernetes-based services, outlines guidelines for best practices, and a discussion of current and upcoming technological choices for implementation.</p>
+<p>SQuaRE engineers maintain 20+ services and 30+ deployments of those services in production at this time in a wide range of enviroments (commodity, LDF, single-host). They lie in the entire range of the maturity range.</p>
+<p>While SQuaRE follows the DevOps model of operating the services it develops, there is still a concept of an operator - on-call rotation, vacation backups etc are an example of someone who is in charge of a service in whos development they were not ivolved.</p>
+<p>Aside from good engineering discipline, the great number of SQuaRE services pushes us to a unified approach in this area; on the other hand, we also believe in the right tool for the job. The interplay between these two principles has led to the architecture described in this technote.</p>
+</div>
+<div class="section" id="elements">
+<h1>2&nbsp;&nbsp;&nbsp;Elements<a class="headerlink" href="#elements" title="Permalink to this headline">¶</a></h1>
+<p>The elements of service deployment are:</p>
+<dl class="docutils">
+<dt>Docker Image Release</dt>
+<dd>The container(s) with the service to be deployed.</dd>
+<dt>Configuration Management</dt>
+<dd>What is in the deployment (eg. contingress, certs)</dd>
+<dt>Secrets</dt>
+<dd>Credentials required by the deployment</dd>
+<dt>Deployment Orchestration</dt>
+<dd>How the deployment happens</dd>
+<dt>Configuration Control</dt>
+<dd>When the deployment happens</dd>
+</dl>
+<p>During earlier stages of maturity, development of each one of those steps can be progressively delivered. For example a container may be manually built; a helm chart can be manually applied; etc. However for complete configuration control and operational maintainability, the entire chain needs  to be in place.</p>
+<p>In technical terms, as service maturity evolves, configuration management moves from imperative to declarative.</p>
+<div class="section" id="docker-image-release">
+<h2>2.1&nbsp;&nbsp;&nbsp;Docker Image Release<a class="headerlink" href="#docker-image-release" title="Permalink to this headline">¶</a></h2>
+<p>For Kubernetes model, the quantum of deployment is a Docker image.</p>
+<p>Containers by themselves are the end result of the release management process and they themselves are a reflection of possibly different approaches to that (cadence, testing, floating v. pinned dependencies).</p>
+<p>In certain models (nublado) there is additional environmental injection to the container. This means that the injection layer in and of itself is part of the service.</p>
+<p><strong>Recommendation</strong>: Use DockerHub or if necessary a cache.</p>
+</div>
+<div class="section" id="configuration-management">
+<h2>2.2&nbsp;&nbsp;&nbsp;Configuration Management<a class="headerlink" href="#configuration-management" title="Permalink to this headline">¶</a></h2>
+<p>The principle here is fairly simple: deployment = service + configuration</p>
+<p>The two Kubernetes native ways of doing this are Helm and Kustomize. Kustomize is simple and attractive for lightweight services; Helm has the advantage of support templating via Tiller and being a popular source of 3rd party charts (eg Influx).</p>
+<p>At SQuaRE we stalled for a long time on this debate, as different developers have (strong) preferences in one direction or the other. We eventually realise this was a false dichotomy and our desire to standardise was being applied at the wrong layer (configuration management v. deployment orchestration).</p>
+<p><strong>Recommendation</strong>: Use either Helm or Kustomize (or even both - an emerging model is Helm + “last mile” Kustomize) according to the needs of the service and the prefernace of the developer. See the section on Deployment Orchestration for dicussion.</p>
+<p>The other big debate in this are is whether to store configuration with the code of the service or in a deployment repository full of just the configurations of related services (or even many deployments of the one service).</p>
+<p><strong>Recommendation</strong>: store deployment configuration in its own repository (eg. lsp_deploy). This makes it far easier to find if you are not familiar with the service, easier to provide GitOps support (see below) and easier to modify for different deployments.</p>
+</div>
+<div class="section" id="secrets">
+<h2>2.3&nbsp;&nbsp;&nbsp;Secrets<a class="headerlink" href="#secrets" title="Permalink to this headline">¶</a></h2>
+<p>Secrets should always be curated so that they are securely stored and retrievable by the ops team.</p>
+<p><strong>Recommendation</strong>: use Vault</p>
+<p>Note this should be done as early as possible given it is compatible with both imperative and declarative models.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>vault kv list secret/dm/square/scipipe-publish/<span class="si">${</span><span class="nv">ENV_NAME</span><span class="si">}</span>/
+</pre></div>
+</div>
+</div>
+<div class="section" id="deployment-orchestration">
+<h2>2.4&nbsp;&nbsp;&nbsp;Deployment Orchestration<a class="headerlink" href="#deployment-orchestration" title="Permalink to this headline">¶</a></h2>
+<p>Our debates in this area centered as to whether to use terraform or a more kubernetes-native system for orchestrating the deployment. For a long time this was the Terraform v. Helm debate. Terraform was seen as having the advantage of being able to sequence complex deployments of services consisting of multiple containers, and being in use for non-Kubernetes deployments (eg. virtual machine-based architectures). On the other hand Helm was seen as much easier to understand and a native match to Kubernetes applications. It can be argued that sequencing (launch A, when it is up launch B becaue B requires A, etc) is unecessary for well-designed Kubernetes services that provide health points (launch A and B together, A monitors B’s health endpoint and goes green when it detects B is available).</p>
+<p>We recently had a prototype cycle with ArgoCD, and we are coming to the conclusion that using a native Kubernetes continuous deployment service such as ArgoCD resolves both the Helm v. Kustomize debate as well as the Helm v. Terraform debate. ArgoCD features remove the need to template Helm with Tiller and have easy support for “last mile” Helm+customize models. Moreover it provides a unified interface for executing GitOps configuration control irrespective of the underlying configuration management used. While we prefer unsequenced Kubernetes services, ArgoCD does have support for “wave” deployment that means terraform is not required even for sequenced deployments. Kubernetes is also gaining the ability to configure DNS records through an operator further reducing the need to rely on terraform.</p>
+<p><strong>Recommendation</strong>: Use ArgoCD to orchestrate deployment of Helm, Kustomize and Helm-Kustomize services.</p>
+<p>In addition, products like ArgoCD provide clear deployment dashboards that allow an operator to assess the health of a system and verify configuration control.</p>
+</div>
+<div class="section" id="configuration-control">
+<h2>2.5&nbsp;&nbsp;&nbsp;Configuration Control<a class="headerlink" href="#configuration-control" title="Permalink to this headline">¶</a></h2>
+<p>Configuration Control is an outcome that can be achieved in a number of ways, ranging from process-driven ways (formal change control, compliance) to SRE-driven ways (automation, continuous deployment infrastructures etc).</p>
+<p><strong>Recommendation</strong>: use GitOps (automated deployment by a system driven from  a git merge to master or other special branch) as it is suited to both models (if regulatory gatekeeping is required, it can be performed before merge is authorized).</p>
+<p>The compelling advantage of GitOps is that it exposes a layer understood by all developers (git) which allows an operator to perform core maintainance operations (rolling back to a previous known-to-be-good version or doing a security patch for a dependency) without an underlying knowledge of the deployment architecture (eg Helm, kustomize or whatever else).</p>
+<p>This is also the best supported model in deployment infrastructure products.</p>
+</div>
+</div>
+<div class="section" id="deployment-add-ons">
+<h1>3&nbsp;&nbsp;&nbsp;Deployment add-ons<a class="headerlink" href="#deployment-add-ons" title="Permalink to this headline">¶</a></h1>
+<p>While not strictly speaking involved in the deployment process, monitoring and logging should be part of service deployment.</p>
+<p><strong>Recommendation</strong>: All services should expose status and logs throuh well known services, either their own as part of ensemble deployments or by shipping to facility services (LDF).</p>
+<p>We would like to also have service auto-discovery though our ideas for implementing this across all services are not full formed yet.</p>
+</div>
+
+
+           </div>
+          </div>
+          <footer>
+
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>
+        &copy; Copyright 2019, Association of Universities for Research in Astronomy.
+      Last updated on Dec 12, 2019.
+
+    </p>
+  </div>
+  Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a <a href="https://github.com/snide/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+
+</footer>
+
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+
+
+
+
+    <script type="text/javascript">
+        var DOCUMENTATION_OPTIONS = {
+            URL_ROOT:'./',
+            VERSION:'master',
+            COLLAPSE_INDEX:false,
+            FILE_SUFFIX:'.html',
+            HAS_SOURCE:  true
+        };
+    </script>
+      <script type="text/javascript" src="_static/jquery.js"></script>
+      <script type="text/javascript" src="_static/underscore.js"></script>
+      <script type="text/javascript" src="_static/doctools.js"></script>
+      <script type="text/javascript" src="https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=default"></script>
+
+
+
+   <script type="text/javascript" src="_static/js/theme.js"></script>
+
+
+
+  <script type="text/javascript">
+      jQuery(function () {
+          SphinxRtdTheme.StickyNav.enable();
+      });
+  </script>
+
+
+</body>
+</html>

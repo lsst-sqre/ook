@@ -6,7 +6,6 @@
 #     make update-deps
 
 git+git://github.com/lsst-sqre/safir@tickets/DM-23761#egg=safir
-git+git://github.com/lsst-sqre/kafkit@tickets/DM-23797#egg=kafkit
 aiohttp
 aiodns
 cchardet
@@ -14,3 +13,6 @@ importlib_metadata
 click
 pydantic
 aiojobs
+lxml
+cssselect
+PyYAML

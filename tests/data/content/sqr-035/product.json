@@ -1,0 +1,13 @@
+{
+  "bucket_name": "lsst-the-docs",
+  "doc_repo": "https://github.com/lsst-sqre/sqr-035",
+  "domain": "sqr-035.lsst.io",
+  "fastly_domain": "n.global-ssl.fastly.net",
+  "published_url": "https://sqr-035.lsst.io",
+  "root_domain": "lsst.io",
+  "root_fastly_domain": "n.global-ssl.fastly.net",
+  "self_url": "https://keeper.lsst.codes/products/sqr-035",
+  "slug": "sqr-035",
+  "surrogate_key": "822b665b47df48539a9e7f93c6ae290c",
+  "title": "Deployment engineering for Kubernetes-based services."
+}
