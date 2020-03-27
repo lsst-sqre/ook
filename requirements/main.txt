@@ -16,7 +16,7 @@ chardet==3.0.4            # via aiohttp
 click==7.1.1              # via -r requirements/main.in
 fastavro==0.23.0          # via kafkit
 idna==2.9                 # via yarl
-importlib-metadata==1.5.2  # via -r requirements/main.in, kafkit, safir
+importlib-metadata==1.6.0  # via -r requirements/main.in, kafkit, safir
 kafka-python==1.4.6       # via aiokafka
 git+git://github.com/lsst-sqre/kafkit@tickets/DM-23797#egg=kafkit  # via -r requirements/main.in, safir
 multidict==4.7.5          # via aiohttp, yarl
