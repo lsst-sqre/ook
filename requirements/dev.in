@@ -12,3 +12,5 @@ mypy
 pytest
 pytest-aiohttp
 aiohttp-devtools
+holdup
+aioresponses

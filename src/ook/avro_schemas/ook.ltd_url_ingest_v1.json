@@ -1,0 +1,88 @@
+{
+  "name": "ook.ltd_url_ingest_v1",
+  "doc": "A request to ingest a URL hosted on LSST the Docs.",
+  "type": "record",
+  "fields": [
+    {
+      "name": "content_type",
+      "doc": "The type of content expected at the URL.",
+      "type": "string"
+    },
+    {
+      "name": "request_timestamp",
+      "doc": "Time when the URL ingest request was made.",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      }
+    },
+    {
+      "name": "update_timestamp",
+      "doc": "An timestamp that can be used to record when the edition update occured.",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      }
+    },
+    {
+      "name": "url",
+      "doc": "The URL to ingest.",
+      "type": "string"
+    },
+    {
+      "name": "edition",
+      "doc": "Information about the edition.",
+      "type": {
+        "name": "edition",
+        "type": "record",
+        "fields": [
+          {
+            "name": "url",
+            "doc": "The API URL of the edition resource.",
+            "type": "string"
+          },
+          {
+            "name": "published_url",
+            "doc": "The URL of the edition's website.",
+            "type": "string"
+          },
+          {
+            "name": "slug",
+            "doc": "The edition's slug",
+            "type": "string"
+          },
+          {
+            "name": "build_url",
+            "doc": "The API URL of the build associated with the edition.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "product",
+      "doc": "Information about the product.",
+      "type": {
+        "name": "product",
+        "type": "record",
+        "fields": [
+          {
+            "name": "url",
+            "doc": "The API URL of the product resource.",
+            "type": "string"
+          },
+          {
+            "name": "published_url",
+            "doc": "The URL of the product's website (corresponds to the published_url of the main edition).",
+            "type": "string"
+          },
+          {
+            "name": "slug",
+            "doc": "The product's slug",
+            "type": "string"
+          }
+        ]
+      }
+    }
+  ]
+}
