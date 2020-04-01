@@ -28,6 +28,9 @@ def test_sqr035_reduction() -> None:
         "Deployment engineering for Kubernetes-based services."
     )
     assert reduced_technote.timestamp == datetime.datetime(2019, 10, 29, 0, 0)
+    assert reduced_technote.github_url == (
+        "https://github.com/lsst-sqre/sqr-035"
+    )
 
     assert reduced_technote.description == (
         "Configuration management and deployment infrastructure for "

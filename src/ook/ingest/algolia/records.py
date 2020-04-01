@@ -68,6 +68,8 @@ class LtdSphinxTechnoteSectionRecord:
         }
         for i, header in enumerate(self.section.headers):
             record[f"h{i+1}"] = header
+        if self.technote.github_url is not None:
+            record["githubRepoUrl"] = self.technote.github_url
         return record
 
 

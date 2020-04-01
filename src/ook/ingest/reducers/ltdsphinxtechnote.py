@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import dateparser
 import lxml.html
@@ -108,6 +108,11 @@ class ReducedLtdSphinxTechnote:
         """
         return self._timestamp
 
+    @property
+    def github_url(self) -> Optional[str]:
+        """The URL of the technote's GitHub repository."""
+        return self._github_url
+
     def _reduce_metadata(self) -> None:
         """Reduce the content of metadata.yaml."""
         try:
@@ -134,6 +139,11 @@ class ReducedLtdSphinxTechnote:
             self._authors: List[str] = self._metadata["authors"]
         except KeyError:
             self._authors = []
+
+        try:
+            self._github_url: Optional[str] = self._metadata["github_url"]
+        except KeyError:
+            self._github_url = None
 
     def _reduce_html(self) -> None:
         """Reduce the HTML document into sections."""
