@@ -8,16 +8,18 @@ aiodns==2.0.0             # via -r requirements/main.in
 aiohttp==3.6.2            # via -r requirements/main.in, aiojobs, safir
 aiojobs==0.2.2            # via -r requirements/main.in
 aiokafka==0.5.2           # via safir
+algoliasearch==2.2.0      # via -r requirements/main.in
 async-timeout==3.0.1      # via aiohttp
 attrs==19.3.0             # via aiohttp
 cchardet==2.1.6           # via -r requirements/main.in
+certifi==2019.11.28       # via requests
 cffi==1.14.0              # via pycares
-chardet==3.0.4            # via aiohttp
+chardet==3.0.4            # via aiohttp, requests
 click==7.1.1              # via -r requirements/main.in
 cssselect==1.1.0          # via -r requirements/main.in
 dateparser==0.7.4         # via -r requirements/main.in
 fastavro==0.23.0          # via kafkit
-idna==2.9                 # via yarl
+idna==2.9                 # via requests, yarl
 importlib-metadata==1.6.0  # via -r requirements/main.in, kafkit, safir
 kafka-python==1.4.6       # via aiokafka
 kafkit==0.2.0b2           # via safir
@@ -30,10 +32,12 @@ python-dateutil==2.8.1    # via dateparser
 pytz==2019.3              # via dateparser, fastavro, tzlocal
 pyyaml==5.3.1             # via -r requirements/main.in
 regex==2020.2.20          # via dateparser
+requests==2.23.0          # via algoliasearch
 git+git://github.com/lsst-sqre/safir@tickets/DM-23761#egg=safir  # via -r requirements/main.in
 six==1.14.0               # via python-dateutil, structlog
 structlog==20.1.0         # via safir
 tzlocal==2.0.0            # via dateparser
 uritemplate==3.0.1        # via kafkit
+urllib3==1.25.8           # via requests
 yarl==1.4.2               # via aiohttp
 zipp==3.1.0               # via importlib-metadata
