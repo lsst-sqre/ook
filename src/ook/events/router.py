@@ -110,7 +110,17 @@ async def consume_events(app: web.Application) -> None:
 
 def get_configured_topics(app: web.Application) -> List[str]:
     """Get the list of topic names that this app is configured to consume."""
-    return [app["safir/config"].ltd_events_kafka_topic]
+    topic_names: List[str] = []
+
+    config = app["safir/config"]
+
+    if config.enable_ltd_events_kafka_topic:
+        topic_names.append(config.ltd_events_kafka_topic)
+
+    if config.enable_ingest_kafka_topic:
+        topic_names.append(config.ingest_kafka_topic)
+
+    return topic_names
 
 
 async def route_message(

@@ -157,11 +157,27 @@ class Configuration(BaseSettings):
         ),
     )
 
+    enable_ltd_events_kafka_topic: bool = Field(
+        True,
+        env="ENABLE_LTD_EVENTS_KAFKA_TOPIC",
+        description=(
+            "Enable Kafka consumer for ltd_events_kafka_topic (ltd.events)."
+        ),
+    )
+
     ltd_events_kafka_topic: str = Field(
         "ltd.events",
         env="LTD_EVENTS_KAFKA_TOPIC",
         description=(
             "The name of the Kafka topic for messages produced by LTD Events."
+        ),
+    )
+
+    enable_ingest_kafka_topic: bool = Field(
+        True,
+        env="ENABLE_OOK_INGEST_KAFKA_TOPIC",
+        description=(
+            "Enable Kafka consumer for ingest_kafka_topic (ook.ingest)."
         ),
     )
 
