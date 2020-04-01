@@ -198,6 +198,14 @@ class Configuration(BaseSettings):
         "ook", env="OOK_GROUP_ID", description="Kafka consumer group ID."
     )
 
+    algolia_app_id: Optional[str] = Field(
+        None, env="ALGOLIA_APP_ID", description="The Algolia app ID"
+    )
+
+    algolia_api_key: Optional[str] = Field(
+        None, env="ALGOLIA_API_KEY", description="The Algolia API key"
+    )
+
     @validator("kafka_cluster_ca_path")
     def validate_kafka_cluster_ca_path(
         cls, v: ValueType, values: ValuesType

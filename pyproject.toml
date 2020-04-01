@@ -102,5 +102,5 @@ exclude = '''
 include_trailing_comma = true
 multi_line_output = 3
 known_first_party = ["ook", "tests"]
-known_third_party = ["aiohttp", "aiojobs", "aiokafka", "aioresponses", "click", "dateparser", "kafkit", "lxml", "pydantic", "pytest", "safir", "setuptools", "structlog", "yaml"]
+known_third_party = ["aiohttp", "aiojobs", "aiokafka", "aioresponses", "algoliasearch", "click", "dateparser", "kafkit", "lxml", "pydantic", "pytest", "safir", "setuptools", "structlog", "yaml"]
 skip = ["docs/conf.py"]

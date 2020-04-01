@@ -5,6 +5,7 @@ __all__ = ["create_app"]
 from typing import Any, AsyncGenerator
 
 from aiohttp import web
+from algoliasearch.search_client import SearchClient
 from safir.events import (
     configure_kafka_ssl,
     init_kafka_producer,
@@ -39,6 +40,7 @@ def create_app(**configs: Any) -> web.Application:
     root_app.cleanup_ctx.append(init_recordname_schema_manager)
     root_app.cleanup_ctx.append(init_kafka_producer)
     root_app.cleanup_ctx.append(init_kafka_consumer)
+    root_app.cleanup_ctx.append(init_algolia_client)
 
     sub_app = web.Application()
     setup_middleware(sub_app)
@@ -64,3 +66,17 @@ async def init_kafka_consumer(app: web.Application) -> AsyncGenerator:
     # Tear-down phase
     consumer_task.cancel()
     await consumer_task
+
+
+async def init_algolia_client(app: web.Application) -> AsyncGenerator:
+    """Initialize the Algolia client."""
+    app_id = app["safir/config"].algolia_app_id
+    api_key = app["safir/config"].algolia_api_key
+
+    if app_id is not None and api_key is not None:
+        async with SearchClient.create(app_id, api_key) as client:
+            app["ook/algolia_search"] = client
+            yield
+    else:
+        app["ook/algolia_search"] = None
+        yield
