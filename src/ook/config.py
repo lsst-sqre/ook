@@ -206,6 +206,12 @@ class Configuration(BaseSettings):
         None, env="ALGOLIA_API_KEY", description="The Algolia API key"
     )
 
+    algolia_document_index_name: str = Field(
+        "document_dev",
+        env="ALGOLIA_DOCUMENT_INDEX",
+        description="Name of the Algolia document index",
+    )
+
     @validator("kafka_cluster_ca_path")
     def validate_kafka_cluster_ca_path(
         cls, v: ValueType, values: ValuesType
