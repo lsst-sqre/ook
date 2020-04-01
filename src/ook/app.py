@@ -2,7 +2,7 @@
 
 __all__ = ["create_app"]
 
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from aiohttp import web
 from safir.events import (
@@ -20,9 +20,9 @@ from ook.events.router import consume_events
 from ook.handlers import init_external_routes, init_internal_routes
 
 
-def create_app() -> web.Application:
+def create_app(**configs: Any) -> web.Application:
     """Create and configure the aiohttp.web application."""
-    config = Configuration()
+    config = Configuration(**configs)
     configure_logging(
         profile=config.profile,
         log_level=config.log_level,
