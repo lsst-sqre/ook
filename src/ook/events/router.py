@@ -12,7 +12,9 @@ from aiokafka import AIOKafkaConsumer
 from kafkit.registry import Deserializer
 from kafkit.registry.aiohttp import RegistryApi
 
+from ook.classification import ContentType
 from ook.events.editionupdated import process_edition_updated
+from ook.ingest.workflows.ltdsphinxtechnote import ingest_ltd_sphinx_technote
 
 if TYPE_CHECKING:
     from structlog._config import BoundLoggerLazyProxy
@@ -160,6 +162,22 @@ async def route_message(
             partition=partition,
             offset=offset,
         )
+    elif topic == app["safir/config"].ingest_kafka_topic:
+        await route_ingest_message(
+            app=app,
+            scheduler=scheduler,
+            logger=logger,
+            message=message,
+            schema_id=schema_id,
+            schema=schema,
+            topic=topic,
+            partition=partition,
+            offset=offset,
+        )
+    else:
+        logger.warning(
+            "Got a Kafka message but there is not handler for that topic"
+        )
 
 
 async def route_ltd_events_message(
@@ -204,3 +222,45 @@ async def route_ltd_events_message(
                     app=app, logger=logger, message=message
                 )
             )
+
+
+async def route_ingest_message(
+    *,
+    app: web.Application,
+    scheduler: aiojobs.Scheduler,
+    logger: BoundLoggerLazyProxy,
+    message: Dict[str, Any],
+    schema_id: int,
+    schema: Dict[str, Any],
+    topic: str,
+    partition: int,
+    offset: int,
+) -> None:
+    """Route a message known to be from the ook.ingest topic.
+
+    Parameters
+    ----------
+    app : `aiohttp.web.Application`
+        The app.
+    scheduler : `aiojobs.Scheduler`
+        The aiojobs scheduler for jobs that handle the Kafka events.
+    logger
+        A structlog logger that is bound with context about the Kafka message.
+    message : `dict`
+        The deserialized value of the Kafka message.
+    schema_id : `int`
+        The Schema Registry ID of the Avro schema used to serialie the message.
+    topic : `str`
+        The name of the Kafka topic that the message was consumed from.
+    partition : `int`
+        The partition of the Kafka topic that the message was consumed form.
+    offset : `int`
+        The offset of the Kafka message.
+    """
+    content_type = ContentType[message["content_type"]]
+    if content_type == ContentType.LTD_SPHINX_TECHNOTE:
+        await scheduler.spawn(
+            ingest_ltd_sphinx_technote(
+                app=app, logger=logger, url_ingest_message=message
+            )
+        )
