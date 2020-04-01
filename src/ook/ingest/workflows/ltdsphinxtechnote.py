@@ -36,20 +36,21 @@ async def ingest_ltd_sphinx_technote(
     message : `dict`
         The deserialized value of the Kafka message.
     """
-    http_session = app["safir/htt_session"]
+    logger.info("Starting LTD_SPHINX_TECHNOTE ingest")
+    http_session = app["safir/http_session"]
 
     html_content = await get_html_content(
         url=url_ingest_message["url"], logger=logger, http_session=http_session
     )
 
     product_data = await get_json_data(
-        url=url_ingest_message["url"]["product"]["url"],
+        url=url_ingest_message["product"]["url"],
         logger=logger,
         http_session=http_session,
     )
 
     edition_data = await get_json_data(
-        url=url_ingest_message["url"]["edition"]["url"],
+        url=url_ingest_message["edition"]["url"],
         logger=logger,
         http_session=http_session,
     )
@@ -91,6 +92,8 @@ async def ingest_ltd_sphinx_technote(
             surrogate_key=surrogate_key,
         )
     )
+
+    logger.info("Finished building records")
 
 
 async def get_html_content(
