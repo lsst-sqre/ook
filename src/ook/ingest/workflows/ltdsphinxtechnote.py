@@ -95,6 +95,16 @@ async def ingest_ltd_sphinx_technote(
 
     logger.info("Finished building records")
 
+    if app["ook/algolia_search"] is not None:
+        client = app["ook/algolia_search"]
+        index = client.init_index(
+            app["safir/config"].algolia_document_index_name
+        )
+
+        record_objects = [r.data for r in records]
+        response = await index.save_objects_async(record_objects)
+        logger.info("Finished uploading to Algolia", response=response)
+
 
 async def get_html_content(
     *, url: str, http_session: ClientSession, logger: BoundLoggerLazyProxy
