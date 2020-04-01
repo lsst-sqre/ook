@@ -26,7 +26,7 @@ _HEADER_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 
 
 def get_section_title(
-    header_element: lxml.html.HtmlElement,
+    header_element: lxml.html.Html.Element,
     anchor_characters: Optional[str] = None,
 ) -> str:
     """Extract the title from a header element and clean it from Sphinx

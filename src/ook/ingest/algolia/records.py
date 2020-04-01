@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import datetime
 from base64 import b64encode
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict
 
 if TYPE_CHECKING:
@@ -29,6 +30,11 @@ class LtdSphinxTechnoteSectionRecord:
     different surrogate keys must be "old" and therefore can be purged.
     """
 
+    record_time: datetime.datetime = field(
+        default_factory=datetime.datetime.utcnow
+    )
+    """Datetime when this Algolia record was updated."""
+
     @property
     def object_id(self) -> str:
         """The objectID of the record.
@@ -48,6 +54,8 @@ class LtdSphinxTechnoteSectionRecord:
         record = {
             "objectID": self.object_id,
             "surrogateKey": self.surrogate_key,
+            "sourceUpdateTime": format_utc_datetime(self.technote.timestamp),
+            "recordUpdateTime": format_utc_datetime(self.record_time),
             "url": self.section.url,
             "baseUrl": self.technote.url,
             "content": self.section.content,
@@ -61,3 +69,10 @@ class LtdSphinxTechnoteSectionRecord:
         for i, header in enumerate(self.section.headers):
             record[f"h{i+1}"] = header
         return record
+
+
+def format_utc_datetime(dt: datetime.datetime) -> str:
+    """Format a `~datetime.datetime` in the standardized UTC `str`
+    representation.
+    """
+    return f"{dt.isoformat()}Z"

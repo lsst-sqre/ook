@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 
 import yaml
@@ -26,6 +27,7 @@ def test_sqr035_reduction() -> None:
     assert reduced_technote.h1 == (
         "Deployment engineering for Kubernetes-based services."
     )
+    assert reduced_technote.timestamp == datetime.datetime(2019, 10, 29, 0, 0)
 
     assert reduced_technote.description == (
         "Configuration management and deployment infrastructure for "

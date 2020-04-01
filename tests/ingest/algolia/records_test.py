@@ -55,3 +55,5 @@ def test_sqr035_record() -> None:
         "lcmluZyBmb3IgS3ViZXJuZXRlcy1iYXNlZCBzZXJ2aWNlcy4gMSAgIENvbnRleHQ="
     )
     assert data["surrogateKey"] == "test-key"
+    assert data["sourceUpdateTime"] == "2019-10-29T00:00:00Z"
+    assert isinstance(data["recordUpdateTime"], str)

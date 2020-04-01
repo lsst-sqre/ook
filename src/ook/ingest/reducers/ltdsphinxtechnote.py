@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import datetime
 from typing import Any, Dict, List
 
+import dateparser
 import lxml.html
 
 from ook.ingest.reducers.sphinxutils import (
@@ -99,6 +101,13 @@ class ReducedLtdSphinxTechnote:
         """Names of authors."""
         return self._authors
 
+    @property
+    def timestamp(self) -> datetime.datetime:
+        """Timestamp associated with the technote (time when the document was
+        updated).
+        """
+        return self._timestamp
+
     def _reduce_metadata(self) -> None:
         """Reduce the content of metadata.yaml."""
         try:
@@ -130,6 +139,8 @@ class ReducedLtdSphinxTechnote:
         """Reduce the HTML document into sections."""
         doc = lxml.html.document_fromstring(self.html_source)
 
+        self._timestamp = self._reduce_timestamp(doc)
+
         root_section = doc.cssselect(".document .section")[0]
 
         for s in iter_sphinx_sections(
@@ -155,3 +166,14 @@ class ReducedLtdSphinxTechnote:
                     content_callback=lambda x: x.strip(),
                 ):
                     self._sections.append(s)
+
+    def _reduce_timestamp(
+        self, doc: lxml.html.Html.Element
+    ) -> datetime.datetime:
+        try:
+            date_element = doc.cssselect('a[href="#change-record"]')[0]
+            date_text = date_element.text_content()
+            return dateparser.parse(date_text, settings={"TIMEZONE": "UTC"})
+        except IndexError as e:
+            print(e)
+            return datetime.datetime.utcnow()

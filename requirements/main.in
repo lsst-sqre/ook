@@ -16,3 +16,4 @@ aiojobs
 lxml
 cssselect
 PyYAML
+dateparser
