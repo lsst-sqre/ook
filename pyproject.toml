@@ -55,7 +55,20 @@ commands = pre-commit run --all-files
 [testenv:run]
 description = Run the development server with auto-reload for code changes.
 usedevelop = true
-commands = adev runserver --app-factory create_app src/ook/app.py
+whitelist_externals =
+    docker-compose
+setenv =
+    SAFIR_KAFKA_BROKER_URL=localhost:9092
+    SAFIR_SCHEMA_REGISTRY_URL=http://localhost:8081
+passenv =
+    ALGOLIA_APP_ID
+    ALGOLIA_API_KEY
+    ALGOLIA_DOCUMENT_INDEX
+commands =
+    docker-compose up -d
+    holdup -t 60 -T 5 -i 1 -n --insecure http://localhost:8081/subjects
+    adev runserver -p 8100 --app-factory create_app src/ook/app.py
+    docker-compose down
 """
 
 [tool.coverage.run]
