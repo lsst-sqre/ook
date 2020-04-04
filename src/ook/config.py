@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from pydantic import AnyHttpUrl, BaseSettings, Field, validator
+from pydantic import AnyHttpUrl, BaseSettings, Field, SecretStr, validator
 
 __all__ = ["Configuration"]
 
@@ -202,7 +202,7 @@ class Configuration(BaseSettings):
         None, env="ALGOLIA_APP_ID", description="The Algolia app ID"
     )
 
-    algolia_api_key: Optional[str] = Field(
+    algolia_api_key: Optional[SecretStr] = Field(
         None, env="ALGOLIA_API_KEY", description="The Algolia API key"
     )
 

@@ -74,7 +74,9 @@ async def init_algolia_client(app: web.Application) -> AsyncGenerator:
     api_key = app["safir/config"].algolia_api_key
 
     if app_id is not None and api_key is not None:
-        async with SearchClient.create(app_id, api_key) as client:
+        async with SearchClient.create(
+            app_id, api_key.get_secret_value()
+        ) as client:
             app["ook/algolia_search"] = client
             yield
     else:
