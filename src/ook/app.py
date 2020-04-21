@@ -4,6 +4,7 @@ __all__ = ["create_app"]
 
 from typing import Any, AsyncGenerator
 
+import aiojobs
 from aiohttp import web
 from algoliasearch.search_client import SearchClient
 from safir.events import (
@@ -36,6 +37,7 @@ def create_app(**configs: Any) -> web.Application:
     setup_middleware(root_app)
     root_app.add_routes(init_internal_routes())
     root_app.cleanup_ctx.append(init_http_session)
+    root_app.cleanup_ctx.append(init_job_scheduler)
     root_app.cleanup_ctx.append(configure_kafka_ssl)
     root_app.cleanup_ctx.append(init_recordname_schema_manager)
     root_app.cleanup_ctx.append(init_kafka_producer)
@@ -82,3 +84,15 @@ async def init_algolia_client(app: web.Application) -> AsyncGenerator:
     else:
         app["ook/algolia_search"] = None
         yield
+
+
+async def init_job_scheduler(app: web.Application) -> AsyncGenerator:
+    """Initialize an aiojobs scheduler for use with HTTP handers.
+
+    The scheduler for Kafka processing is currently separate.
+    """
+    scheduler = await aiojobs.create_scheduler()
+    app["ook/scheduler"] = scheduler
+    yield
+
+    await scheduler.close()
