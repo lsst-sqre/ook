@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import TYPE_CHECKING, Any, Dict
 from urllib.parse import urlparse
 
 import yaml
+from algoliasearch.responses import MultipleResponse
 
 from ook.ingest.algolia.records import LtdSphinxTechnoteSectionRecord
 from ook.ingest.reducers.ltdsphinxtechnote import ReducedLtdSphinxTechnote
@@ -101,9 +103,13 @@ async def ingest_ltd_sphinx_technote(
             app["safir/config"].algolia_document_index_name
         )
 
-        record_objects = [r.data for r in records]
-        response = await index.save_objects_async(record_objects)
-        logger.info("Finished uploading to Algolia", response=response)
+        tasks = [index.save_object_async(record.data) for record in records]
+        results = await asyncio.gather(*tasks)
+        multi_response = MultipleResponse(results).wait()
+
+        logger.info(
+            "Finished uploading to Algolia", responses=multi_response.responses
+        )
 
 
 async def get_html_content(
