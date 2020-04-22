@@ -61,6 +61,7 @@ class LtdSphinxTechnoteSectionRecord:
             "content": self.section.content,
             "importance": self.section.header_level,
             "contentType": "document",
+            "description": self.technote.description,
             "handle": self.technote.handle,
             "number": self.technote.number,
             "series": self.technote.series,

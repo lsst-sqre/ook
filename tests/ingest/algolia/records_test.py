@@ -58,3 +58,8 @@ def test_sqr035_record() -> None:
     assert data["sourceUpdateTime"] == "2019-10-29T00:00:00Z"
     assert isinstance(data["recordUpdateTime"], str)
     assert data["githubRepoUrl"] == "https://github.com/lsst-sqre/sqr-035"
+    assert data["description"] == (
+        "Configuration management and deployment infrastructure for "
+        "Kubernetes-based services for the LSST Science Platform and SQuaRE "
+        "Services. "
+    )
