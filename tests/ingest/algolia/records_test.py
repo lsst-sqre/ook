@@ -37,7 +37,6 @@ def test_sqr035_record() -> None:
         "choices for implementation."
     )
     assert data["importance"] == 2
-    assert data["contentType"] == "document"
     assert data["series"] == "SQR"
     assert data["number"] == "035"
     assert data["handle"] == "SQR-035"
@@ -63,3 +62,6 @@ def test_sqr035_record() -> None:
         "Kubernetes-based services for the LSST Science Platform and SQuaRE "
         "Services. "
     )
+    assert data["contentCategories.lvl0"] == "Documents"
+    assert data["contentCategories.lvl1"] == "Documents > SQR"
+    assert data["contentType"] == "ltd_sphinx_technote"

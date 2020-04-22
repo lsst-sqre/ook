@@ -60,7 +60,11 @@ class LtdSphinxTechnoteSectionRecord:
             "baseUrl": self.technote.url,
             "content": self.section.content,
             "importance": self.section.header_level,
-            "contentType": "document",
+            "contentCategories.lvl0": "Documents",
+            "contentCategories.lvl1": (
+                f"Documents > {self.technote.series.upper()}"
+            ),
+            "contentType": self.technote.content_type.value,
             "description": self.technote.description,
             "handle": self.technote.handle,
             "number": self.technote.number,

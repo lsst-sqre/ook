@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import dateparser
 import lxml.html
 
+from ook.classification import ContentType
 from ook.ingest.reducers.sphinxutils import (
     SphinxSection,
     clean_title_text,
@@ -41,6 +42,7 @@ class ReducedLtdSphinxTechnote:
         self._html_source = html_source
         self.url = url
         self._metadata = metadata
+        self.content_type = ContentType.LTD_SPHINX_TECHNOTE
 
         self._sections: List[SphinxSection] = []
 
