@@ -274,3 +274,9 @@ async def route_ingest_message(
                 app=app, logger=logger, url_ingest_message=message
             )
         )
+    else:
+        logger.info(
+            "Ignoring ingest request for unsupported content type",
+            content_url=message["url"],
+            content_type=message["content_type"],
+        )

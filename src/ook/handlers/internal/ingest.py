@@ -161,15 +161,22 @@ async def _queue_list_ltd_product_ingest(
     ingest in the ook.ingest Kafka topic.
     """
     for product_slug in product_slugs:
-        await _queue_single_ltd_product_ingest(
-            session=session,
-            logger=logger,
-            config=config,
-            producer=producer,
-            schema_manager=schema_manager,
-            product_slug=product_slug,
-            edition_slug=edition_slug,
-        )
+        try:
+            await _queue_single_ltd_product_ingest(
+                session=session,
+                logger=logger,
+                config=config,
+                producer=producer,
+                schema_manager=schema_manager,
+                product_slug=product_slug,
+                edition_slug=edition_slug,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to queue LTD product ingest",
+                product_slug=product_slug,
+                edition_slug=edition_slug,
+            )
 
 
 async def _queue_single_ltd_product_ingest(

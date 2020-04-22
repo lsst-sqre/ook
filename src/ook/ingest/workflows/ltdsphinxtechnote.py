@@ -38,7 +38,12 @@ async def ingest_ltd_sphinx_technote(
     message : `dict`
         The deserialized value of the Kafka message.
     """
+    logger = logger.bind(
+        content_url=url_ingest_message["url"],
+        content_type=url_ingest_message["content_type"],
+    )
     logger.info("Starting LTD_SPHINX_TECHNOTE ingest")
+
     http_session = app["safir/http_session"]
 
     html_content = await get_html_content(
@@ -62,54 +67,77 @@ async def ingest_ltd_sphinx_technote(
     except Exception:
         git_ref = "master"
 
-    metadata = await get_metadata(
-        repo_url=product_data["doc_repo"],
-        git_ref=git_ref,
-        http_session=http_session,
-        logger=logger,
-    )
+    try:
+        metadata = await get_metadata(
+            repo_url=product_data["doc_repo"],
+            git_ref=git_ref,
+            http_session=http_session,
+            logger=logger,
+        )
+    except Exception:
+        logger.exception("Failed to download metadata.yaml")
+        raise
 
-    reduced_technote = ReducedLtdSphinxTechnote(
-        html_source=html_content,
-        url=url_ingest_message["url"],
-        metadata=metadata,
-    )
+    try:
+        reduced_technote = ReducedLtdSphinxTechnote(
+            html_source=html_content,
+            url=url_ingest_message["url"],
+            metadata=metadata,
+        )
+    except Exception:
+        logger.exception("Failure making ReducedLtdSphinxTechnote")
+        raise
+
     surrogate_key = uuid.uuid4().hex
-    records = [
-        LtdSphinxTechnoteSectionRecord(
-            section=s, technote=reduced_technote, surrogate_key=surrogate_key
-        )
-        for s in reduced_technote.sections
-    ]
 
-    description_section = SphinxSection(
-        url=reduced_technote.url,
-        headers=[reduced_technote.h1],
-        content=reduced_technote.description,
-    )
-    records.append(
-        LtdSphinxTechnoteSectionRecord(
-            section=description_section,
-            technote=reduced_technote,
-            surrogate_key=surrogate_key,
+    try:
+        records = [
+            LtdSphinxTechnoteSectionRecord(
+                section=s,
+                technote=reduced_technote,
+                surrogate_key=surrogate_key,
+            )
+            for s in reduced_technote.sections
+        ]
+
+        description_section = SphinxSection(
+            url=reduced_technote.url,
+            headers=[reduced_technote.h1],
+            content=reduced_technote.description,
         )
-    )
+        records.append(
+            LtdSphinxTechnoteSectionRecord(
+                section=description_section,
+                technote=reduced_technote,
+                surrogate_key=surrogate_key,
+            )
+        )
+    except Exception:
+        logger.exception(
+            "Failed to build LtdSphinxTechnoteSectionRecord records"
+        )
+        raise
 
     logger.info("Finished building records")
 
     if app["ook/algolia_search"] is not None:
-        client = app["ook/algolia_search"]
-        index = client.init_index(
-            app["safir/config"].algolia_document_index_name
-        )
+        try:
+            client = app["ook/algolia_search"]
+            index = client.init_index(
+                app["safir/config"].algolia_document_index_name
+            )
+        except Exception:
+            logger.exception(
+                "Error initializing Algolia index",
+                index_name=app["safir/config"].algolia_document_index_name,
+            )
+            raise
 
         tasks = [index.save_object_async(record.data) for record in records]
         results = await asyncio.gather(*tasks)
-        multi_response = MultipleResponse(results).wait()
+        MultipleResponse(results).wait()
 
-        logger.info(
-            "Finished uploading to Algolia", responses=multi_response.responses
-        )
+        logger.info("Finished uploading to Algolia")
 
 
 async def get_html_content(
@@ -157,7 +185,7 @@ async def get_metadata(
     response = await http_session.get(raw_url)
     if response.status != 200:
         raise RuntimeError(
-            f"Could not download {raw_url}." f"Got status {response.status}."
+            f"Could not download {raw_url}. Got status {response.status}."
         )
     metadata_text = await response.text()
 
