@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Generator, List, Optional
+from typing import Callable, Generator, List, Optional
 
-if TYPE_CHECKING:
-    import lxml.html
+import lxml.html
 
 __all__ = [
     "get_section_title",
@@ -156,6 +155,8 @@ def iter_sphinx_sections(
                 header_callback=header_callback,
                 content_callback=content_callback,
             )
+        elif isinstance(element, lxml.html.HtmlComment):
+            continue
         else:
             if content_callback:
                 text_elements.append(content_callback(element.text_content()))

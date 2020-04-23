@@ -107,3 +107,25 @@ def test_sqr035_reduction() -> None:
         reduced_technote.h1,
         "3   Deployment add-ons",
     ]
+
+
+def test_dmtn021_reduction() -> None:
+    """Test ReducedLtdSphinxTechnote using DMTN-021 as a test dataset.
+
+    This document contained an HtmlComment element that was tripping up
+    iter_sphinx_sections. This test proves that we've handled it.
+    """
+    data_root = (
+        Path(__file__).parent.parent.parent / "data" / "content" / "dmtn-021"
+    )
+    html_source = (data_root / "index.html").read_text()
+    metadata = yaml.safe_load((data_root / "metadata.yaml").read_text())
+    url = "https://dmtn-021.lsst.io/"
+
+    reduced_technote = ReducedLtdSphinxTechnote(
+        html_source=html_source, url=url, metadata=metadata
+    )
+
+    assert reduced_technote.h1 == (
+        "Implementation of Image Difference Decorrelation"
+    )
