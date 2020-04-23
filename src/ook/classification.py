@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import enum
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict
+from urllib.parse import urlparse
+
+import yaml
+from structlog import get_logger
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
+    from structlog._config import BoundLoggerLazyProxy
 
 __all__ = [
     "DOC_SLUG_PATTERN",
@@ -70,10 +75,12 @@ async def classify_ltd_site(
             http_session=http_session, published_url=published_url
         ):
             return ContentType.LTD_LANDER_JSONLD
-        else:
-            # NOTE this is slighly presumptive. If there are other types of
-            # document we'll need to add more tests here.
+        elif await has_metadata_yaml(
+            http_session=http_session, product_slug=product_slug
+        ):
             return ContentType.LTD_SPHINX_TECHNOTE
+        else:
+            return ContentType.LTD_GENERIC
     else:
         return ContentType.LTD_GENERIC
 
@@ -129,3 +136,77 @@ async def has_jsonld_metadata(
         return True
     else:
         return False
+
+
+async def has_metadata_yaml(
+    *, http_session: ClientSession, product_slug: str
+) -> bool:
+    """Test if an LSST the Docs site has a ``metadata.yaml`` file in its Git
+    repository, indicating its a Sphinx-based technote.
+    """
+    response = await http_session.get(
+        f"https://keeper.lsst.codes/products/{product_slug}"
+    )
+    product_data = await response.json()
+
+    try:
+        await _get_metadata_yaml(
+            repo_url=product_data["doc_repo"],
+            git_ref="master",
+            http_session=http_session,
+            logger=get_logger(__name__),
+        )
+    except RuntimeError:
+        return False
+
+    return True
+
+
+async def _get_metadata_yaml(
+    *,
+    repo_url: str,
+    git_ref: str,
+    http_session: ClientSession,
+    logger: BoundLoggerLazyProxy,
+) -> Dict[str, Any]:
+    # Note this is copied from ook.ingest.workflows.ltdsphinxtechnote.
+    # We'll want to refactor this code to avoid circular dependencies.
+    if repo_url.endswith("/"):
+        repo_url = repo_url.rstrip("/")
+    if repo_url.endswith(".git"):
+        repo_url = repo_url[: -len(".git")]
+
+    repo_url_parts = urlparse(repo_url)
+    repo_path = repo_url_parts[2]
+
+    raw_url = _make_raw_github_url(
+        repo_path=repo_path, git_ref=git_ref, file_path="metadata.yaml"
+    )
+
+    response = await http_session.get(raw_url)
+    if response.status != 200:
+        raise RuntimeError(
+            f"Could not download {raw_url}. Got status {response.status}."
+        )
+    metadata_text = await response.text()
+
+    metadata = yaml.safe_load(metadata_text)
+
+    return metadata
+
+
+def _make_raw_github_url(
+    *, repo_path: str, git_ref: str, file_path: str
+) -> str:
+    # Note this is copied from ook.ingest.workflows.ltdsphinxtechnote.
+    # We'll want to refactor this code to avoid circular dependencies.
+    if file_path.startswith("/"):
+        file_path = file_path.lstrip("/")
+    if repo_path.startswith("/"):
+        repo_path = repo_path.lstrip("/")
+    if repo_path.endswith("/"):
+        repo_path = repo_path.rstrip("/")
+
+    return (
+        f"https://raw.githubusercontent.com/{repo_path}/{git_ref}/{file_path}"
+    )
