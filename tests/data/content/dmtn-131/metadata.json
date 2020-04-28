@@ -1,0 +1,27 @@
+{
+  "name": "When clouds might be good for LSST\n",
+  "@context": [
+    "https://raw.githubusercontent.com/codemeta/codemeta/2.0-rc/codemeta.jsonld",
+    "http://schema.org"
+  ],
+  "@id": "https://dmtn-131.lsst.io",
+  "@type": [
+    "Report",
+    "SoftwareSourceCode"
+  ],
+  "articleBody": "\n\nINTRODUCTION\n\n\nThe Large Synoptic Survey Telescope () will usher in a new era of data-intensive astronomy. The observing program will observe the southern sky repeatedly over 10 years in 6 bands providing an unprecedented census of the astrophysical bodies in the universe. Funded by the and the , this keystone observatory is due to go into operations in October 2022.\n\nProducing 20TB of data a night, this is a huge step up in data acquisition from other optical telescopes. At its conception this was considered an ominous data volume requiring highly specialized computing infrastructure. In the intervening time, however, the growth of planetary-scale industry services (such us Goggle or Facebook) has resulted in software, engineering techniques and infrastructure that render this sort of data flow routine. operations are expected to cost tens of millions a year with order of $10M computing budget.\n\nThe computing load is a poster child for cloud computing - the science platform is designed for kubernetes and the data release processing fits perfectly with opportunistic compute pricing. This is a large project and the the one most suited and ready for cloud deployment. We have used some pathfinder deployments to demonstrate that it is feasible to use commercial cloud providers for the production system. Such a move would bring significant technological and operational advantages; the barrier to acting on this is price and uncertainty on future pricing.\n\nA solution might be to reach a fixed price partnership for a cloud-based deployment of the systems in which Google undertake to provide _do what is needed_ for success at some reasonable and agreed-upon annual fee.\n\n\n\nSTUDIES TO DATE\n\n\nWe have demonstrated some of the major components of work well on Google .\n\nWe deployed on Google with reasonable performance. We demonstrated Data transfer could adequate for , within the limits of the available network. The Prompt Product Database was stood up and tested. The was deployed and users simulated. The later of course is designed around kubernetes and made for Google Cloud.\n\nA detailed report may be found in .\n\nWe have not considered bulk transfer of data to other partners - Google may be much better placed to do this than any computing centre.\n\n\n\nLSST COMPUTE AND STORAGE NEEDS\n\n\nThe greatest cost driver is storage - we accumulate about 50PB a year of data. All of this needs to be processed annually. Hence in year 10 we need to access about half an Exabyte of data. Not all of this will be regularly accessed, it is likely few of the raw images will be reprocessed by individual astronomers.\n\nTable\u00a0[tab:Inputs] gives a rough overview of compute and storage needs.\n\n |p0.22 |r |r |r |r |r |\n\nYEAR&2019&2020&2021&2022&2023\n&1.00E+19&9.48261E+19&1.00E+19&4.74131E+20&5.91525E+20\n&252.0&252.0&252.0&252.0&252.0\n&21772800.0&21772800.0&21772800.0&21772800.0&21772800.0\n&4.59E+02&4355.255691&4.59E+02&21776.27846&27168.07327\n&4.59E+02&30025.25569&2.61E+04&21776.27846&27168.07327\n&5000&10000&20000&50000&100000\n&15000&30000&60000&150000&300000\n&GFLOP&&&&\n&426717500000&&97381399021&&\n&959090000000&&&&\n&25670&&&&\n&177219625000&&&&\nTOTAL YR1 (INC DAC)&474130555556&&&&\n\n\n\nCOST\n\n\nCurrently the cloud computing cost models do not align well with federal research computing plans. We believe this gap will narrow or disappear in five years or so, however in the meantime LSST and Google may miss an opportunity to move a major research project on to commodity cloud computing.\n\nUsing the information from the Google study where we ran some of our real processes, we have come to a price for running the and storing data on Google. For 15PB of storage and a modest K8S cluster to host the platform the projected 2022 cost is around $3M of which more than $\\frac{2}{3}$ are storage costs.\n\nThough a good price this is not a sustainable price for , we can construct petascale storage we would own and use for 5 years for under $200K a petabyte (the implied _annual_ price at google). We require about 50 Petabytes a year for 10 years. The out year costs look prohibitive on the cloud.\n\nThe cost of compute is probably not an issue in comparison - we can use spot/interuptable instance pricing for .\n\n\n\nCONCLUSION\n\n\nLSST has been constructing a cloud ready system for many years. We believe commercial cloud is the correct approach but we may be a few years ahead of commercial and federal cost models aligning. We hope that we may be able to partner with google to usher in a new ear of federally funded research in the cloud.\n\n\u00a0\n\n[sec:bib]\n",
+  "author": [
+    {
+      "name": "William O\u2019Mullane",
+      "@type": "Person"
+    }
+  ],
+  "codeRepository": "https://github.com/lsst-dm/dmtn-131",
+  "contIntegration": "https://travis-ci.org/lsst-dm/dmtn-131",
+  "dateModified": "2019-10-04T05:40:39Z",
+  "description": "In this short note we would like to consider potential annual operating costs for LSST as well as discuss long term archiving. The goal would be to see if we can come to an agreement with a major cloud provider.\n",
+  "fileFormat": "text/plain",
+  "language": "TeX",
+  "reportNumber": "DMTN-131",
+  "url": "https://dmtn-131.lsst.io"
+}
