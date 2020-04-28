@@ -14,6 +14,7 @@ from ook.ingest.reducers.sphinxutils import (
     clean_title_text,
     iter_sphinx_sections,
 )
+from ook.ingest.reducers.utils import normalize_root_url
 
 __all__ = ["ReducedLtdSphinxTechnote"]
 
@@ -56,12 +57,7 @@ class ReducedLtdSphinxTechnote:
 
     @url.setter
     def url(self, value: str) -> None:
-        clip_string = "index.html"
-        if value.endswith(clip_string):
-            value = value[: -len(clip_string)]
-        if not value.endswith("/"):
-            value = f"{value}/"
-        self._url = value
+        self._url = normalize_root_url(value)
 
     @property
     def html_source(self) -> str:
