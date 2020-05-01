@@ -13,6 +13,7 @@ from algoliasearch.responses import MultipleResponse
 from ook.ingest.algolia.records import LtdSphinxTechnoteSectionRecord
 from ook.ingest.reducers.ltdsphinxtechnote import ReducedLtdSphinxTechnote
 from ook.ingest.reducers.sphinxutils import SphinxSection
+from ook.utils import get_html_content, get_json_data, make_raw_github_url
 
 if TYPE_CHECKING:
     from aiohttp import web, ClientSession
@@ -140,29 +141,6 @@ async def ingest_ltd_sphinx_technote(
         logger.info("Finished uploading to Algolia")
 
 
-async def get_html_content(
-    *, url: str, http_session: ClientSession, logger: BoundLoggerLazyProxy
-) -> str:
-    html_content_response = await http_session.get(url)
-    if html_content_response.status != 200:
-        raise RuntimeError(
-            f"Could not download {url}."
-            f"Got status {html_content_response.status}."
-        )
-    return await html_content_response.text()
-
-
-async def get_json_data(
-    *, url: str, http_session: ClientSession, logger: BoundLoggerLazyProxy
-) -> Dict[str, Any]:
-    response = await http_session.get(url)
-    if response.status != 200:
-        raise RuntimeError(
-            f"Could not download {url}." f"Got status {response.status}."
-        )
-    return await response.json()
-
-
 async def get_metadata(
     *,
     repo_url: str,
@@ -192,18 +170,3 @@ async def get_metadata(
     metadata = yaml.safe_load(metadata_text)
 
     return metadata
-
-
-def make_raw_github_url(
-    *, repo_path: str, git_ref: str, file_path: str
-) -> str:
-    if file_path.startswith("/"):
-        file_path = file_path.lstrip("/")
-    if repo_path.startswith("/"):
-        repo_path = repo_path.lstrip("/")
-    if repo_path.endswith("/"):
-        repo_path = repo_path.rstrip("/")
-
-    return (
-        f"https://raw.githubusercontent.com/{repo_path}/{git_ref}/{file_path}"
-    )

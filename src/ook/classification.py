@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 import yaml
 from structlog import get_logger
 
+from ook.utils import make_raw_github_url
+
 if TYPE_CHECKING:
     from aiohttp import ClientSession
     from structlog._config import BoundLoggerLazyProxy
@@ -179,7 +181,7 @@ async def _get_metadata_yaml(
     repo_url_parts = urlparse(repo_url)
     repo_path = repo_url_parts[2]
 
-    raw_url = _make_raw_github_url(
+    raw_url = make_raw_github_url(
         repo_path=repo_path, git_ref=git_ref, file_path="metadata.yaml"
     )
 
@@ -193,20 +195,3 @@ async def _get_metadata_yaml(
     metadata = yaml.safe_load(metadata_text)
 
     return metadata
-
-
-def _make_raw_github_url(
-    *, repo_path: str, git_ref: str, file_path: str
-) -> str:
-    # Note this is copied from ook.ingest.workflows.ltdsphinxtechnote.
-    # We'll want to refactor this code to avoid circular dependencies.
-    if file_path.startswith("/"):
-        file_path = file_path.lstrip("/")
-    if repo_path.startswith("/"):
-        repo_path = repo_path.lstrip("/")
-    if repo_path.endswith("/"):
-        repo_path = repo_path.rstrip("/")
-
-    return (
-        f"https://raw.githubusercontent.com/{repo_path}/{git_ref}/{file_path}"
-    )
