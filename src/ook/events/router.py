@@ -14,6 +14,7 @@ from kafkit.registry.aiohttp import RegistryApi
 
 from ook.classification import ContentType
 from ook.events.editionupdated import process_edition_updated
+from ook.ingest.workflows.ltdlander import ingest_ltd_lander_jsonld_document
 from ook.ingest.workflows.ltdsphinxtechnote import ingest_ltd_sphinx_technote
 
 if TYPE_CHECKING:
@@ -271,6 +272,12 @@ async def route_ingest_message(
     if content_type == ContentType.LTD_SPHINX_TECHNOTE:
         await scheduler.spawn(
             ingest_ltd_sphinx_technote(
+                app=app, logger=logger, url_ingest_message=message
+            )
+        )
+    elif content_type == ContentType.LTD_LANDER_JSONLD:
+        await scheduler.spawn(
+            ingest_ltd_lander_jsonld_document(
                 app=app, logger=logger, url_ingest_message=message
             )
         )
