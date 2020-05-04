@@ -3,79 +3,140 @@
 from __future__ import annotations
 
 import datetime
+import uuid
 from base64 import b64encode
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict
+from typing import List, Optional
 
-if TYPE_CHECKING:
-    from ook.ingest.reducers.ltdsphinxtechnote import ReducedLtdSphinxTechnote
-    from ook.ingest.reducers.sphinxutils import SphinxSection
+from pydantic import BaseModel, HttpUrl
 
-__all__ = ["LtdSphinxTechnoteSectionRecord"]
+__all__ = [
+    "DocumentRecord",
+    "generate_object_id",
+    "generate_surrogate_key",
+    "format_utc_datetime",
+]
 
 
-@dataclass
-class LtdSphinxTechnoteSectionRecord:
-    """An Algolia record for a section of a Sphinx-based technote.
+class DocumentRecord(BaseModel):
+    """Model for an Algolia record of a document."""
+
+    objectID: str
+    """The Algolia record object identifier."""
+
+    surrogateKey: str
+    """A key that groups records from the same URL together for a given
+    ingest so that old records can be dropped from the Algolia index.
     """
 
-    section: SphinxSection
-    """A section of content from the technote."""
+    sourceUpdateTime: str
+    """A timestamp for when the source was updated."""
 
-    technote: ReducedLtdSphinxTechnote
-    """The reduced technote."""
+    recordUpdateTime: str
+    """A timestamp for when this record was created."""
 
-    surrogate_key: str
-    """An unique identifier of an ingest for a given URL. Records with
-    different surrogate keys must be "old" and therefore can be purged.
+    url: HttpUrl
+    """The URL of the record."""
+
+    baseUrl: HttpUrl
+    """The base URL of the record (whereas ``url`` may refer to an anchor link.
     """
 
-    record_time: datetime.datetime = field(
-        default_factory=datetime.datetime.utcnow
-    )
-    """Datetime when this Algolia record was updated."""
+    content: str
+    """The full-text content of the record."""
 
-    @property
-    def object_id(self) -> str:
-        """The objectID of the record.
-        This is computed based on the URL and section heading hierarchy.
-        """
-        url_component = b64encode(
-            self.section.url.lower().encode("utf-8")
-        ).decode("utf-8")
-        heading_component = b64encode(
-            " ".join(self.section.headers).encode("utf-8")
-        ).decode("utf-8")
-        return f"{url_component}-{heading_component}"
+    importance: int = 1
+    """The importance of the record.
 
-    @property
-    def data(self) -> Dict[str, Any]:
-        """The JSON-encodable record, ready for indexing by Algolia."""
-        record = {
-            "objectID": self.object_id,
-            "surrogateKey": self.surrogate_key,
-            "sourceUpdateTime": format_utc_datetime(self.technote.timestamp),
-            "recordUpdateTime": format_utc_datetime(self.record_time),
-            "url": self.section.url,
-            "baseUrl": self.technote.url,
-            "content": self.section.content,
-            "importance": self.section.header_level,
-            "contentCategories.lvl0": "Documents",
-            "contentCategories.lvl1": (
-                f"Documents > {self.technote.series.upper()}"
-            ),
-            "contentType": self.technote.content_type.value,
-            "description": self.technote.description,
-            "handle": self.technote.handle,
-            "number": self.technote.number,
-            "series": self.technote.series,
-            "authorNames": self.technote.author_names,
+    Generally importance should be set by the header level: 1 for h1, 2 for h2,
+    and so on.
+    """
+
+    contentCategories_lvl0: str
+    """Content category."""
+
+    contentCategories_lvl1: Optional[str]
+    """Content sub-category (level 1)."""
+
+    contentType: str
+    """Content type (ook classification)."""
+
+    description: str
+    """Description of the URL or short summary for the ``baseUrl``."""
+
+    handle: str
+    """Document handle."""
+
+    number: str
+    """Serial number component of the document handle."""
+
+    series: str
+    """Series component of the document handle."""
+
+    authorNames: List[str]
+    """Names of authors."""
+
+    h1: str
+    """The H1 headline (title)."""
+
+    h2: Optional[str]
+    """The h2 headline."""
+
+    h3: Optional[str]
+    """The h3 headline."""
+
+    h4: Optional[str]
+    """The h4 headline."""
+
+    pIndex: Optional[int]
+    """The paragraph index corresponding to a section."""
+
+    githubRepoUrl: Optional[HttpUrl]
+    """URL of the source repository."""
+
+    class Config:
+
+        fields = {
+            "contentCategories_lvl0": "contentCategories.lvl0",
+            "contentCategories_lvl1": "contentCategories.lvl1",
         }
-        for i, header in enumerate(self.section.headers):
-            record[f"h{i+1}"] = header
-        if self.technote.github_url is not None:
-            record["githubRepoUrl"] = self.technote.github_url
-        return record
+        """Alias for fields that aren't allowable Python names."""
+
+        extra = "forbid"
+        """Disable attributes that aren't part of the schema."""
+
+
+def generate_object_id(
+    *,
+    url: str,
+    headers: Optional[List[str]],
+    paragraph_index: Optional[int] = None,
+) -> str:
+    """The objectID of the record.
+
+    This is computed based on the URL, section heading hierarchy, and
+    index paragraph.
+    """
+    # start with the URL component.
+    components = [b64encode(url.lower().encode("utf-8")).decode("utf-8")]
+
+    # Add heading components
+    if headers:
+        components.append(
+            b64encode(" ".join(headers).encode("utf-8")).decode("utf-8")
+        )
+
+    # Add paragraph index
+    if paragraph_index:
+        components.append(str(paragraph_index))
+
+    return "-".join(components)
+
+
+def generate_surrogate_key() -> str:
+    """Generate a surrogate key that applies to all records for a given
+    ingest epoch of a URL.
+    """
+    return uuid.uuid4().hex
 
 
 def format_utc_datetime(dt: datetime.datetime) -> str:

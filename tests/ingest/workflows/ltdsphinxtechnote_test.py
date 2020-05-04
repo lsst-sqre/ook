@@ -1,4 +1,4 @@
-"""Tests for the ook.ingest.algolia.records module."""
+"""Tests for ook.ingest.workflows.ltdsphinxtechnote."""
 
 from __future__ import annotations
 
@@ -6,12 +6,12 @@ from pathlib import Path
 
 import yaml
 
-from ook.ingest.algolia.records import LtdSphinxTechnoteSectionRecord
 from ook.ingest.reducers.ltdsphinxtechnote import ReducedLtdSphinxTechnote
+from ook.ingest.workflows.ltdsphinxtechnote import create_record
 
 
 def test_sqr035_record() -> None:
-    """Test the LtdSphinxTechnoteSectionRecord for the SQR-035 dataset."""
+    """Test creating an Algolia document record with the SQR-035 dataset."""
     sqr035data = (
         Path(__file__).parent.parent.parent / "data" / "content" / "sqr-035"
     )
@@ -24,10 +24,10 @@ def test_sqr035_record() -> None:
     )
     section = reduced_technote.sections[0]
 
-    record = LtdSphinxTechnoteSectionRecord(
+    data = create_record(
         section=section, technote=reduced_technote, surrogate_key="test-key"
     )
-    data = record.data
+
     assert data["url"] == "https://sqr-035.lsst.io/#context"
     assert data["baseUrl"] == "https://sqr-035.lsst.io/"
     assert data["content"].startswith(

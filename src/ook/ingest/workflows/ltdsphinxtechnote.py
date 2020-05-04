@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
+import datetime
 from typing import TYPE_CHECKING, Any, Dict
 from urllib.parse import urlparse
 
 import yaml
 from algoliasearch.responses import MultipleResponse
 
-from ook.ingest.algolia.records import LtdSphinxTechnoteSectionRecord
+from ook.ingest.algolia.records import (
+    DocumentRecord,
+    format_utc_datetime,
+    generate_object_id,
+    generate_surrogate_key,
+)
 from ook.ingest.reducers.ltdsphinxtechnote import ReducedLtdSphinxTechnote
 from ook.ingest.reducers.sphinxutils import SphinxSection
 from ook.utils import get_html_content, get_json_data, make_raw_github_url
@@ -89,11 +94,11 @@ async def ingest_ltd_sphinx_technote(
         logger.exception("Failure making ReducedLtdSphinxTechnote")
         raise
 
-    surrogate_key = uuid.uuid4().hex
+    surrogate_key = generate_surrogate_key()
 
     try:
         records = [
-            LtdSphinxTechnoteSectionRecord(
+            create_record(
                 section=s,
                 technote=reduced_technote,
                 surrogate_key=surrogate_key,
@@ -107,7 +112,7 @@ async def ingest_ltd_sphinx_technote(
             content=reduced_technote.description,
         )
         records.append(
-            LtdSphinxTechnoteSectionRecord(
+            create_record(
                 section=description_section,
                 technote=reduced_technote,
                 surrogate_key=surrogate_key,
@@ -134,7 +139,7 @@ async def ingest_ltd_sphinx_technote(
             )
             raise
 
-        tasks = [index.save_object_async(record.data) for record in records]
+        tasks = [index.save_object_async(record) for record in records]
         results = await asyncio.gather(*tasks)
         MultipleResponse(results).wait()
 
@@ -170,3 +175,42 @@ async def get_metadata(
     metadata = yaml.safe_load(metadata_text)
 
     return metadata
+
+
+def create_record(
+    *,
+    section: SphinxSection,
+    technote: ReducedLtdSphinxTechnote,
+    surrogate_key: str,
+    validate: bool = True,
+) -> Dict[str, Any]:
+    """Create a JSON-serializable record for the Algolia index.
+    """
+    object_id = generate_object_id(url=section.url, headers=section.headers)
+    record = {
+        "objectID": object_id,
+        "surrogateKey": surrogate_key,
+        "sourceUpdateTime": format_utc_datetime(technote.timestamp),
+        "recordUpdateTime": format_utc_datetime(datetime.datetime.utcnow()),
+        "url": section.url,
+        "baseUrl": technote.url,
+        "content": section.content,
+        "importance": section.header_level,
+        "contentCategories.lvl0": "Documents",
+        "contentCategories.lvl1": (f"Documents > {technote.series.upper()}"),
+        "contentType": technote.content_type.value,
+        "description": technote.description,
+        "handle": technote.handle,
+        "number": technote.number,
+        "series": technote.series,
+        "authorNames": technote.author_names,
+    }
+    for i, header in enumerate(section.headers):
+        record[f"h{i+1}"] = header
+    if technote.github_url is not None:
+        record["githubRepoUrl"] = technote.github_url
+
+    if validate:
+        DocumentRecord.parse_obj(record)
+
+    return record
