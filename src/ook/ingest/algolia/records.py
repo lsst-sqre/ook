@@ -34,7 +34,10 @@ class DocumentRecord(BaseModel):
     recordUpdateTime: str
     """A timestamp for when this record was created."""
 
-    url: HttpUrl
+    # str, not HttpUrl because of
+    # https://sqr-027.lsst.io/#What-is-observability?
+    # Ideally we'd want to escape this properly
+    url: str
     """The URL of the record."""
 
     baseUrl: HttpUrl
