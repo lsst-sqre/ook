@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
@@ -26,7 +26,12 @@ async def get_html_content(
 
 
 async def get_json_data(
-    *, url: str, http_session: ClientSession, logger: BoundLoggerLazyProxy
+    *,
+    url: str,
+    http_session: ClientSession,
+    logger: BoundLoggerLazyProxy,
+    encoding: str = None,
+    content_type: Optional[str] = "application/json",
 ) -> Dict[str, Any]:
     """Get and parse JSON content from a URL.
     """
@@ -35,7 +40,7 @@ async def get_json_data(
         raise RuntimeError(
             f"Could not download {url}." f"Got status {response.status}."
         )
-    return await response.json()
+    return await response.json(encoding=encoding, content_type=content_type)
 
 
 def make_raw_github_url(

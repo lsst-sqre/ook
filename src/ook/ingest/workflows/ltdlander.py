@@ -64,7 +64,13 @@ async def ingest_ltd_lander_jsonld_document(
 
     try:
         metadata = await get_json_data(
-            url=jsonld_url, logger=logger, http_session=http_session
+            url=jsonld_url,
+            logger=logger,
+            http_session=http_session,
+            # by-pass aiohttp's encoding check; the jsonld files do not have
+            # correct CONTENT-TYPE headers.
+            encoding="utf-8",
+            content_type=None,
         )
     except Exception:
         logger.exception(
