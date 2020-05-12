@@ -129,7 +129,7 @@ class ReducedLtdLanderDocument:
 
         try:
             self._description: str = self._metadata["description"].strip()
-        except KeyError:
+        except (KeyError, AttributeError):
             self._description = ""
 
         if "articleBody" in self._metadata:
