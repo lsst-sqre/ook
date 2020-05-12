@@ -149,4 +149,7 @@ def format_utc_datetime(dt: datetime.datetime) -> str:
     """Format a `~datetime.datetime` in the standardized UTC `str`
     representation.
     """
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(tz=datetime.timezone.utc)
+        dt = dt.replace(tzinfo=None)
     return f"{dt.isoformat()}Z"
