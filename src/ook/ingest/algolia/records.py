@@ -87,6 +87,12 @@ class DocumentRecord(BaseModel):
     h4: Optional[str]
     """The h4 headline."""
 
+    h5: Optional[str]
+    """The h5 headline."""
+
+    h6: Optional[str]
+    """The h6 headline."""
+
     pIndex: Optional[int]
     """The paragraph index corresponding to a section."""
 
