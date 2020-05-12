@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 from typing import TYPE_CHECKING, Any, Dict
+
+from algoliasearch.responses import MultipleResponse
 
 from ook.ingest.algolia.records import (
     DocumentRecord,
@@ -114,6 +117,25 @@ async def ingest_ltd_lander_jsonld_document(
         raise
 
     logger.info("Finished building records")
+
+    if app["ook/algolia_search"] is not None:
+        try:
+            client = app["ook/algolia_search"]
+            index = client.init_index(
+                app["safir/config"].algolia_document_index_name
+            )
+        except Exception:
+            logger.exception(
+                "Error initializing Algolia index",
+                index_name=app["safir/config"].algolia_document_index_name,
+            )
+            raise
+
+        tasks = [index.save_object_async(record) for record in records]
+        results = await asyncio.gather(*tasks)
+        MultipleResponse(results).wait()
+
+        logger.info("Finished uploading to Algolia")
 
 
 def create_record(
