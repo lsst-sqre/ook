@@ -12,7 +12,10 @@ from aiokafka import AIOKafkaConsumer
 from kafkit.registry import Deserializer
 from kafkit.registry.aiohttp import RegistryApi
 
+from ook.classification import ContentType
 from ook.events.editionupdated import process_edition_updated
+from ook.ingest.workflows.ltdlander import ingest_ltd_lander_jsonld_document
+from ook.ingest.workflows.ltdsphinxtechnote import ingest_ltd_sphinx_technote
 
 if TYPE_CHECKING:
     from structlog._config import BoundLoggerLazyProxy
@@ -108,7 +111,17 @@ async def consume_events(app: web.Application) -> None:
 
 def get_configured_topics(app: web.Application) -> List[str]:
     """Get the list of topic names that this app is configured to consume."""
-    return [app["safir/config"].ltd_events_kafka_topic]
+    topic_names: List[str] = []
+
+    config = app["safir/config"]
+
+    if config.enable_ltd_events_kafka_topic:
+        topic_names.append(config.ltd_events_kafka_topic)
+
+    if config.enable_ingest_kafka_topic:
+        topic_names.append(config.ingest_kafka_topic)
+
+    return topic_names
 
 
 async def route_message(
@@ -160,6 +173,22 @@ async def route_message(
             partition=partition,
             offset=offset,
         )
+    elif topic == app["safir/config"].ingest_kafka_topic:
+        await route_ingest_message(
+            app=app,
+            scheduler=scheduler,
+            logger=logger,
+            message=message,
+            schema_id=schema_id,
+            schema=schema,
+            topic=topic,
+            partition=partition,
+            offset=offset,
+        )
+    else:
+        logger.warning(
+            "Got a Kafka message but there is not handler for that topic"
+        )
 
 
 async def route_ltd_events_message(
@@ -204,3 +233,57 @@ async def route_ltd_events_message(
                     app=app, logger=logger, message=message
                 )
             )
+
+
+async def route_ingest_message(
+    *,
+    app: web.Application,
+    scheduler: aiojobs.Scheduler,
+    logger: BoundLoggerLazyProxy,
+    message: Dict[str, Any],
+    schema_id: int,
+    schema: Dict[str, Any],
+    topic: str,
+    partition: int,
+    offset: int,
+) -> None:
+    """Route a message known to be from the ook.ingest topic.
+
+    Parameters
+    ----------
+    app : `aiohttp.web.Application`
+        The app.
+    scheduler : `aiojobs.Scheduler`
+        The aiojobs scheduler for jobs that handle the Kafka events.
+    logger
+        A structlog logger that is bound with context about the Kafka message.
+    message : `dict`
+        The deserialized value of the Kafka message.
+    schema_id : `int`
+        The Schema Registry ID of the Avro schema used to serialie the message.
+    topic : `str`
+        The name of the Kafka topic that the message was consumed from.
+    partition : `int`
+        The partition of the Kafka topic that the message was consumed form.
+    offset : `int`
+        The offset of the Kafka message.
+    """
+    content_type = ContentType[message["content_type"]]
+    if content_type == ContentType.LTD_SPHINX_TECHNOTE:
+        await scheduler.spawn(
+            ingest_ltd_sphinx_technote(
+                app=app, logger=logger, url_ingest_message=message
+            )
+        )
+    elif content_type == ContentType.LTD_LANDER_JSONLD:
+        await scheduler.spawn(
+            ingest_ltd_lander_jsonld_document(
+                app=app, logger=logger, url_ingest_message=message
+            )
+        )
+    else:
+        logger.info(
+            "Ignoring ingest request for unsupported content type",
+            content_url=message["url"],
+            content_type=message["content_type"],
+        )

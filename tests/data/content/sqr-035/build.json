@@ -1,0 +1,16 @@
+{
+  "bucket_name": "lsst-the-docs",
+  "bucket_root_dir": "sqr-035/builds/8",
+  "date_created": "2019-12-12T03:23:22Z",
+  "date_ended": null,
+  "git_refs": [
+    "master"
+  ],
+  "github_requester": null,
+  "product_url": "https://keeper.lsst.codes/products/sqr-035",
+  "published_url": "https://sqr-035.lsst.io/builds/8",
+  "self_url": "https://keeper.lsst.codes/builds/11446",
+  "slug": "8",
+  "surrogate_key": "a1669b5d49864df084b983a9698ce27f",
+  "uploaded": true
+}

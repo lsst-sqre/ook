@@ -1,0 +1,17 @@
+{
+  "build_url": "https://keeper.lsst.codes/builds/11446",
+  "date_created": "2019-10-29T14:39:55Z",
+  "date_ended": null,
+  "date_rebuilt": "2019-12-12T03:23:39Z",
+  "mode": "git_refs",
+  "pending_rebuild": false,
+  "product_url": "https://keeper.lsst.codes/products/sqr-035",
+  "published_url": "https://sqr-035.lsst.io",
+  "self_url": "https://keeper.lsst.codes/editions/3562",
+  "slug": "main",
+  "surrogate_key": "8a7622eee6a54bb8b8c120fa76c1ccb6",
+  "title": "Latest",
+  "tracked_refs": [
+    "master"
+  ]
+}

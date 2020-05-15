@@ -23,6 +23,8 @@ from ook.classification import (
             "https://sqr-000.lsst.io",
             ContentType.LTD_SPHINX_TECHNOTE,
         ),
+        # Generic because it doesn't have a JSON-LD metadata file (currently)
+        ("dmtn-097", "https://dmtn-097.lsst.io", ContentType.LTD_GENERIC),
         ("pipelines", "https://pipelines.lsst.io", ContentType.LTD_GENERIC),
     ],
 )

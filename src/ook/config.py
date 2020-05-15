@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from pydantic import AnyHttpUrl, BaseSettings, Field, validator
+from pydantic import AnyHttpUrl, BaseSettings, Field, SecretStr, validator
 
 __all__ = ["Configuration"]
 
@@ -157,11 +157,27 @@ class Configuration(BaseSettings):
         ),
     )
 
+    enable_ltd_events_kafka_topic: bool = Field(
+        True,
+        env="ENABLE_LTD_EVENTS_KAFKA_TOPIC",
+        description=(
+            "Enable Kafka consumer for ltd_events_kafka_topic (ltd.events)."
+        ),
+    )
+
     ltd_events_kafka_topic: str = Field(
         "ltd.events",
         env="LTD_EVENTS_KAFKA_TOPIC",
         description=(
             "The name of the Kafka topic for messages produced by LTD Events."
+        ),
+    )
+
+    enable_ingest_kafka_topic: bool = Field(
+        True,
+        env="ENABLE_OOK_INGEST_KAFKA_TOPIC",
+        description=(
+            "Enable Kafka consumer for ingest_kafka_topic (ook.ingest)."
         ),
     )
 
@@ -180,6 +196,20 @@ class Configuration(BaseSettings):
 
     kafka_consumer_group_id: str = Field(
         "ook", env="OOK_GROUP_ID", description="Kafka consumer group ID."
+    )
+
+    algolia_app_id: Optional[str] = Field(
+        None, env="ALGOLIA_APP_ID", description="The Algolia app ID"
+    )
+
+    algolia_api_key: Optional[SecretStr] = Field(
+        None, env="ALGOLIA_API_KEY", description="The Algolia API key"
+    )
+
+    algolia_document_index_name: str = Field(
+        "document_dev",
+        env="ALGOLIA_DOCUMENT_INDEX",
+        description="Name of the Algolia document index",
     )
 
     @validator("kafka_cluster_ca_path")

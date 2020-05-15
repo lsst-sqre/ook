@@ -1,0 +1,13 @@
+{
+  "bucket_name": "lsst-the-docs",
+  "doc_repo": "https://github.com/lsst-dm/dmtn-021.git",
+  "domain": "dmtn-021.lsst.io",
+  "fastly_domain": "n.global-ssl.fastly.net",
+  "published_url": "https://dmtn-021.lsst.io",
+  "root_domain": "lsst.io",
+  "root_fastly_domain": "n.global-ssl.fastly.net",
+  "self_url": "https://keeper.lsst.codes/products/dmtn-021",
+  "slug": "dmtn-021",
+  "surrogate_key": "b20246eda02b44d39ffbe062ec65cc7e",
+  "title": "DMTN-021: Implementation of Image Difference Decorrelation"
+}

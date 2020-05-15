@@ -2,9 +2,11 @@
 
 __all__ = ["create_app"]
 
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
+import aiojobs
 from aiohttp import web
+from algoliasearch.search_client import SearchClient
 from safir.events import (
     configure_kafka_ssl,
     init_kafka_producer,
@@ -20,9 +22,9 @@ from ook.events.router import consume_events
 from ook.handlers import init_external_routes, init_internal_routes
 
 
-def create_app() -> web.Application:
+def create_app(**configs: Any) -> web.Application:
     """Create and configure the aiohttp.web application."""
-    config = Configuration()
+    config = Configuration(**configs)
     configure_logging(
         profile=config.profile,
         log_level=config.log_level,
@@ -35,10 +37,12 @@ def create_app() -> web.Application:
     setup_middleware(root_app)
     root_app.add_routes(init_internal_routes())
     root_app.cleanup_ctx.append(init_http_session)
+    root_app.cleanup_ctx.append(init_job_scheduler)
     root_app.cleanup_ctx.append(configure_kafka_ssl)
     root_app.cleanup_ctx.append(init_recordname_schema_manager)
     root_app.cleanup_ctx.append(init_kafka_producer)
     root_app.cleanup_ctx.append(init_kafka_consumer)
+    root_app.cleanup_ctx.append(init_algolia_client)
 
     sub_app = web.Application()
     setup_middleware(sub_app)
@@ -64,3 +68,31 @@ async def init_kafka_consumer(app: web.Application) -> AsyncGenerator:
     # Tear-down phase
     consumer_task.cancel()
     await consumer_task
+
+
+async def init_algolia_client(app: web.Application) -> AsyncGenerator:
+    """Initialize the Algolia client."""
+    app_id = app["safir/config"].algolia_app_id
+    api_key = app["safir/config"].algolia_api_key
+
+    if app_id is not None and api_key is not None:
+        async with SearchClient.create(
+            app_id, api_key.get_secret_value()
+        ) as client:
+            app["ook/algolia_search"] = client
+            yield
+    else:
+        app["ook/algolia_search"] = None
+        yield
+
+
+async def init_job_scheduler(app: web.Application) -> AsyncGenerator:
+    """Initialize an aiojobs scheduler for use with HTTP handers.
+
+    The scheduler for Kafka processing is currently separate.
+    """
+    scheduler = await aiojobs.create_scheduler()
+    app["ook/scheduler"] = scheduler
+    yield
+
+    await scheduler.close()

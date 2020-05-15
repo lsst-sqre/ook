@@ -54,7 +54,7 @@ async def test_process_edition_updated(
     )
     await asyncio.sleep(2.0)
 
-    app = create_app()
+    app = create_app(enable_ingest_kafka_topic=False)
     await aiohttp_client(app)
 
     assert await async_test_until(

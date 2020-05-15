@@ -5,6 +5,7 @@ These handlers aren't externally visible since the app is available at a path,
 the external endpoint handlers.
 """
 
-__all__ = ["get_index"]
+__all__ = ["get_index", "post_ingest_ltd"]
 
 from ook.handlers.internal.index import get_index
+from ook.handlers.internal.ingest import post_ingest_ltd

@@ -55,7 +55,20 @@ commands = pre-commit run --all-files
 [testenv:run]
 description = Run the development server with auto-reload for code changes.
 usedevelop = true
-commands = adev runserver --app-factory create_app src/ook/app.py
+whitelist_externals =
+    docker-compose
+setenv =
+    SAFIR_KAFKA_BROKER_URL=localhost:9092
+    SAFIR_SCHEMA_REGISTRY_URL=http://localhost:8081
+passenv =
+    ALGOLIA_APP_ID
+    ALGOLIA_API_KEY
+    ALGOLIA_DOCUMENT_INDEX
+commands =
+    docker-compose up -d
+    holdup -t 60 -T 5 -i 1 -n --insecure http://localhost:8081/subjects
+    adev runserver -p 8100 --app-factory create_app src/ook/app.py
+    docker-compose down
 """
 
 [tool.coverage.run]
@@ -102,5 +115,5 @@ exclude = '''
 include_trailing_comma = true
 multi_line_output = 3
 known_first_party = ["ook", "tests"]
-known_third_party = ["aiohttp", "aiojobs", "aiokafka", "aioresponses", "click", "kafkit", "pydantic", "pytest", "safir", "setuptools", "structlog"]
+known_third_party = ["aiohttp", "aiojobs", "aiokafka", "aioresponses", "algoliasearch", "click", "dateparser", "kafkit", "lxml", "pydantic", "pytest", "safir", "setuptools", "structlog", "yaml"]
 skip = ["docs/conf.py"]

@@ -1,0 +1,16 @@
+{
+  "bucket_name": "lsst-the-docs",
+  "bucket_root_dir": "dmtn-021/builds/42",
+  "date_created": "2017-08-07T15:35:51Z",
+  "date_ended": null,
+  "git_refs": [
+    "master"
+  ],
+  "github_requester": null,
+  "product_url": "https://keeper.lsst.codes/products/dmtn-021",
+  "published_url": "https://dmtn-021.lsst.io/builds/42",
+  "self_url": "https://keeper.lsst.codes/builds/2983",
+  "slug": "42",
+  "surrogate_key": "ef63bb2d853c4c0f91af61770bd553d0",
+  "uploaded": true
+}
