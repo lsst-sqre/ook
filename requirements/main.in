@@ -18,4 +18,3 @@ cssselect
 PyYAML
 dateparser
 algoliasearch>=2.0,<3.0
-git+git://github.com/aio-libs/aiokafka@deb9e06e1f459cde884fffc44f7c14a05c640ea0
