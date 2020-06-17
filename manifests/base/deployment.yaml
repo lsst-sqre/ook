@@ -1,18 +1,21 @@
+---
+# Pods in this deployment are responsible for queue ingest requests either
+# from LTD Events consumers or from HTTP handlers.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ook
+  name: ook-queue
   labels:
-    app: ook
+    app: ook-queue
 spec:
   replicas: 1
   selector:
     matchLabels:
-      name: ook
+      name: ook-queue
   template:
     metadata:
       labels:
-        name: ook
+        name: ook-queue
     spec:
       containers:
         - name: app
@@ -24,4 +27,40 @@ spec:
               name: app
           envFrom:
             - configMapRef:
-                name: ook
+                name: ook-queue
+---
+# Pods in this deployment are responsible for taking requests out of the
+# ook.ingest Kafka topic and indexing the corresponding document into Algolia
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ook-ingest
+  labels:
+    app: ook-ingest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: ook-ingest
+  template:
+    metadata:
+      labels:
+        name: ook-ingest
+    spec:
+      containers:
+        - name: app
+          imagePullPolicy: "Always"
+          # Use images field in a Kustomization to regularly set/update image tag
+          image: "lsstsqre/ook"
+          ports:
+            - containerPort: 8080
+              name: app
+          envFrom:
+            - configMapRef:
+                name: ook-ingest
+          env:
+            - name: ALGOLIA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ook
+                  key: algolia_api_key
