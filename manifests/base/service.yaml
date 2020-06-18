@@ -11,4 +11,5 @@ spec:
       port: 8080
       targetPort: app
   selector:
-    name: ook
+    # The HTTP ingess always goes to the ook-queue "frontend" deployment
+    name: ook-queue

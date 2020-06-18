@@ -1,11 +1,50 @@
+---
+# Additional configuration for the ook-queue deployment
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: ook
+  name: ook-queue
 data:
-  # These configurations are injected as environment variables into the
-  # app container.
   SAFIR_NAME: "ook"
   SAFIR_PROFILE: "production"
   SAFIR_LOGGER: "ook"
   SAFIR_LOG_LEVEL: "INFO"
+  SAFIR_KAFKA_PROTOCOL: "PLAINTEXT"
+  SAFIR_KAFKA_BROKER_URL: "localhost:9092"
+  SAFIR_KAFKA_CLUSTER_CA: ""
+  SAFIR_KAFKA_CLIENT_CA: ""
+  SAFIR_KAFKA_CLIENT_CERT: ""
+  SAFIR_KAFKA_CLIENT_KEY: ""
+  SAFIR_SCHEMA_REGISTRY_URL: ""
+  SAFIR_SCHEMA_SUFFIX: ""
+  SAFIR_SCHEMA_COMPATIBILITY: "FORWARD_TRANSITIVE"
+  ENABLE_LTD_EVENTS_KAFKA_TOPIC: "true"
+  ENABLE_OOK_INGEST_KAFKA_TOPIC: "false"
+  LTD_EVENTS_KAFKA_TOPIC: "ltd.events"
+  OOK_GROUP_ID: "ook-queue"
+---
+# Additional configuration for the ook-queue deployment
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ook-ingest
+data:
+  SAFIR_NAME: "ook"
+  SAFIR_PROFILE: "production"
+  SAFIR_LOGGER: "ook"
+  SAFIR_LOG_LEVEL: "INFO"
+  SAFIR_KAFKA_PROTOCOL: "PLAINTEXT"
+  SAFIR_KAFKA_BROKER_URL: "localhost:9092"
+  SAFIR_KAFKA_CLUSTER_CA: ""
+  SAFIR_KAFKA_CLIENT_CA: ""
+  SAFIR_KAFKA_CLIENT_CERT: ""
+  SAFIR_KAFKA_CLIENT_KEY: ""
+  SAFIR_SCHEMA_REGISTRY_URL: ""
+  SAFIR_SCHEMA_SUFFIX: ""
+  SAFIR_SCHEMA_COMPATIBILITY: "FORWARD_TRANSITIVE"
+  ENABLE_LTD_EVENTS_KAFKA_TOPIC: "false"
+  ENABLE_OOK_INGEST_KAFKA_TOPIC: "true"
+  OOK_INGEST_KAFKA_TOPIC: "ook.ingest"
+  OOK_GROUP_ID: "ook-ingest"
+  ALGOLIA_APP_ID: ""
+  ALGOLIA_DOCUMENT_INDEX: "document_dev"
