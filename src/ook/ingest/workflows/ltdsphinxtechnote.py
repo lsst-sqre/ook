@@ -12,6 +12,7 @@ from algoliasearch.responses import MultipleResponse
 
 from ook.ingest.algolia.records import (
     DocumentRecord,
+    format_timestamp,
     format_utc_datetime,
     generate_object_id,
     generate_surrogate_key,
@@ -191,6 +192,7 @@ def create_record(
         "objectID": object_id,
         "surrogateKey": surrogate_key,
         "sourceUpdateTime": format_utc_datetime(technote.timestamp),
+        "sourceUpdateTimestamp": format_timestamp(technote.timestamp),
         "recordUpdateTime": format_utc_datetime(datetime.datetime.utcnow()),
         "url": section.url,
         "baseUrl": technote.url,
