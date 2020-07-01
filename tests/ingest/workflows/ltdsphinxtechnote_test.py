@@ -38,7 +38,7 @@ def test_sqr035_record() -> None:
     )
     assert data["importance"] == 2
     assert data["series"] == "SQR"
-    assert data["number"] == "035"
+    assert data["number"] == 35
     assert data["handle"] == "SQR-035"
     assert data["authorNames"] == [
         "Frossie Economou",

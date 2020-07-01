@@ -69,7 +69,7 @@ class DocumentRecord(BaseModel):
     handle: str
     """Document handle."""
 
-    number: str
+    number: int
     """Serial number component of the document handle."""
 
     series: str

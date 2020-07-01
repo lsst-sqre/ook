@@ -29,7 +29,7 @@ def test_dmtn131_ingest() -> None:
     assert record["pIndex"] == 0
     assert record["handle"] == "DMTN-131"
     assert record["series"] == "DMTN"
-    assert record["number"] == "131"
+    assert record["number"] == 131
     assert record["authorNames"] == ["William O’Mullane"]
     assert record["githubRepoUrl"] == "https://github.com/lsst-dm/dmtn-131"
     assert record["description"] == (

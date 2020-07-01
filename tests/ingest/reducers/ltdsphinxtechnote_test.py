@@ -39,7 +39,7 @@ def test_sqr035_reduction() -> None:
     )
 
     assert reduced_technote.series == "SQR"
-    assert reduced_technote.number == "035"
+    assert reduced_technote.number == 35
     assert reduced_technote.handle == "SQR-035"
     assert reduced_technote.author_names == [
         "Frossie Economou",
