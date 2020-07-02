@@ -60,6 +60,9 @@ whitelist_externals =
 setenv =
     SAFIR_KAFKA_BROKER_URL=localhost:9092
     SAFIR_SCHEMA_REGISTRY_URL=http://localhost:8081
+    ENABLE_LTD_EVENTS_KAFKA_TOPIC=true
+    ENABLE_OOK_INGEST_KAFKA_TOPIC=true
+    SAFIR_LOG_LEVEL=DEBUG
 passenv =
     ALGOLIA_APP_ID
     ALGOLIA_API_KEY
