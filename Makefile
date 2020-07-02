@@ -19,4 +19,4 @@ update: update-deps init
 
 .PHONY: run
 run:
-	adev runserver --app-factory create_app src/ook/app.py
+	tox -e run
