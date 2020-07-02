@@ -8,8 +8,10 @@ from typing import TYPE_CHECKING, Any, Dict
 
 from algoliasearch.responses import MultipleResponse
 
+from ook.ingest.algolia.expiration import delete_old_records
 from ook.ingest.algolia.records import (
     DocumentRecord,
+    format_timestamp,
     format_utc_datetime,
     generate_object_id,
     generate_surrogate_key,
@@ -137,6 +139,13 @@ async def ingest_ltd_lander_jsonld_document(
 
         logger.info("Finished uploading to Algolia")
 
+        await delete_old_records(
+            index=index,
+            base_url=records[0]["baseUrl"],
+            surrogate_key=surrogate_key,
+            logger=logger,
+        )
+
 
 def create_record(
     *,
@@ -155,6 +164,7 @@ def create_record(
         "objectID": object_id,
         "surrogateKey": surrogate_key,
         "sourceUpdateTime": format_utc_datetime(document.timestamp),
+        "sourceUpdateTimestamp": format_timestamp(document.timestamp),
         "recordUpdateTime": format_utc_datetime(datetime.datetime.utcnow()),
         "url": document.url,
         "baseUrl": document.url,

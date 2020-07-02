@@ -21,7 +21,7 @@ def test_dmtn131_reduction() -> None:
     assert doc.h1 == "When clouds might be good for LSST"
     assert doc.handle == "DMTN-131"
     assert doc.series == "DMTN"
-    assert doc.number == "131"
+    assert doc.number == 131
     assert doc.url == url
     assert doc.author_names == ["William O’Mullane"]
     assert doc.github_url == "https://github.com/lsst-dm/dmtn-131"

@@ -85,14 +85,14 @@ class ReducedLtdSphinxTechnote:
         return self._series
 
     @property
-    def number(self) -> str:
+    def number(self) -> Optional[int]:
         """The serial number of the technote within the series."""
         return self._number
 
     @property
     def handle(self) -> str:
         """The handle of the document."""
-        return f"{self.series}-{self.number}"
+        return self._handle
 
     @property
     def author_names(self) -> List[str]:
@@ -126,12 +126,19 @@ class ReducedLtdSphinxTechnote:
         try:
             self._series: str = self._metadata["series"]
         except KeyError:
-            self._series = "UNKNOWN"
+            self._series = ""
 
         try:
-            self._number: str = self._metadata["serial_number"]
+            self._number: Optional[int] = int(self._metadata["serial_number"])
+        except (KeyError, ValueError):
+            self._number = None
+
+        try:
+            self._handle: str = (
+                f"{self._series}-{self._metadata['serial_number']}"
+            )
         except KeyError:
-            self._number = "000"
+            self._handle = ""
 
         try:
             self._authors: List[str] = self._metadata["authors"]

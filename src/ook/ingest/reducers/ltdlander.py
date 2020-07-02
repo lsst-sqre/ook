@@ -54,14 +54,14 @@ class ReducedLtdLanderDocument:
         return self._series
 
     @property
-    def number(self) -> str:
+    def number(self) -> Optional[int]:
         """The serial number of the technote within the series."""
         return self._number
 
     @property
     def handle(self) -> str:
         """The handle of the document."""
-        return f"{self.series}-{self.number}"
+        return self._handle
 
     @property
     def author_names(self) -> List[str]:
@@ -108,12 +108,15 @@ class ReducedLtdLanderDocument:
             handle_match = HANDLE_PATTERN.match(handle)
             if handle_match:
                 self._series: str = handle_match.group("series").upper()
-                self._number: str = handle_match.group("number")
+                number: str = handle_match.group("number")
+                self._handle: str = f"{self._series}-{number}"
+                self._number: Optional[int] = int(number)
             else:
                 raise ValueError
         except (KeyError, ValueError):
+            self._handle = ""
             self._series = ""
-            self._number = ""
+            self._number = None
 
         try:
             self._timestamp: datetime.datetime = dateparser.parse(

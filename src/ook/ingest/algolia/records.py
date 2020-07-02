@@ -14,6 +14,7 @@ __all__ = [
     "generate_object_id",
     "generate_surrogate_key",
     "format_utc_datetime",
+    "format_timestamp",
 ]
 
 
@@ -29,10 +30,16 @@ class DocumentRecord(BaseModel):
     """
 
     sourceUpdateTime: str
-    """A timestamp for when the source was updated."""
+    """An ISO 8601 date time for when the source was updated."""
+
+    sourceUpdateTimestamp: int
+    """A Unix timestamp for when the source was updated.
+
+    This is intended as a sortable version of `sourceUpdateTime`.
+    """
 
     recordUpdateTime: str
-    """A timestamp for when this record was created."""
+    """A ISO 8601 date time for when this record was created."""
 
     # str, not HttpUrl because of
     # https://sqr-027.lsst.io/#What-is-observability?
@@ -69,7 +76,7 @@ class DocumentRecord(BaseModel):
     handle: str
     """Document handle."""
 
-    number: str
+    number: int
     """Serial number component of the document handle."""
 
     series: str
@@ -156,3 +163,11 @@ def format_utc_datetime(dt: datetime.datetime) -> str:
         dt = dt.astimezone(tz=datetime.timezone.utc)
         dt = dt.replace(tzinfo=None)
     return f"{dt.isoformat()}Z"
+
+
+def format_timestamp(dt: datetime.datetime) -> int:
+    """Format a Unix timetsmp from a `~datetime.datetime`."""
+    if dt.tzinfo is not None:
+        return int(dt.replace(tzinfo=datetime.timezone.utc).timestamp())
+    else:
+        return int(dt.timestamp())
