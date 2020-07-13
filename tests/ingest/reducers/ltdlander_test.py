@@ -63,3 +63,24 @@ def test_dmtn153_reduction() -> None:
 
     doc = ReducedLtdLanderDocument(url=url, metadata=metadata, logger=logger)
     assert len(doc.chunks) == 1
+
+
+def test_dmtn096_reduction() -> None:
+    """Test DMTN-096, which is an example of a technote that doens't have an
+    abstract set.
+    """
+    logger = get_logger("ook")
+    data_root = (
+        Path(__file__).parent.parent.parent / "data" / "content" / "dmtn-096"
+    )
+    metadata = json.loads((data_root / "metadata.json").read_text())
+    url = "https://dmtn-096.lsst.io/"
+
+    doc = ReducedLtdLanderDocument(url=url, metadata=metadata, logger=logger)
+    assert doc.description == (
+        "DM has been asked how we can save 10% of its remaining cost (≈ $7M). "
+        "The official scope options which one might invoke are listed in , "
+        "but we have also identified some further possibilities which are "
+        "described in this document. This note also discusses the practical "
+        "aspects of invoking these options."
+    )

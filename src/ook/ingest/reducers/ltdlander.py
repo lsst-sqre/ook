@@ -140,15 +140,19 @@ class ReducedLtdLanderDocument:
         except KeyError:
             self._github_url = None
 
-        try:
-            self._description: str = self._metadata["description"].strip()
-        except (KeyError, AttributeError):
-            self._description = ""
-
         if "articleBody" in self._metadata:
             self._segment_article_body(self._metadata["articleBody"])
         else:
             self._logger.debug("No article body", handle=self._handle)
+
+        try:
+            self._description: str = self._metadata["description"].strip()
+        except (KeyError, AttributeError):
+            # Fallback to using the first content chunk as the description
+            try:
+                self._description = self._chunks[0].content
+            except IndexError:
+                self._description = ""
 
         if len(self._chunks) == 0:
             # Many new documents don't have any content, but they usually
