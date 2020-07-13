@@ -5,18 +5,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from structlog import get_logger
+
 from ook.ingest.reducers.ltdlander import ReducedLtdLanderDocument
 
 
 def test_dmtn131_reduction() -> None:
     """Test ReducedLtdLanderDocument using DMTN-131 as a test dataset."""
+    logger = get_logger("ook")
     data_root = (
         Path(__file__).parent.parent.parent / "data" / "content" / "dmtn-131"
     )
     metadata = json.loads((data_root / "metadata.json").read_text())
     url = "https://dmtn-131.lsst.io/"
 
-    doc = ReducedLtdLanderDocument(url=url, metadata=metadata)
+    doc = ReducedLtdLanderDocument(url=url, metadata=metadata, logger=logger)
 
     assert doc.h1 == "When clouds might be good for LSST"
     assert doc.handle == "DMTN-131"

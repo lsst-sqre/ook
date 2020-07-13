@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import datetime
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import dateparser
 
 from ook.classification import ContentType
 from ook.ingest.reducers.utils import HANDLE_PATTERN, normalize_root_url
+
+if TYPE_CHECKING:
+    from structlog._config import BoundLoggerLazyProxy
 
 __all__ = ["ReducedLtdLanderDocument", "ContentChunk"]
 
@@ -21,10 +24,17 @@ class ReducedLtdLanderDocument:
     and a plain-text extraction of the document.
     """
 
-    def __init__(self, *, url: str, metadata: Dict[str, Any]) -> None:
+    def __init__(
+        self,
+        *,
+        url: str,
+        metadata: Dict[str, Any],
+        logger: BoundLoggerLazyProxy,
+    ) -> None:
         self.url = url
         self.content_type = ContentType.LTD_LANDER_JSONLD
         self._metadata = metadata
+        self._logger = logger
 
         self._chunks: List[ContentChunk] = []
 

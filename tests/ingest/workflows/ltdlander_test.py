@@ -5,18 +5,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from structlog import get_logger
+
 from ook.ingest.reducers.ltdlander import ReducedLtdLanderDocument
 from ook.ingest.workflows.ltdlander import create_record
 
 
 def test_dmtn131_ingest() -> None:
+    logger = get_logger("ook")
     data_root = (
         Path(__file__).parent.parent.parent / "data" / "content" / "dmtn-131"
     )
     metadata = json.loads((data_root / "metadata.json").read_text())
     url = "https://dmtn-131.lsst.io/"
 
-    doc = ReducedLtdLanderDocument(url=url, metadata=metadata)
+    doc = ReducedLtdLanderDocument(url=url, metadata=metadata, logger=logger)
     chunk = doc.chunks[0]
 
     record = create_record(document=doc, chunk=chunk, surrogate_key="test-key")

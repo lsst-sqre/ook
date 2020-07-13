@@ -85,7 +85,7 @@ async def ingest_ltd_lander_jsonld_document(
 
     try:
         reduced_document = ReducedLtdLanderDocument(
-            url=published_url, metadata=metadata
+            url=published_url, metadata=metadata, logger=logger
         )
     except Exception:
         logger.exception("Failed to build record")
