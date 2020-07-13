@@ -91,6 +91,7 @@ async def ingest_ltd_sphinx_technote(
             html_source=html_content,
             url=url_ingest_message["url"],
             metadata=metadata,
+            logger=logger,
         )
     except Exception:
         logger.exception("Failure making ReducedLtdSphinxTechnote")

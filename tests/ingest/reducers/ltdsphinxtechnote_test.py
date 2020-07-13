@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 from pathlib import Path
 
+import structlog
 import yaml
 
 from ook.ingest.reducers.ltdsphinxtechnote import ReducedLtdSphinxTechnote
@@ -12,6 +13,8 @@ from ook.ingest.reducers.ltdsphinxtechnote import ReducedLtdSphinxTechnote
 
 def test_sqr035_reduction() -> None:
     """Test ReducedLtdSphinxTechnote using SQR-035 as a test dataset."""
+    logger = structlog.get_logger("ook")
+
     sqr035data = (
         Path(__file__).parent.parent.parent / "data" / "content" / "sqr-035"
     )
@@ -20,7 +23,7 @@ def test_sqr035_reduction() -> None:
     url = "https://sqr-035.lsst.io/"
 
     reduced_technote = ReducedLtdSphinxTechnote(
-        html_source=html_source, url=url, metadata=metadata
+        html_source=html_source, url=url, metadata=metadata, logger=logger
     )
 
     assert reduced_technote.url == "https://sqr-035.lsst.io/"
@@ -115,6 +118,7 @@ def test_dmtn021_reduction() -> None:
     This document contained an HtmlComment element that was tripping up
     iter_sphinx_sections. This test proves that we've handled it.
     """
+    logger = structlog.get_logger("ook")
     data_root = (
         Path(__file__).parent.parent.parent / "data" / "content" / "dmtn-021"
     )
@@ -123,7 +127,7 @@ def test_dmtn021_reduction() -> None:
     url = "https://dmtn-021.lsst.io/"
 
     reduced_technote = ReducedLtdSphinxTechnote(
-        html_source=html_source, url=url, metadata=metadata
+        html_source=html_source, url=url, metadata=metadata, logger=logger
     )
 
     assert reduced_technote.h1 == (

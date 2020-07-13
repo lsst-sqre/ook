@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import dateparser
 import lxml.html
@@ -15,6 +15,9 @@ from ook.ingest.reducers.sphinxutils import (
     iter_sphinx_sections,
 )
 from ook.ingest.reducers.utils import normalize_root_url
+
+if TYPE_CHECKING:
+    from structlog._config import BoundLoggerLazyProxy
 
 __all__ = ["ReducedLtdSphinxTechnote"]
 
@@ -35,11 +38,19 @@ class ReducedLtdSphinxTechnote:
     metadata : `dict`
         Parsed contents of the ``metadata.yaml`` file found in the technote's
         GitHub repository.
+    logger
+        Structlog logger instance.
     """
 
     def __init__(
-        self, *, html_source: str, url: str, metadata: Dict[str, Any]
+        self,
+        *,
+        html_source: str,
+        url: str,
+        metadata: Dict[str, Any],
+        logger: BoundLoggerLazyProxy,
     ) -> None:
+        self._logger = logger
         self._html_source = html_source
         self.url = url
         self._metadata = metadata
