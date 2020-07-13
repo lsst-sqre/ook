@@ -8,7 +8,7 @@ aiodns==2.0.0             # via -r requirements/main.in
 aiohttp==3.6.2            # via -r requirements/main.in, aiojobs, safir
 aiojobs==0.2.2            # via -r requirements/main.in
 aiokafka==0.6.0           # via safir
-algoliasearch==2.3.0      # via -r requirements/main.in
+algoliasearch==2.3.1      # via -r requirements/main.in
 async-timeout==3.0.1      # via aiohttp
 attrs==19.3.0             # via aiohttp
 cchardet==2.1.6           # via -r requirements/main.in
@@ -18,16 +18,16 @@ chardet==3.0.4            # via aiohttp, requests
 click==7.1.2              # via -r requirements/main.in
 cssselect==1.1.0          # via -r requirements/main.in
 dateparser==0.7.6         # via -r requirements/main.in
-fastavro==0.23.5          # via kafkit
+fastavro==0.23.6          # via kafkit
 idna==2.10                # via requests, yarl
 importlib-metadata==1.7.0  # via -r requirements/main.in, kafkit, safir
 kafka-python==2.0.1       # via aiokafka
 kafkit==0.2.0b3           # via safir
-lxml==4.5.1               # via -r requirements/main.in
+lxml==4.5.2               # via -r requirements/main.in
 multidict==4.7.6          # via aiohttp, yarl
 pycares==3.1.1            # via aiodns
 pycparser==2.20           # via cffi
-pydantic==1.5.1           # via -r requirements/main.in
+pydantic==1.6             # via -r requirements/main.in
 python-dateutil==2.8.1    # via dateparser
 pytz==2020.1              # via dateparser, fastavro, tzlocal
 pyyaml==5.3.1             # via -r requirements/main.in
