@@ -48,3 +48,18 @@ def test_dmtn131_reduction() -> None:
         "INTRODUCTION",
     ]
     assert doc.chunks[1].paragraph == 1
+
+
+def test_dmtn153_reduction() -> None:
+    """test ReducedLtdLanderDocument using DMTN-153 as a test document since
+    it has an abstract, but no content.
+    """
+    logger = get_logger("ook")
+    data_root = (
+        Path(__file__).parent.parent.parent / "data" / "content" / "dmtn-153"
+    )
+    metadata = json.loads((data_root / "metadata.json").read_text())
+    url = "https://dmtn-153.lsst.io/"
+
+    doc = ReducedLtdLanderDocument(url=url, metadata=metadata, logger=logger)
+    assert len(doc.chunks) == 1

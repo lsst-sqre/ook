@@ -147,6 +147,17 @@ class ReducedLtdLanderDocument:
 
         if "articleBody" in self._metadata:
             self._segment_article_body(self._metadata["articleBody"])
+        else:
+            self._logger.debug("No article body", handle=self._handle)
+
+        if len(self._chunks) == 0:
+            # Many new documents don't have any content, but they usually
+            # do have an abstract. This creates a fake initial record.
+            self._chunks.append(
+                ContentChunk(
+                    content=self._description, headers=[self.h1], paragraph=1
+                )
+            )
 
     def _segment_article_body(self, body: str) -> None:
         """Segment an article into ContentChunks.

@@ -93,6 +93,10 @@ async def ingest_ltd_lander_jsonld_document(
 
     surrogate_key = generate_surrogate_key()
 
+    logger.debug(
+        "Reduced LTD Lander Document", chunks=len(reduced_document.chunks)
+    )
+
     try:
         records = [
             create_record(
