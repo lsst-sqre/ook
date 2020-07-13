@@ -25,7 +25,7 @@ def test_sqr035_record() -> None:
     reduced_technote = ReducedLtdSphinxTechnote(
         html_source=html_source, url=url, metadata=metadata, logger=logger
     )
-    section = reduced_technote.sections[0]
+    section = reduced_technote.sections[1]
 
     data = create_record(
         section=section, technote=reduced_technote, surrogate_key="test-key"

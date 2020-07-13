@@ -1,0 +1,17 @@
+{
+  "build_url": "https://keeper.lsst.codes/builds/11512",
+  "date_created": "2019-12-16T20:27:00Z",
+  "date_ended": null,
+  "date_rebuilt": "2019-12-16T20:30:22Z",
+  "mode": "git_refs",
+  "pending_rebuild": false,
+  "product_url": "https://keeper.lsst.codes/products/dmtn-139",
+  "published_url": "https://dmtn-139.lsst.io",
+  "self_url": "https://keeper.lsst.codes/editions/3787",
+  "slug": "main",
+  "surrogate_key": "7ee0ba5ac39d42e9b1ebd12ca6b53411",
+  "title": "Latest",
+  "tracked_refs": [
+    "master"
+  ]
+}

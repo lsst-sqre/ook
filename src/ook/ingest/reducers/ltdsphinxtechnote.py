@@ -167,7 +167,49 @@ class ReducedLtdSphinxTechnote:
 
         self._timestamp = self._reduce_timestamp(doc)
 
-        root_section = doc.cssselect(".document .section")[0]
+        try:
+            article_body = doc.cssselect('[itemprop~="articleBody"]')[0]
+        except IndexError:
+            raise RuntimeError("Sphinx technote doesn't have a articleBody")
+
+        presection = self._reduce_presection(article_body)
+        if presection is not None:
+            self._sections.append(presection)
+
+        try:
+            root_section = article_body.cssselect(".section")[0]
+        except IndexError:
+            # Documents that don't have subsections won't have a .section
+            # div.
+            return
+        self._sections.extend(self._reduce_sections(root_section))
+
+    def _reduce_presection(
+        self, root: lxml.html.Html.Element
+    ) -> Optional[SphinxSection]:
+        """Create a SphinxSection from any content in the articleBody that
+        appears before the first subsection (a div.section element).
+        """
+        text_elements: List[str] = []
+        for element in root:
+            if element.tag == "div" and "section" in element.classes:
+                break
+            else:
+                text_elements.append(element.text_content().strip())
+
+        if len(text_elements) == 0:
+            return None
+        else:
+            return SphinxSection(
+                content="\n\n".join(text_elements),
+                headers=[self.h1],
+                url=self.url,
+            )
+
+    def _reduce_sections(
+        self, root_section: lxml.html.Html.Element
+    ) -> List[SphinxSection]:
+        sections: List[SphinxSection] = []
 
         for s in iter_sphinx_sections(
             base_url=self._url,
@@ -176,7 +218,7 @@ class ReducedLtdSphinxTechnote:
             header_callback=clean_title_text,
             content_callback=lambda x: x.strip(),
         ):
-            self._sections.append(s)
+            sections.append(s)
         # Also look for additional h1 section on the page.
         # Technically, the page should only have one h1, and all content
         # should be subsections of that. In first-generation technotes, though,
@@ -191,7 +233,9 @@ class ReducedLtdSphinxTechnote:
                     header_callback=clean_title_text,
                     content_callback=lambda x: x.strip(),
                 ):
-                    self._sections.append(s)
+                    sections.append(s)
+
+        return sections
 
     def _reduce_timestamp(
         self, doc: lxml.html.Html.Element
