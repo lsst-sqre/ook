@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import dateparser
 
 from ook.classification import ContentType
-from ook.ingest.reducers.utils import HANDLE_PATTERN, normalize_root_url
+from ook.ingest.reducers.utils import Handle, normalize_root_url
 
 if TYPE_CHECKING:
     from structlog._config import BoundLoggerLazyProxy
@@ -114,19 +114,14 @@ class ReducedLtdLanderDocument:
             self._authors = []
 
         try:
-            handle = self._metadata["reportNumber"]
-            handle_match = HANDLE_PATTERN.match(handle)
-            if handle_match:
-                self._series: str = handle_match.group("series").upper()
-                number: str = handle_match.group("number")
-                self._handle: str = f"{self._series}-{number}"
-                self._number: Optional[int] = int(number)
-            else:
-                raise ValueError
-        except (KeyError, ValueError):
-            self._handle = ""
-            self._series = ""
-            self._number = None
+            handle = Handle.parse(self._metadata["reportNumber"])
+        except (ValueError, KeyError):
+            # Fall back to getting handle from ingest URL
+            handle = Handle.parse_from_subdomain(self.url)
+
+        self._handle: str = handle.handle
+        self._series: str = handle.series
+        self._number: int = handle.number_as_int
 
         try:
             self._timestamp: datetime.datetime = dateparser.parse(
