@@ -171,8 +171,16 @@ class ReducedLtdLanderDocument:
 
     def _process_section(self, section: str) -> None:
         parts = [p.strip() for p in section.split("\n\n") if p]
-        heading = parts[0]
+        heading = parts[0].strip()
+        if heading.startswith("\\"):
+            # simple heuristic to avoid pandoc conversion failures
+            return
+
         for i, paragraph in enumerate(parts[1:]):
+            if paragraph.startswith("\\"):
+                # simple heuristic to avoid pandoc conversion failures
+                continue
+
             chunk = ContentChunk(
                 content=paragraph, headers=[self.h1, heading], paragraph=i
             )

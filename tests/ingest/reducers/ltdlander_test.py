@@ -131,3 +131,21 @@ def test_dmtn145_reduction() -> None:
         "together. These are prevalent in all large projects and some of "
         "these issues will be touched on in the talk also."
     )
+
+
+def test_dmtn119_reduction() -> None:
+    """Test DMTN-119, which doesn't have ideal content conversion from
+    Pandoc.
+    """
+    logger = get_logger("ook")
+    data_root = (
+        Path(__file__).parent.parent.parent / "data" / "content" / "dmtn-119"
+    )
+    metadata = json.loads((data_root / "metadata.json").read_text())
+    url = "https://dmtn-119.lsst.io/"
+
+    doc = ReducedLtdLanderDocument(url=url, metadata=metadata, logger=logger)
+    assert doc.handle == "DMTN-119"
+    # After all the heuristic rejections there should only be the
+    # description's chunk left
+    assert len(doc.chunks) == 1
