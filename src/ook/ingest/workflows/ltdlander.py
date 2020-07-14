@@ -50,7 +50,7 @@ async def ingest_ltd_lander_jsonld_document(
         content_url=url_ingest_message["url"],
         content_type=url_ingest_message["content_type"],
     )
-    logger.info("Starting LTD_SPHINX_TECHNOTE ingest")
+    logger.info("Starting LTD_LANDER_JSONLD ingest")
 
     http_session = app["safir/http_session"]
 
