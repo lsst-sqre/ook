@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 from typing import TYPE_CHECKING, Any, Dict
 from urllib.parse import urlparse
 
@@ -143,8 +144,13 @@ async def ingest_ltd_sphinx_technote(
             raise
 
         tasks = [index.save_object_async(record) for record in records]
-        results = await asyncio.gather(*tasks)
-        MultipleResponse(results).wait()
+        try:
+            results = await asyncio.gather(*tasks)
+            MultipleResponse(results).wait()
+        except Exception:
+            logger.error("Got algoliasearch request error")
+            for record in records:
+                logger.debug(json.dumps(record, indent=2, sort_keys=True))
 
         logger.info("Finished uploading to Algolia")
 
