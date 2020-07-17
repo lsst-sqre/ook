@@ -1,0 +1,27 @@
+{
+  "name": "Schema Management in DM\n",
+  "@context": [
+    "https://raw.githubusercontent.com/codemeta/codemeta/2.0-rc/codemeta.jsonld",
+    "http://schema.org"
+  ],
+  "@id": "https://dmtn-153.lsst.io",
+  "@type": [
+    "Report",
+    "SoftwareSourceCode"
+  ],
+  "articleBody": "\n\nREFERENCES\n\n\n\nACRONYMS\n",
+  "author": [
+    {
+      "name": "William O\u2019Mullane",
+      "@type": "Person"
+    }
+  ],
+  "codeRepository": "https://github.com/lsst-dm/dmtn-153",
+  "contIntegration": "https://github.com/lsst-dm/dmtn-153/actions/runs/128835906",
+  "dateModified": "2020-06-08T07:00:00Z",
+  "description": "This note attempts to describe what we mean be schema management, what we would like and how it is currently implemented within DM.\n",
+  "fileFormat": "text/plain",
+  "language": "TeX",
+  "reportNumber": "DMTN-153",
+  "url": "https://dmtn-153.lsst.io"
+}

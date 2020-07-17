@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import structlog
 import yaml
 
 from ook.ingest.reducers.ltdsphinxtechnote import ReducedLtdSphinxTechnote
@@ -12,6 +13,8 @@ from ook.ingest.workflows.ltdsphinxtechnote import create_record
 
 def test_sqr035_record() -> None:
     """Test creating an Algolia document record with the SQR-035 dataset."""
+    logger = structlog.get_logger("ook")
+
     sqr035data = (
         Path(__file__).parent.parent.parent / "data" / "content" / "sqr-035"
     )
@@ -20,9 +23,9 @@ def test_sqr035_record() -> None:
     url = "https://sqr-035.lsst.io/"
 
     reduced_technote = ReducedLtdSphinxTechnote(
-        html_source=html_source, url=url, metadata=metadata
+        html_source=html_source, url=url, metadata=metadata, logger=logger
     )
-    section = reduced_technote.sections[0]
+    section = reduced_technote.sections[1]
 
     data = create_record(
         section=section, technote=reduced_technote, surrogate_key="test-key"

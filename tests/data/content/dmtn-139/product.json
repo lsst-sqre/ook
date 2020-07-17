@@ -1,0 +1,13 @@
+{
+  "bucket_name": "lsst-the-docs",
+  "doc_repo": "https://github.com/lsst-dm/dmtn-139",
+  "domain": "dmtn-139.lsst.io",
+  "fastly_domain": "n.global-ssl.fastly.net",
+  "published_url": "https://dmtn-139.lsst.io",
+  "root_domain": "lsst.io",
+  "root_fastly_domain": "n.global-ssl.fastly.net",
+  "self_url": "https://keeper.lsst.codes/products/dmtn-139",
+  "slug": "dmtn-139",
+  "surrogate_key": "c73fef936a8d4fc28d50477a85c20667",
+  "title": "LSST Image Service Architecture"
+}

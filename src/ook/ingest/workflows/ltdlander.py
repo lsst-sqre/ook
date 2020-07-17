@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 from typing import TYPE_CHECKING, Any, Dict
 
 from algoliasearch.responses import MultipleResponse
@@ -50,7 +51,7 @@ async def ingest_ltd_lander_jsonld_document(
         content_url=url_ingest_message["url"],
         content_type=url_ingest_message["content_type"],
     )
-    logger.info("Starting LTD_SPHINX_TECHNOTE ingest")
+    logger.info("Starting LTD_LANDER_JSONLD ingest")
 
     http_session = app["safir/http_session"]
 
@@ -85,13 +86,17 @@ async def ingest_ltd_lander_jsonld_document(
 
     try:
         reduced_document = ReducedLtdLanderDocument(
-            url=published_url, metadata=metadata
+            url=published_url, metadata=metadata, logger=logger
         )
     except Exception:
         logger.exception("Failed to build record")
         raise
 
     surrogate_key = generate_surrogate_key()
+
+    logger.debug(
+        "Reduced LTD Lander Document", chunks=len(reduced_document.chunks)
+    )
 
     try:
         records = [
@@ -134,8 +139,13 @@ async def ingest_ltd_lander_jsonld_document(
             raise
 
         tasks = [index.save_object_async(record) for record in records]
-        results = await asyncio.gather(*tasks)
-        MultipleResponse(results).wait()
+        try:
+            results = await asyncio.gather(*tasks)
+            MultipleResponse(results).wait()
+        except Exception:
+            logger.error("Got algoliasearch request error")
+            for record in records:
+                logger.debug(json.dumps(record, indent=2, sort_keys=True))
 
         logger.info("Finished uploading to Algolia")
 

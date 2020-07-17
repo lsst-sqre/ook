@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import datetime
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import dateparser
 
 from ook.classification import ContentType
-from ook.ingest.reducers.utils import HANDLE_PATTERN, normalize_root_url
+from ook.ingest.reducers.utils import Handle, normalize_root_url
+
+if TYPE_CHECKING:
+    from structlog._config import BoundLoggerLazyProxy
 
 __all__ = ["ReducedLtdLanderDocument", "ContentChunk"]
 
@@ -21,10 +24,17 @@ class ReducedLtdLanderDocument:
     and a plain-text extraction of the document.
     """
 
-    def __init__(self, *, url: str, metadata: Dict[str, Any]) -> None:
+    def __init__(
+        self,
+        *,
+        url: str,
+        metadata: Dict[str, Any],
+        logger: BoundLoggerLazyProxy,
+    ) -> None:
         self.url = url
         self.content_type = ContentType.LTD_LANDER_JSONLD
         self._metadata = metadata
+        self._logger = logger
 
         self._chunks: List[ContentChunk] = []
 
@@ -104,19 +114,14 @@ class ReducedLtdLanderDocument:
             self._authors = []
 
         try:
-            handle = self._metadata["reportNumber"]
-            handle_match = HANDLE_PATTERN.match(handle)
-            if handle_match:
-                self._series: str = handle_match.group("series").upper()
-                number: str = handle_match.group("number")
-                self._handle: str = f"{self._series}-{number}"
-                self._number: Optional[int] = int(number)
-            else:
-                raise ValueError
-        except (KeyError, ValueError):
-            self._handle = ""
-            self._series = ""
-            self._number = None
+            handle = Handle.parse(self._metadata["reportNumber"])
+        except (ValueError, KeyError):
+            # Fall back to getting handle from ingest URL
+            handle = Handle.parse_from_subdomain(self.url)
+
+        self._handle: str = handle.handle
+        self._series: str = handle.series
+        self._number: int = handle.number_as_int
 
         try:
             self._timestamp: datetime.datetime = dateparser.parse(
@@ -130,13 +135,28 @@ class ReducedLtdLanderDocument:
         except KeyError:
             self._github_url = None
 
+        if "articleBody" in self._metadata:
+            self._segment_article_body(self._metadata["articleBody"])
+        else:
+            self._logger.debug("No article body", handle=self._handle)
+
         try:
             self._description: str = self._metadata["description"].strip()
         except (KeyError, AttributeError):
-            self._description = ""
+            # Fallback to using the first content chunk as the description
+            try:
+                self._description = self._chunks[0].content
+            except IndexError:
+                self._description = ""
 
-        if "articleBody" in self._metadata:
-            self._segment_article_body(self._metadata["articleBody"])
+        if len(self._chunks) == 0:
+            # Many new documents don't have any content, but they usually
+            # do have an abstract. This creates a fake initial record.
+            self._chunks.append(
+                ContentChunk(
+                    content=self._description, headers=[self.h1], paragraph=1
+                )
+            )
 
     def _segment_article_body(self, body: str) -> None:
         """Segment an article into ContentChunks.
@@ -151,8 +171,16 @@ class ReducedLtdLanderDocument:
 
     def _process_section(self, section: str) -> None:
         parts = [p.strip() for p in section.split("\n\n") if p]
-        heading = parts[0]
+        heading = parts[0].strip()
+        if heading.startswith("\\"):
+            # simple heuristic to avoid pandoc conversion failures
+            return
+
         for i, paragraph in enumerate(parts[1:]):
+            if paragraph.startswith("\\"):
+                # simple heuristic to avoid pandoc conversion failures
+                continue
+
             chunk = ContentChunk(
                 content=paragraph, headers=[self.h1, heading], paragraph=i
             )

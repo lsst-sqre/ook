@@ -1,0 +1,63 @@
+# Document metadata. metadata.yaml is used by documenteer and other tools
+# to build the document and index it. It should be maintained alongside the
+# document in git and kept up to date.
+
+# The series identifier. E.g. SQR, DMTN, SMTN, LDM, LSE, etc.
+series: "DMTN"
+
+# Document number, as a string. It should be three digits, padded with leading zeros
+serial_number: "139"
+
+# Serial number of the document. E.g. SQR-001
+# NOTE: this field is *planned* for deprecation
+doc_id: "DMTN-139"
+
+# Title of the document, without the series/serial designation
+doc_title: "LSST Image Service Architecture"
+
+# Author names, ordered as a list. Each author name should be formatted as 'First Last'
+authors:
+  - "Gregory Dubois-Felsmann"
+
+# Current document revision date, YYYY-MM-DD
+# Only set this field if you need to manually fix the revision date;
+# the revision date is obtained from the HEAD Git commit otherwise.
+# last_revised: 'YYYY-MM-DD'
+
+# Version. Use semantic versioning, e.g., 1.0.0, including .dev, as necessary.
+# This version string should correspond to the git tag when the document is
+# published on Zenodo. If left commented out, the current Git branch is used
+# instead version: '1.0.0'
+
+# Digital Object Identifier (DOI). Uncomment if available.
+# Keep this DOI updated as new releases are pushed to Zenodo
+# doi: 10.5281/zenodo.#####
+
+# Copyright statement
+copyright: "2019, California Institute of Technology"
+
+# Description. A short, 1-2 sentence statemement used by document indices.
+description: "This document describes the architecture for Internet-visible image services to be provided by LSST.  It explains the use of IVOA standards to provide these services, and discusses where LSST's needs may require extensions to those standards.  It addresses the back-end architecture that supports these services, including especially the role of the Gen3 Butler.
+
+Image services include: observation metadata services based on ObsCore and CAOM2, image retrieval services, image cutout and mosiacing services, image-recreation-on-demand, and HiPS multi-resolution image map services.
+
+This note discusses the role of the image services in the LSST Science Platform and outlines expectations for how they will be used internally and externally.
+
+Later editions of this note may discuss issues associated with IVOA Registry representation of the services, or they may be moved to a separate technote on our Registry interface."
+
+# Abstract, if available
+# abstract: >
+#           Write your paragraph
+#           here with multiple lines.
+#
+#           You can have multiple paragraphs too.
+
+# URL where this document is published by Read the Docs. e.g. http://sqr-001.lsst.codes
+url: "https://dmtn-139.lsst.io"
+
+# LSST Docushare URL, if authoritative versions of this are are stored there.
+# Leave as an empty string or comment out this key if there is no Docushare URL.
+docushare_url: ""
+
+# GitHub repo URL
+github_url: "https://github.com/lsst-dm/dmtn-139"
