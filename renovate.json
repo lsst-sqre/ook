@@ -1,4 +1,8 @@
 {
+  "enabledManagers": [
+    "docker-compose",
+    "kustomize"
+  ],
   "extends": [
     "config:base"
   ],
