@@ -20,18 +20,18 @@ cssselect==1.1.0          # via -r requirements/main.in
 dateparser==0.7.6         # via -r requirements/main.in
 fastavro==0.23.6          # via kafkit
 idna==2.10                # via requests, yarl
-importlib-metadata==1.7.0  # via -r requirements/main.in, kafkit, safir
+importlib-metadata==1.7.0  # via -r requirements/main.in
 kafka-python==2.0.1       # via aiokafka
 kafkit==0.2.0b3           # via safir
 lxml==4.5.2               # via -r requirements/main.in
 multidict==4.7.6          # via aiohttp, yarl
 pycares==3.1.1            # via aiodns
 pycparser==2.20           # via cffi
-pydantic==1.6             # via -r requirements/main.in
+pydantic==1.6.1           # via -r requirements/main.in
 python-dateutil==2.8.1    # via dateparser
 pytz==2020.1              # via dateparser, fastavro, tzlocal
 pyyaml==5.3.1             # via -r requirements/main.in
-regex==2020.6.8           # via dateparser
+regex==2020.7.14          # via dateparser
 requests==2.24.0          # via algoliasearch
 git+git://github.com/lsst-sqre/safir@tickets/DM-23761#egg=safir  # via -r requirements/main.in
 six==1.15.0               # via python-dateutil, structlog
