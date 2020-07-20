@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List
 
 if TYPE_CHECKING:
-    from structlog._config import BoundLoggerLazyProxy
     from algoliasearch.search_index import SearchIndex
+    from structlog._config import BoundLoggerLazyProxy
 
 __all__ = [
     "delete_old_records",
