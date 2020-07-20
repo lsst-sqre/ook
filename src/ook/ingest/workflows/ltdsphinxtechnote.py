@@ -24,7 +24,7 @@ from ook.ingest.reducers.sphinxutils import SphinxSection
 from ook.utils import get_html_content, get_json_data, make_raw_github_url
 
 if TYPE_CHECKING:
-    from aiohttp import web, ClientSession
+    from aiohttp import ClientSession, web
     from structlog._config import BoundLoggerLazyProxy
 
 __all__ = ["ingest_ltd_sphinx_technote"]

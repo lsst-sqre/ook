@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from aiokafka import AIOKafkaProducer
     from kafkit.registry.manager import RecordNameSchemaManager
     from structlog._config import BoundLoggerLazyProxy
+
     from ook.config import Configuration
 
 __all__ = ["post_ingest_ltd"]
