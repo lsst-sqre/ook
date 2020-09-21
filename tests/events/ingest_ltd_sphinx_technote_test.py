@@ -72,5 +72,6 @@ async def test_process_edition_updated(
     )
 
     assert await async_test_until(
-        lambda: "Finished building records" in caplog.text, timeout=10.0,
+        lambda: "Finished building records" in caplog.text,
+        timeout=10.0,
     )

@@ -48,11 +48,13 @@ async def test_post_ingest_ltd_list(
     assert response.status == 202
 
     assert await async_test_until(
-        lambda: "url=https://sqr-006.lsst.io" in caplog.text, timeout=10.0,
+        lambda: "url=https://sqr-006.lsst.io" in caplog.text,
+        timeout=10.0,
     )
 
     assert await async_test_until(
-        lambda: "url=https://sqr-035.lsst.io" in caplog.text, timeout=10.0,
+        lambda: "url=https://sqr-035.lsst.io" in caplog.text,
+        timeout=10.0,
     )
 
 
@@ -77,9 +79,11 @@ async def test_post_ingest_ltd_pattern(
     assert response.status == 202
 
     assert await async_test_until(
-        lambda: "url=https://sqr-000.lsst.io" in caplog.text, timeout=10.0,
+        lambda: "url=https://sqr-000.lsst.io" in caplog.text,
+        timeout=10.0,
     )
 
     assert await async_test_until(
-        lambda: "url=https://sqr-032.lsst.io" in caplog.text, timeout=10.0,
+        lambda: "url=https://sqr-032.lsst.io" in caplog.text,
+        timeout=10.0,
     )

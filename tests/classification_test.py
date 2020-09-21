@@ -29,7 +29,9 @@ from ook.classification import (
     ],
 )
 async def test_classify_ltd_site(
-    product_slug: str, published_url: str, expected: ContentType,
+    product_slug: str,
+    published_url: str,
+    expected: ContentType,
 ) -> None:
     """Test classify_ltd_site (uses real HTTP requests)."""
     async with aiohttp.ClientSession() as http_session:

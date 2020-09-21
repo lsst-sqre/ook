@@ -190,8 +190,7 @@ async def _queue_single_ltd_product_ingest(
     product_slug: str,
     edition_slug: str,
 ) -> None:
-    """Queue an LTD-based document for ingest in the ook.ingest Kafka topic.
-    """
+    """Queue an LTD-based document for ingest in the ook.ingest Kafka topic."""
     product_data = await _get_json(
         session=session,
         url=f"https://keeper.lsst.codes/products/{product_slug}",
@@ -257,7 +256,11 @@ async def _queue_single_ltd_product_ingest(
     )
 
 
-async def _get_json(*, session: ClientSession, url: str,) -> Dict[str, Any]:
+async def _get_json(
+    *,
+    session: ClientSession,
+    url: str,
+) -> Dict[str, Any]:
     response = await session.get(url)
     if response.status != 200:
         raise RuntimeError(f"Error requesting {url}")

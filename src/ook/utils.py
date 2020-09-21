@@ -14,8 +14,7 @@ __all__ = ["get_html_content", "get_json_data", "make_raw_github_url"]
 async def get_html_content(
     *, url: str, http_session: ClientSession, logger: BoundLoggerLazyProxy
 ) -> str:
-    """Get HTML content from a URL.
-    """
+    """Get HTML content from a URL."""
     html_content_response = await http_session.get(url)
     if html_content_response.status != 200:
         raise RuntimeError(
@@ -33,8 +32,7 @@ async def get_json_data(
     encoding: str = None,
     content_type: Optional[str] = "application/json",
 ) -> Dict[str, Any]:
-    """Get and parse JSON content from a URL.
-    """
+    """Get and parse JSON content from a URL."""
     response = await http_session.get(url)
     if response.status != 200:
         raise RuntimeError(
@@ -46,8 +44,7 @@ async def get_json_data(
 def make_raw_github_url(
     *, repo_path: str, git_ref: str, file_path: str
 ) -> str:
-    """Create a URL for raw GitHub content (raw.githubusercontent.com)
-    """
+    """Create a URL for raw GitHub content (raw.githubusercontent.com)"""
     if file_path.startswith("/"):
         file_path = file_path.lstrip("/")
     if repo_path.startswith("/"):
