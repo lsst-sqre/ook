@@ -73,8 +73,7 @@ def clean_title_text(
 
 @dataclass
 class SphinxSection:
-    """A section of content from a Sphinx document.
-    """
+    """A section of content from a Sphinx document."""
 
     content: str
     """The plain-text content of the section.

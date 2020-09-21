@@ -53,7 +53,8 @@ def registry_api(http_session: aiohttp.ClientSession) -> RegistryApi:
     Registry client.
     """
     return RegistryApi(
-        session=http_session, url=str(os.getenv("SAFIR_SCHEMA_REGISTRY_URL")),
+        session=http_session,
+        url=str(os.getenv("SAFIR_SCHEMA_REGISTRY_URL")),
     )
 
 

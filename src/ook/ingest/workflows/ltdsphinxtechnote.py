@@ -200,8 +200,7 @@ def create_record(
     surrogate_key: str,
     validate: bool = True,
 ) -> Dict[str, Any]:
-    """Create a JSON-serializable record for the Algolia index.
-    """
+    """Create a JSON-serializable record for the Algolia index."""
     object_id = generate_object_id(url=section.url, headers=section.headers)
     record = {
         "objectID": object_id,
