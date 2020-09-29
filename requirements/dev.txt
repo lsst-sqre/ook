@@ -19,11 +19,10 @@ distlib==0.3.1            # via virtualenv
 filelock==3.0.12          # via virtualenv
 flake8==3.8.3             # via -r requirements/dev.in
 holdup==1.8.0             # via -r requirements/dev.in
-identify==1.5.3           # via pre-commit
+identify==1.5.5           # via pre-commit
 idna==2.10                # via yarl
 iniconfig==1.0.1          # via pytest
 mccabe==0.6.1             # via flake8
-more-itertools==8.5.0     # via pytest
 multidict==4.7.6          # via aiohttp, yarl
 mypy-extensions==0.4.3    # via mypy
 mypy==0.782               # via -r requirements/dev.in
@@ -37,7 +36,7 @@ pyflakes==2.2.0           # via flake8
 pygments==2.7.1           # via aiohttp-devtools
 pyparsing==2.4.7          # via packaging
 pytest-aiohttp==0.3.0     # via -r requirements/dev.in
-pytest==6.0.2             # via -r requirements/dev.in, pytest-aiohttp
+pytest==6.1.0             # via -r requirements/dev.in, pytest-aiohttp
 pyyaml==5.3.1             # via pre-commit
 six==1.15.0               # via packaging, virtualenv
 toml==0.10.1              # via coverage, pre-commit, pytest
@@ -45,4 +44,4 @@ typed-ast==1.4.1          # via mypy
 typing-extensions==3.7.4.3  # via mypy
 virtualenv==20.0.31       # via pre-commit
 watchgod==0.6             # via aiohttp-devtools
-yarl==1.5.1               # via aiohttp
+yarl==1.6.0               # via aiohttp
