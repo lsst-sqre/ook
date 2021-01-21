@@ -37,7 +37,7 @@ pygments==2.7.1           # via aiohttp-devtools
 pyparsing==2.4.7          # via packaging
 pytest-aiohttp==0.3.0     # via -r requirements/dev.in
 pytest==6.1.1             # via -r requirements/dev.in, pytest-aiohttp
-pyyaml==5.3.1             # via pre-commit
+pyyaml==5.4             # via pre-commit
 six==1.15.0               # via packaging, virtualenv
 toml==0.10.1              # via coverage, pre-commit, pytest
 typed-ast==1.4.1          # via mypy
