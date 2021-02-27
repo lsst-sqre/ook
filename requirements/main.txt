@@ -5,7 +5,7 @@
 #    pip-compile --output-file=requirements/main.txt requirements/main.in
 #
 aiodns==2.0.0             # via -r requirements/main.in
-aiohttp==3.6.2            # via -r requirements/main.in, aiojobs, safir
+aiohttp==3.7.4            # via -r requirements/main.in, aiojobs, safir
 aiojobs==0.2.2            # via -r requirements/main.in
 aiokafka==0.6.0           # via safir
 algoliasearch==2.4.0      # via -r requirements/main.in
