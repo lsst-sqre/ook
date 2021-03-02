@@ -12,7 +12,7 @@ from ook.classification import ContentType
 from ook.ingest.reducers.utils import Handle, normalize_root_url
 
 if TYPE_CHECKING:
-    from structlog._config import BoundLoggerLazyProxy
+    from structlog.stdlib import BoundLogger
 
 __all__ = ["ReducedLtdLanderDocument", "ContentChunk"]
 
@@ -29,7 +29,7 @@ class ReducedLtdLanderDocument:
         *,
         url: str,
         metadata: Dict[str, Any],
-        logger: BoundLoggerLazyProxy,
+        logger: BoundLogger,
     ) -> None:
         self.url = url
         self.content_type = ContentType.LTD_LANDER_JSONLD
@@ -124,9 +124,13 @@ class ReducedLtdLanderDocument:
         self._number: int = handle.number_as_int
 
         try:
-            self._timestamp: datetime.datetime = dateparser.parse(
+            date = dateparser.parse(
                 self._metadata["dateModified"], settings={"TIMEZONE": "UTC"}
             )
+            if date:
+                self._timestamp: datetime.datetime = date
+            else:
+                self._timestamp = datetime.datetime.utcnow()
         except Exception:
             self._timestamp = datetime.datetime.utcnow()
 

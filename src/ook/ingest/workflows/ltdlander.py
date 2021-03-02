@@ -25,7 +25,7 @@ from ook.utils import get_json_data
 
 if TYPE_CHECKING:
     from aiohttp import web
-    from structlog._config import BoundLoggerLazyProxy
+    from structlog.stdlib import BoundLogger
 
 __all__ = ["ingest_ltd_lander_jsonld_document"]
 
@@ -33,7 +33,7 @@ __all__ = ["ingest_ltd_lander_jsonld_document"]
 async def ingest_ltd_lander_jsonld_document(
     *,
     app: web.Application,
-    logger: BoundLoggerLazyProxy,
+    logger: BoundLogger,
     url_ingest_message: Dict[str, Any],
 ) -> None:
     """Run the Algolia ingest of a LTD_LANDER_JSONLD content type.

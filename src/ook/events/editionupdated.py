@@ -10,7 +10,7 @@ from aiohttp import web
 from ook.classification import ContentType, classify_ltd_site
 
 if TYPE_CHECKING:
-    from structlog._config import BoundLoggerLazyProxy
+    from structlog.stdlib import BoundLogger
 
 __all__ = ["process_edition_updated"]
 
@@ -18,7 +18,7 @@ __all__ = ["process_edition_updated"]
 async def process_edition_updated(
     *,
     app: web.Application,
-    logger: BoundLoggerLazyProxy,
+    logger: BoundLogger,
     message: Dict[str, Any],
 ) -> None:
     """Process an ``edition.updated`` event from LTD Events.
@@ -57,7 +57,7 @@ async def process_edition_updated(
 async def queue_ltd_document_ingest(
     *,
     app: web.Application,
-    logger: BoundLoggerLazyProxy,
+    logger: BoundLogger,
     content_type: ContentType,
     edition_updated_message: Dict[str, Any],
 ) -> None:

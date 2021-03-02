@@ -25,7 +25,7 @@ from ook.utils import get_html_content, get_json_data, make_raw_github_url
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession, web
-    from structlog._config import BoundLoggerLazyProxy
+    from structlog.stdlib import BoundLogger
 
 __all__ = ["ingest_ltd_sphinx_technote"]
 
@@ -33,7 +33,7 @@ __all__ = ["ingest_ltd_sphinx_technote"]
 async def ingest_ltd_sphinx_technote(
     *,
     app: web.Application,
-    logger: BoundLoggerLazyProxy,
+    logger: BoundLogger,
     url_ingest_message: Dict[str, Any],
 ) -> None:
     """Run the Algolia ingest of a LTD_SPHINX_TECHNOTE content type.
@@ -167,7 +167,7 @@ async def get_metadata(
     repo_url: str,
     git_ref: str,
     http_session: ClientSession,
-    logger: BoundLoggerLazyProxy,
+    logger: BoundLogger,
 ) -> Dict[str, Any]:
     if repo_url.endswith("/"):
         repo_url = repo_url.rstrip("/")

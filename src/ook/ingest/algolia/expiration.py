@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List
 
 if TYPE_CHECKING:
     from algoliasearch.search_index import SearchIndex
-    from structlog._config import BoundLoggerLazyProxy
+    from structlog.stdlib import BoundLogger
 
 __all__ = [
     "delete_old_records",
@@ -20,7 +20,7 @@ async def delete_old_records(
     index: SearchIndex,
     base_url: str,
     surrogate_key: str,
-    logger: BoundLoggerLazyProxy,
+    logger: BoundLogger,
 ) -> None:
     """Delete records for a given URL that do not posess the current surrogate
     key.

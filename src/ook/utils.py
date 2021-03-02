@@ -6,13 +6,13 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
-    from structlog._config import BoundLoggerLazyProxy
+    from structlog.stdlib import BoundLogger
 
 __all__ = ["get_html_content", "get_json_data", "make_raw_github_url"]
 
 
 async def get_html_content(
-    *, url: str, http_session: ClientSession, logger: BoundLoggerLazyProxy
+    *, url: str, http_session: ClientSession, logger: BoundLogger
 ) -> str:
     """Get HTML content from a URL."""
     html_content_response = await http_session.get(url)
@@ -28,7 +28,7 @@ async def get_json_data(
     *,
     url: str,
     http_session: ClientSession,
-    logger: BoundLoggerLazyProxy,
+    logger: BoundLogger,
     encoding: str = None,
     content_type: Optional[str] = "application/json",
 ) -> Dict[str, Any]:
