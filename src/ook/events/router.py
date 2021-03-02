@@ -18,7 +18,7 @@ from ook.ingest.workflows.ltdlander import ingest_ltd_lander_jsonld_document
 from ook.ingest.workflows.ltdsphinxtechnote import ingest_ltd_sphinx_technote
 
 if TYPE_CHECKING:
-    from structlog._config import BoundLoggerLazyProxy
+    from structlog.stdlib import BoundLogger
 
 __all__ = ["consume_events"]
 
@@ -195,7 +195,7 @@ async def route_ltd_events_message(
     *,
     app: web.Application,
     scheduler: aiojobs.Scheduler,
-    logger: BoundLoggerLazyProxy,
+    logger: BoundLogger,
     message: Dict[str, Any],
     schema_id: int,
     schema: Dict[str, Any],
@@ -239,7 +239,7 @@ async def route_ingest_message(
     *,
     app: web.Application,
     scheduler: aiojobs.Scheduler,
-    logger: BoundLoggerLazyProxy,
+    logger: BoundLogger,
     message: Dict[str, Any],
     schema_id: int,
     schema: Dict[str, Any],

@@ -17,7 +17,7 @@ from ook.ingest.reducers.sphinxutils import (
 from ook.ingest.reducers.utils import normalize_root_url
 
 if TYPE_CHECKING:
-    from structlog._config import BoundLoggerLazyProxy
+    from structlog.stdlib import BoundLogger
 
 __all__ = ["ReducedLtdSphinxTechnote"]
 
@@ -48,7 +48,7 @@ class ReducedLtdSphinxTechnote:
         html_source: str,
         url: str,
         metadata: Dict[str, Any],
-        logger: BoundLoggerLazyProxy,
+        logger: BoundLogger,
     ) -> None:
         self._logger = logger
         self._html_source = html_source
@@ -243,7 +243,11 @@ class ReducedLtdSphinxTechnote:
         try:
             date_element = doc.cssselect('a[href="#change-record"]')[0]
             date_text = date_element.text_content()
-            return dateparser.parse(date_text, settings={"TIMEZONE": "UTC"})
+            date = dateparser.parse(date_text, settings={"TIMEZONE": "UTC"})
+            if date:
+                return date
+            else:
+                return datetime.datetime.utcnow()
         except IndexError as e:
             print(e)
             return datetime.datetime.utcnow()
