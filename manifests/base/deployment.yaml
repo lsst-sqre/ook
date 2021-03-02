@@ -17,6 +17,7 @@ spec:
       labels:
         name: ook-queue
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: app
           imagePullPolicy: "Always"
@@ -28,6 +29,16 @@ spec:
           envFrom:
             - configMapRef:
                 name: ook-queue
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - all
+            readOnlyRootFilesystem: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
 ---
 # Pods in this deployment are responsible for taking requests out of the
 # ook.ingest Kafka topic and indexing the corresponding document into Algolia
@@ -47,6 +58,7 @@ spec:
       labels:
         name: ook-ingest
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: app
           imagePullPolicy: "Always"
@@ -64,3 +76,13 @@ spec:
                 secretKeyRef:
                   name: ook
                   key: algolia_api_key
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - all
+            readOnlyRootFilesystem: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000

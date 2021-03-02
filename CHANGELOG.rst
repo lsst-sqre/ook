@@ -2,6 +2,13 @@
 Change log
 ##########
 
+0.3.1 (2021-03-02)
+==================
+
+- Added hardening to the Kubernetes deployment manifests
+
+- Refreshed all pinned dependencies
+
 0.3.0 (2020-07-17)
 ==================
 
