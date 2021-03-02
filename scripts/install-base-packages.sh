@@ -26,8 +26,9 @@ apt-get update
 # Install security updates:
 apt-get -y upgrade
 
-# Example of installing a new package, without unnecessary packages:
-apt-get -y install --no-install-recommends git
+# git is used by setuptools_scm.  build-essential is sometimes needed to
+# install Python modules for which a binary wheel does not exist.
+apt-get -y install --no-install-recommends build-essential git
 
 # Delete cached files we don't need anymore:
 apt-get clean
