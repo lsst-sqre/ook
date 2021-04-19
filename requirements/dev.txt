@@ -35,7 +35,7 @@ distlib==0.3.1
     # via virtualenv
 filelock==3.0.12
     # via virtualenv
-flake8==3.9.0
+flake8==3.9.1
     # via -r requirements/dev.in
 holdup==2.0.0
     # via -r requirements/dev.in
@@ -63,7 +63,7 @@ packaging==20.9
     # via pytest
 pluggy==0.13.1
     # via pytest
-pre-commit==2.12.0
+pre-commit==2.12.1
     # via -r requirements/dev.in
 py==1.10.0
     # via pytest
