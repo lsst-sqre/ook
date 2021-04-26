@@ -42,7 +42,7 @@ idna==2.10
     # via
     #   requests
     #   yarl
-importlib-metadata==4.0.0
+importlib-metadata==4.0.1
     # via -r requirements/main.in
 kafka-python==2.0.2
     # via aiokafka
