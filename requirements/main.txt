@@ -78,7 +78,7 @@ six==1.15.0
     # via python-dateutil
 structlog==21.1.0
     # via safir
-typing-extensions==3.7.4.3
+typing-extensions==3.10.0.0
     # via
     #   aiohttp
     #   pydantic
