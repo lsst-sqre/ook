@@ -17,7 +17,7 @@ appdirs==1.4.4
     # via virtualenv
 async-timeout==3.0.1
     # via aiohttp
-attrs==20.3.0
+attrs==21.2.0
     # via
     #   aiohttp
     #   pytest
@@ -25,7 +25,7 @@ cfgv==3.2.0
     # via pre-commit
 chardet==4.0.0
     # via aiohttp
-click==7.1.2
+click==8.0.0
     # via aiohttp-devtools
 coverage[toml]==5.5
     # via -r requirements/dev.in
@@ -35,7 +35,7 @@ distlib==0.3.1
     # via virtualenv
 filelock==3.0.12
     # via virtualenv
-flake8==3.9.1
+flake8==3.9.2
     # via -r requirements/dev.in
 holdup==2.0.0
     # via -r requirements/dev.in
@@ -71,19 +71,19 @@ pycodestyle==2.7.0
     # via flake8
 pyflakes==2.3.1
     # via flake8
-pygments==2.8.1
+pygments==2.9.0
     # via aiohttp-devtools
 pyparsing==2.4.7
     # via packaging
 pytest-aiohttp==0.3.0
     # via -r requirements/dev.in
-pytest==6.2.3
+pytest==6.2.4
     # via
     #   -r requirements/dev.in
     #   pytest-aiohttp
 pyyaml==5.4.1
     # via pre-commit
-six==1.15.0
+six==1.16.0
     # via virtualenv
 toml==0.10.2
     # via
@@ -96,7 +96,7 @@ typing-extensions==3.10.0.0
     # via
     #   aiohttp
     #   mypy
-virtualenv==20.4.4
+virtualenv==20.4.6
     # via pre-commit
 watchgod==0.7
     # via aiohttp-devtools
