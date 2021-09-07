@@ -76,6 +76,16 @@ spec:
                 secretKeyRef:
                   name: ook
                   key: algolia_api_key
+            - name: OOK_GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ook
+                  key: github_webhook_secret
+            - name: OOK_GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ook
+                  key: github_app_private_key
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
