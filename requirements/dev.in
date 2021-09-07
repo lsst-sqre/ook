@@ -5,6 +5,8 @@
 # After editing, update requirements/dev.txt by running:
 #     make update-deps
 
+-c main.in
+
 pre-commit
 coverage[toml]
 flake8
@@ -14,7 +16,3 @@ pytest-aiohttp
 aiohttp-devtools
 holdup
 aioresponses
-
-# Temporary to avoid a conflict with requirements/main.txt due to the requests
-# dependency on idna, which is capped at 2.10.
-idna<=2.10

@@ -6,6 +6,7 @@
 #
 aiohttp==3.7.4.post0
     # via
+    #   -c requirements/main.in
     #   aiohttp-devtools
     #   aioresponses
     #   pytest-aiohttp
@@ -28,7 +29,9 @@ cfgv==3.3.1
 chardet==4.0.0
     # via aiohttp
 click==8.0.1
-    # via aiohttp-devtools
+    # via
+    #   -c requirements/main.in
+    #   aiohttp-devtools
 coverage[toml]==5.5
     # via -r requirements/dev.in
 devtools==0.7.0
@@ -45,10 +48,8 @@ holdup==2.0.0
     # via -r requirements/dev.in
 identify==2.2.13
     # via pre-commit
-idna==2.10
-    # via
-    #   -r requirements/dev.in
-    #   yarl
+idna==3.2
+    # via yarl
 iniconfig==1.1.1
     # via pytest
 mccabe==0.6.1
@@ -88,7 +89,9 @@ pytest==6.2.5
 pytest-aiohttp==0.3.0
     # via -r requirements/dev.in
 pyyaml==5.4.1
-    # via pre-commit
+    # via
+    #   -c requirements/main.in
+    #   pre-commit
 six==1.16.0
     # via
     #   asttokens
