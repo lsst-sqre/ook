@@ -102,6 +102,10 @@ toml==0.10.2
     #   mypy
     #   pre-commit
     #   pytest
+types-dateparser==1.0.2
+    # via -r requirements/dev.in
+types-pyyaml==5.4.10
+    # via -r requirements/dev.in
 typing-extensions==3.10.0.2
     # via
     #   aiohttp

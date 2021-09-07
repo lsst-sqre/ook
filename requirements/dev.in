@@ -16,3 +16,7 @@ pytest-aiohttp
 aiohttp-devtools
 holdup
 aioresponses
+
+# typing stubs
+types-PyYAML
+types-dateparser
