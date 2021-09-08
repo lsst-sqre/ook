@@ -25,19 +25,25 @@ cchardet==2.1.7
 certifi==2021.5.30
     # via requests
 cffi==1.14.6
-    # via pycares
+    # via
+    #   cryptography
+    #   pycares
 chardet==4.0.0
     # via aiohttp
 charset-normalizer==2.0.4
     # via requests
 click==8.0.1
     # via -r requirements/main.in
+cryptography==3.4.8
+    # via pyjwt
 cssselect==1.1.0
     # via -r requirements/main.in
 dateparser==1.0.0
     # via -r requirements/main.in
 fastavro==1.4.4
     # via kafkit
+gidgethub==5.0.1
+    # via -r requirements/main.in
 idna==3.2
     # via
     #   requests
@@ -60,6 +66,8 @@ pycparser==2.20
     # via cffi
 pydantic==1.8.2
     # via -r requirements/main.in
+pyjwt[crypto]==2.1.0
+    # via gidgethub
 python-dateutil==2.8.2
     # via dateparser
 pytz==2021.1
@@ -83,7 +91,9 @@ typing-extensions==3.10.0.2
 tzlocal==3.0
     # via dateparser
 uritemplate==3.0.1
-    # via kafkit
+    # via
+    #   gidgethub
+    #   kafkit
 urllib3==1.26.6
     # via requests
 yarl==1.6.3
