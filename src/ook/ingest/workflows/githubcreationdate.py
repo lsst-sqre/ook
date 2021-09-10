@@ -44,7 +44,7 @@ async def get_github_creation_date(
 
     historyquery = load_graphql_query("historyquery.graphql")
     response = await github_client.graphql(
-        historyquery, owner=github_owner, repo=github_repo
+        historyquery, owner=github_owner, name=github_repo
     )
 
     history = response["data"]["repository"]["defaultBranchRef"]["target"][

@@ -22,7 +22,9 @@ def test_dmtn131_ingest() -> None:
     doc = ReducedLtdLanderDocument(url=url, metadata=metadata, logger=logger)
     chunk = doc.chunks[0]
 
-    record = create_record(document=doc, chunk=chunk, surrogate_key="test-key")
+    record = create_record(
+        document=doc, chunk=chunk, surrogate_key="test-key", creation_date=None
+    )
 
     assert record["url"] == url
     assert record["baseUrl"] == url
