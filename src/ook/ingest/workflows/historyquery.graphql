@@ -1,0 +1,27 @@
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    defaultBranchRef {
+      target {
+        ... on Commit {
+          history {
+            pageInfo {
+              endCursor
+              hasNextPage
+            }
+            nodes {
+              authoredDate
+              author {
+                email
+                name
+              }
+              committer {
+                email
+                name
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
