@@ -3,7 +3,7 @@ kind: Kustomization
 
 images:
   - name: lsstsqre/ook
-    newTag: tickets-DM-31674
+    newTag: 0.4.0
 
 resources:
   - configmap.yaml
