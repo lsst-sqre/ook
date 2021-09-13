@@ -11,14 +11,14 @@ repos:
         args: [--autofix, --indent=2, '--top-keys=name,doc,type']
 
   - repo: https://github.com/PyCQA/isort
-    rev: 5.8.0
+    rev: 5.9.3
     hooks:
       - id: isort
         additional_dependencies:
           - toml
 
   - repo: https://github.com/psf/black
-    rev: 21.5b1
+    rev: 21.8b0
     hooks:
       - id: black
 
