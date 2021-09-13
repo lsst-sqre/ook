@@ -28,7 +28,10 @@ def test_sqr035_record() -> None:
     section = reduced_technote.sections[1]
 
     data = create_record(
-        section=section, technote=reduced_technote, surrogate_key="test-key"
+        section=section,
+        technote=reduced_technote,
+        surrogate_key="test-key",
+        creation_date=None,
     )
 
     assert data["url"] == "https://sqr-035.lsst.io/#context"
