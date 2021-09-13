@@ -58,6 +58,10 @@ async def get_github_creation_date(
             github_repo=github_repo,
         )
 
+    logger.info(
+        "Finding github_creation_date", commit_count=len(history["nodes"])
+    )
+
     templatebot_names = ["SQuaRE Bot"]
 
     for commit in history["nodes"][::-1]:
@@ -70,6 +74,8 @@ async def get_github_creation_date(
             commit["authoredDate"], settings={"TIMEZONE": "UTC"}
         )
         return creation_date
+
+    logger.warning("Never found a creation commit")
 
     return None
 

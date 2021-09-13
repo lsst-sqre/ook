@@ -114,6 +114,10 @@ async def ingest_ltd_sphinx_technote(
             logger=logger,
         )
     else:
+        logger.info(
+            "Did not capture sourceCreationTimestamp because github_url "
+            "is not available."
+        )
         creation_date = None
 
     try:

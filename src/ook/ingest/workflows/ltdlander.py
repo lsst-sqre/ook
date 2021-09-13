@@ -108,6 +108,10 @@ async def ingest_ltd_lander_jsonld_document(
             logger=logger,
         )
     else:
+        logger.info(
+            "Did not capture sourceCreationTimestamp because github_url "
+            "is not available."
+        )
         creation_date = None
 
     logger.debug(
