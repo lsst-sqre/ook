@@ -38,8 +38,10 @@ async def get_github_creation_date(
             repo=github_repo,
         )
         if github_client is None:
+            logger.error("Did not create github app installation client")
             return None
     except GitHubClientConfigError:
+        logger.exception("Got a GitHubClientConfigError")
         return None
 
     historyquery = load_graphql_query("historyquery.graphql")
