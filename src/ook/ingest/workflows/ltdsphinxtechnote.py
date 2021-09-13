@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Optional
 from urllib.parse import urlparse
 
 import yaml
 from algoliasearch.responses import MultipleResponse
 
+from ook.github import parse_repo_from_github_url
 from ook.ingest.algolia.expiration import delete_old_records
 from ook.ingest.algolia.records import (
     DocumentRecord,
@@ -22,6 +23,8 @@ from ook.ingest.algolia.records import (
 from ook.ingest.reducers.ltdsphinxtechnote import ReducedLtdSphinxTechnote
 from ook.ingest.reducers.sphinxutils import SphinxSection
 from ook.utils import get_html_content, get_json_data, make_raw_github_url
+
+from .githubcreationdate import get_github_creation_date
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession, web
@@ -100,12 +103,30 @@ async def ingest_ltd_sphinx_technote(
 
     surrogate_key = generate_surrogate_key()
 
+    if reduced_technote.github_url:
+        repo_owner, repo_name = parse_repo_from_github_url(
+            reduced_technote.github_url
+        )
+        creation_date = await get_github_creation_date(
+            github_owner=repo_owner,
+            github_repo=repo_name,
+            app=app,
+            logger=logger,
+        )
+    else:
+        logger.info(
+            "Did not capture sourceCreationTimestamp because github_url "
+            "is not available."
+        )
+        creation_date = None
+
     try:
         records = [
             create_record(
                 section=s,
                 technote=reduced_technote,
                 surrogate_key=surrogate_key,
+                creation_date=creation_date,
             )
             for s in reduced_technote.sections
         ]
@@ -120,6 +141,7 @@ async def ingest_ltd_sphinx_technote(
                 section=description_section,
                 technote=reduced_technote,
                 surrogate_key=surrogate_key,
+                creation_date=creation_date,
             )
         )
     except Exception:
@@ -198,6 +220,7 @@ def create_record(
     section: SphinxSection,
     technote: ReducedLtdSphinxTechnote,
     surrogate_key: str,
+    creation_date: Optional[datetime.datetime],
     validate: bool = True,
 ) -> Dict[str, Any]:
     """Create a JSON-serializable record for the Algolia index."""
@@ -207,6 +230,9 @@ def create_record(
         "surrogateKey": surrogate_key,
         "sourceUpdateTime": format_utc_datetime(technote.timestamp),
         "sourceUpdateTimestamp": format_timestamp(technote.timestamp),
+        "sourceCreationTimestamp": (
+            format_timestamp(creation_date) if creation_date else None
+        ),
         "recordUpdateTime": format_utc_datetime(datetime.datetime.utcnow()),
         "url": section.url,
         "baseUrl": technote.url,

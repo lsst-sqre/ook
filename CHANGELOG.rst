@@ -2,6 +2,15 @@
 Change log
 ##########
 
+0.4.0 (2021-09-13)
+==================
+
+- Documents are ingested with a new ``sourceCreationTimestamp``.
+  This timestamp corresponds to the time when a document was initially created.
+  A new workflow, ``get_github_creation_date`` can be used to infer this creation date on the basis of the first GitHub commit on the default branch that was not made by ``SQuaRE Bot`` (or any email/name corresponding to a bot) during the initial template instantiation.
+
+- Ook is now configured as a GitHub App.
+
 0.3.1 (2021-03-02)
 ==================
 

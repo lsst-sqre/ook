@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from algoliasearch.responses import MultipleResponse
 
+from ook.github import parse_repo_from_github_url
 from ook.ingest.algolia.expiration import delete_old_records
 from ook.ingest.algolia.records import (
     DocumentRecord,
@@ -22,6 +23,8 @@ from ook.ingest.reducers.ltdlander import (
     ReducedLtdLanderDocument,
 )
 from ook.utils import get_json_data
+
+from .githubcreationdate import get_github_creation_date
 
 if TYPE_CHECKING:
     from aiohttp import web
@@ -94,6 +97,23 @@ async def ingest_ltd_lander_jsonld_document(
 
     surrogate_key = generate_surrogate_key()
 
+    if reduced_document.github_url:
+        repo_owner, repo_name = parse_repo_from_github_url(
+            reduced_document.github_url
+        )
+        creation_date = await get_github_creation_date(
+            github_owner=repo_owner,
+            github_repo=repo_name,
+            app=app,
+            logger=logger,
+        )
+    else:
+        logger.info(
+            "Did not capture sourceCreationTimestamp because github_url "
+            "is not available."
+        )
+        creation_date = None
+
     logger.debug(
         "Reduced LTD Lander Document", chunks=len(reduced_document.chunks)
     )
@@ -104,6 +124,7 @@ async def ingest_ltd_lander_jsonld_document(
                 chunk=s,
                 document=reduced_document,
                 surrogate_key=surrogate_key,
+                creation_date=creation_date,
             )
             for s in reduced_document.chunks
         ]
@@ -117,6 +138,7 @@ async def ingest_ltd_lander_jsonld_document(
                 chunk=description_chunk,
                 document=reduced_document,
                 surrogate_key=surrogate_key,
+                creation_date=creation_date,
             )
         )
     except Exception:
@@ -162,6 +184,7 @@ def create_record(
     document: ReducedLtdLanderDocument,
     chunk: ContentChunk,
     surrogate_key: str,
+    creation_date: Optional[datetime.datetime],
     validate: bool = True,
 ) -> Dict[str, Any]:
     """Create a JSON-serializable record for the Algolia index."""
@@ -175,6 +198,9 @@ def create_record(
         "surrogateKey": surrogate_key,
         "sourceUpdateTime": format_utc_datetime(document.timestamp),
         "sourceUpdateTimestamp": format_timestamp(document.timestamp),
+        "sourceCreationTimestamp": (
+            format_timestamp(creation_date) if creation_date else None
+        ),
         "recordUpdateTime": format_utc_datetime(datetime.datetime.utcnow()),
         "url": document.url,
         "baseUrl": document.url,

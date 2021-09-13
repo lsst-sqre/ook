@@ -38,6 +38,9 @@ class DocumentRecord(BaseModel):
     This is intended as a sortable version of `sourceUpdateTime`.
     """
 
+    sourceCreationTimestamp: Optional[int]
+    """A unix timestamp for when the source document was created."""
+
     recordUpdateTime: str
     """A ISO 8601 date time for when this record was created."""
 

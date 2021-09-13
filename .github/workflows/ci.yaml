@@ -10,7 +10,7 @@ jobs:
       matrix:
         python:
           - 3.7
-          - 3.9
+          # - 3.9
 
     steps:
       - uses: actions/checkout@v2
@@ -49,6 +49,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0  # full depth for setuptools_scm
 
       - name: Define the Docker tag
         id: vars

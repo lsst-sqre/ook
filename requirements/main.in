@@ -18,3 +18,4 @@ cssselect
 PyYAML
 dateparser
 algoliasearch>=2.0,<3.0
+gidgethub
