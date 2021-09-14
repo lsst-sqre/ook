@@ -38,7 +38,7 @@ devtools==0.7.0
     # via aiohttp-devtools
 distlib==0.3.2
     # via virtualenv
-executing==0.8.0
+executing==0.8.1
     # via devtools
 filelock==3.0.12
     # via virtualenv
