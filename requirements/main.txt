@@ -40,7 +40,7 @@ cssselect==1.1.0
     # via -r requirements/main.in
 dateparser==1.0.0
     # via -r requirements/main.in
-fastavro==1.4.4
+fastavro==1.4.5
     # via kafkit
 gidgethub==5.0.1
     # via -r requirements/main.in
@@ -56,7 +56,7 @@ kafkit==0.2.0b3
     # via safir
 lxml==4.6.3
     # via -r requirements/main.in
-multidict==5.1.0
+multidict==5.2.0
     # via
     #   aiohttp
     #   yarl
@@ -70,15 +70,15 @@ pyjwt[crypto]==2.1.0
     # via gidgethub
 python-dateutil==2.8.2
     # via dateparser
-pytz==2021.1
+pytz==2021.3
     # via dateparser
 pyyaml==5.4.1
     # via -r requirements/main.in
-regex==2021.8.28
+regex==2021.9.30
     # via dateparser
 requests==2.26.0
     # via algoliasearch
-git+git://github.com/lsst-sqre/safir@tickets/DM-23761#egg=safir
+safir @ git+git://github.com/lsst-sqre/safir@tickets/DM-23761
     # via -r requirements/main.in
 six==1.16.0
     # via python-dateutil
@@ -94,9 +94,9 @@ uritemplate==3.0.1
     # via
     #   gidgethub
     #   kafkit
-urllib3==1.26.6
+urllib3==1.26.7
     # via requests
 yarl==1.6.3
     # via aiohttp
-zipp==3.5.0
+zipp==3.6.0
     # via importlib-metadata
