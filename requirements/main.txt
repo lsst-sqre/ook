@@ -6,75 +6,85 @@
 #
 aiodns==3.0.0
     # via -r requirements/main.in
-aiohttp==3.7.4.post0
+aiohttp==3.8.1
     # via
     #   -r requirements/main.in
     #   safir
-aiojobs==0.3.0
+aiojobs==1.0.0
     # via -r requirements/main.in
 aiokafka==0.7.2
     # via safir
-algoliasearch==2.5.0
-    # via -r requirements/main.in
-async-timeout==3.0.1
+aiosignal==1.2.0
     # via aiohttp
+algoliasearch==2.6.0
+    # via -r requirements/main.in
+async-timeout==4.0.1
+    # via
+    #   aiohttp
+    #   aiojobs
 attrs==21.2.0
     # via aiohttp
 cchardet==2.1.7
     # via -r requirements/main.in
-certifi==2021.5.30
+certifi==2021.10.8
     # via requests
-cffi==1.14.6
+cffi==1.15.0
     # via
     #   cryptography
     #   pycares
-chardet==4.0.0
-    # via aiohttp
-charset-normalizer==2.0.6
-    # via requests
-click==8.0.1
+charset-normalizer==2.0.8
+    # via
+    #   aiohttp
+    #   requests
+click==8.0.3
     # via -r requirements/main.in
-cryptography==3.4.8
+cryptography==36.0.0
     # via pyjwt
 cssselect==1.1.0
     # via -r requirements/main.in
-dateparser==1.0.0
+dateparser==1.1.0
     # via -r requirements/main.in
-fastavro==1.4.5
+fastavro==1.4.7
     # via kafkit
+frozenlist==1.2.0
+    # via
+    #   aiohttp
+    #   aiosignal
 gidgethub==5.0.1
     # via -r requirements/main.in
-idna==3.2
+idna==3.3
     # via
     #   requests
     #   yarl
-importlib-metadata==4.8.1
+importlib-metadata==4.8.2
     # via -r requirements/main.in
 kafka-python==2.0.2
     # via aiokafka
 kafkit==0.2.0b3
     # via safir
-lxml==4.6.3
+lxml==4.6.4
     # via -r requirements/main.in
 multidict==5.2.0
     # via
     #   aiohttp
     #   yarl
-pycares==4.0.0
+pycares==4.1.2
     # via aiodns
-pycparser==2.20
+pycparser==2.21
     # via cffi
 pydantic==1.8.2
     # via -r requirements/main.in
-pyjwt[crypto]==2.1.0
+pyjwt[crypto]==2.3.0
     # via gidgethub
 python-dateutil==2.8.2
     # via dateparser
 pytz==2021.3
     # via dateparser
-pyyaml==5.4.1
+pytz-deprecation-shim==0.1.0.post0
+    # via tzlocal
+pyyaml==6.0
     # via -r requirements/main.in
-regex==2021.9.30
+regex==2021.11.10
     # via dateparser
 requests==2.26.0
     # via algoliasearch
@@ -82,21 +92,23 @@ safir @ git+git://github.com/lsst-sqre/safir@tickets/DM-23761
     # via -r requirements/main.in
 six==1.16.0
     # via python-dateutil
-structlog==21.1.0
+structlog==21.4.0
     # via safir
-typing-extensions==3.10.0.2
+typing-extensions==4.0.1
     # via
-    #   aiohttp
+    #   async-timeout
     #   pydantic
-tzlocal==3.0
+tzdata==2021.5
+    # via pytz-deprecation-shim
+tzlocal==4.1
     # via dateparser
-uritemplate==3.0.1
+uritemplate==4.1.1
     # via
     #   gidgethub
     #   kafkit
 urllib3==1.26.7
     # via requests
-yarl==1.6.3
+yarl==1.7.2
     # via aiohttp
 zipp==3.6.0
     # via importlib-metadata
