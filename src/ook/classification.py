@@ -154,12 +154,20 @@ async def has_metadata_yaml(
     try:
         await _get_metadata_yaml(
             repo_url=product_data["doc_repo"],
-            git_ref="master",
+            git_ref="main",
             http_session=http_session,
             logger=get_logger(__name__),
         )
     except RuntimeError:
-        return False
+        try:
+            await _get_metadata_yaml(
+                repo_url=product_data["doc_repo"],
+                git_ref="master",
+                http_session=http_session,
+                logger=get_logger(__name__),
+            )
+        except RuntimeError:
+            return False
 
     return True
 

@@ -4,7 +4,7 @@
 #
 #    pip-compile --output-file=requirements/dev.txt requirements/dev.in
 #
-aiohttp==3.7.4.post0
+aiohttp==3.8.1
     # via
     #   -c requirements/main.in
     #   aiohttp-devtools
@@ -14,25 +14,27 @@ aiohttp-devtools==0.13.1
     # via -r requirements/dev.in
 aioresponses==0.7.2
     # via -r requirements/dev.in
+aiosignal==1.2.0
+    # via aiohttp
 asttokens==2.0.5
     # via devtools
-async-timeout==3.0.1
+async-timeout==4.0.1
     # via aiohttp
 attrs==21.2.0
     # via
     #   aiohttp
     #   pytest
-backports.entry-points-selectable==1.1.0
+backports.entry-points-selectable==1.1.1
     # via virtualenv
 cfgv==3.3.1
     # via pre-commit
-chardet==4.0.0
+charset-normalizer==2.0.8
     # via aiohttp
-click==8.0.1
+click==8.0.3
     # via
     #   -c requirements/main.in
     #   aiohttp-devtools
-coverage[toml]==6.0
+coverage[toml]==6.2
     # via -r requirements/dev.in
 devtools==0.8.0
     # via aiohttp-devtools
@@ -40,15 +42,19 @@ distlib==0.3.3
     # via virtualenv
 executing==0.8.2
     # via devtools
-filelock==3.3.0
+filelock==3.4.0
     # via virtualenv
-flake8==3.9.2
+flake8==4.0.1
     # via -r requirements/dev.in
+frozenlist==1.2.0
+    # via
+    #   aiohttp
+    #   aiosignal
 holdup==2.0.0
     # via -r requirements/dev.in
-identify==2.3.0
+identify==2.4.0
     # via pre-commit
-idna==3.2
+idna==3.3
     # via yarl
 iniconfig==1.1.1
     # via pytest
@@ -64,23 +70,23 @@ mypy-extensions==0.4.3
     # via mypy
 nodeenv==1.6.0
     # via pre-commit
-packaging==21.0
+packaging==21.3
     # via pytest
 platformdirs==2.4.0
     # via virtualenv
 pluggy==1.0.0
     # via pytest
-pre-commit==2.15.0
+pre-commit==2.16.0
     # via -r requirements/dev.in
-py==1.10.0
+py==1.11.0
     # via pytest
-pycodestyle==2.7.0
+pycodestyle==2.8.0
     # via flake8
-pyflakes==2.3.1
+pyflakes==2.4.0
     # via flake8
 pygments==2.10.0
     # via aiohttp-devtools
-pyparsing==2.4.7
+pyparsing==3.0.6
     # via packaging
 pytest==6.2.5
     # via
@@ -88,7 +94,7 @@ pytest==6.2.5
     #   pytest-aiohttp
 pytest-aiohttp==0.3.0
     # via -r requirements/dev.in
-pyyaml==5.4.1
+pyyaml==6.0
     # via
     #   -c requirements/main.in
     #   pre-commit
@@ -101,19 +107,19 @@ toml==0.10.2
     #   mypy
     #   pre-commit
     #   pytest
-tomli==1.2.1
+tomli==1.2.2
     # via coverage
-types-dateparser==1.0.3
+types-dateparser==1.0.8
     # via -r requirements/dev.in
-types-pyyaml==5.4.10
+types-pyyaml==6.0.1
     # via -r requirements/dev.in
-typing-extensions==3.10.0.2
+typing-extensions==4.0.1
     # via
-    #   aiohttp
+    #   async-timeout
     #   mypy
-virtualenv==20.8.1
+virtualenv==20.10.0
     # via pre-commit
 watchgod==0.7
     # via aiohttp-devtools
-yarl==1.6.3
+yarl==1.7.2
     # via aiohttp

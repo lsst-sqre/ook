@@ -2,6 +2,13 @@
 Change log
 ##########
 
+0.5.0 (2021-12-01)
+==================
+
+- Compatibility with "main" as the default branch when sorting and detecting ``technote`` metadata.yaml files.
+- Updated dependencies
+- The docker image is now based on Python 3.9.8
+
 0.4.0 (2021-09-13)
 ==================
 

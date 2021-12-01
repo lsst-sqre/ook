@@ -77,7 +77,7 @@ async def ingest_ltd_sphinx_technote(
     try:
         git_ref = edition_data["tracked_refs"][0]
     except Exception:
-        git_ref = "master"
+        git_ref = "main"
 
     try:
         metadata = await get_metadata(
