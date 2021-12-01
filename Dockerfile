@@ -14,13 +14,17 @@
 #   - Runs a non-root user.
 #   - Sets up the entrypoint and port.
 
-FROM python:3.7-slim-buster AS base-image
+FROM python:3.9.8-slim-bullseye as base-image
 
 # Update system packages
 COPY scripts/install-base-packages.sh .
-RUN ./install-base-packages.sh
+RUN ./install-base-packages.sh && rm ./install-base-packages.sh
 
 FROM base-image AS dependencies-image
+
+# Install system packages only needed for building dependencies.
+COPY scripts/install-dependency-packages.sh .
+RUN ./install-dependency-packages.sh
 
 # Create a Python virtual environment
 ENV VIRTUAL_ENV=/opt/venv
@@ -34,30 +38,31 @@ RUN pip install --upgrade --no-cache-dir pip setuptools wheel
 COPY requirements/main.txt ./requirements.txt
 RUN pip install --quiet --no-cache-dir -r requirements.txt
 
-FROM base-image AS install-image
+FROM dependencies-image AS install-image
 
 # Use the virtualenv
-COPY --from=dependencies-image /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY . /app
-WORKDIR /app
+COPY . /workdir
+WORKDIR /workdir
 RUN pip install --no-cache-dir .
 
 FROM base-image AS runtime-image
 
 # Create a non-root user
 RUN useradd --create-home appuser
-WORKDIR /home/appuser
+
+# Copy the virtualenv
+COPY --from=install-image /opt/venv /opt/venv
 
 # Make sure we use the virtualenv
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY --from=install-image /opt/venv /opt/venv
-
-# Switch to non-root user
+# Switch to the non-root user.
 USER appuser
 
+# Expose the port.
 EXPOSE 8080
 
-ENTRYPOINT ["ook", "run", "--port", "8080"]
+# Run the application.
+CMD ["ook", "run", "--port", "8080"]
