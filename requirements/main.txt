@@ -32,7 +32,7 @@ cffi==1.15.0
     # via
     #   cryptography
     #   pycares
-charset-normalizer==2.0.8
+charset-normalizer==2.0.9
     # via
     #   aiohttp
     #   requests
