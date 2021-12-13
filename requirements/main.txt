@@ -62,7 +62,7 @@ kafka-python==2.0.2
     # via aiokafka
 kafkit==0.2.0b3
     # via safir
-lxml==4.6.4
+lxml==4.6.5
     # via -r requirements/main.in
 multidict==5.2.0
     # via
