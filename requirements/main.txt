@@ -16,7 +16,7 @@ aiokafka==0.7.2
     # via safir
 aiosignal==1.2.0
     # via aiohttp
-algoliasearch==2.6.0
+algoliasearch==2.6.1
     # via -r requirements/main.in
 async-timeout==4.0.1
     # via
@@ -38,7 +38,7 @@ charset-normalizer==2.0.9
     #   requests
 click==8.0.3
     # via -r requirements/main.in
-cryptography==36.0.0
+cryptography==36.0.1
     # via pyjwt
 cssselect==1.1.0
     # via -r requirements/main.in
@@ -56,13 +56,13 @@ idna==3.3
     # via
     #   requests
     #   yarl
-importlib-metadata==4.8.2
+importlib-metadata==4.10.0
     # via -r requirements/main.in
 kafka-python==2.0.2
     # via aiokafka
 kafkit==0.2.0b3
     # via safir
-lxml==4.6.5
+lxml==4.7.1
     # via -r requirements/main.in
 multidict==5.2.0
     # via
@@ -92,7 +92,7 @@ safir @ git+git://github.com/lsst-sqre/safir@tickets/DM-23761
     # via -r requirements/main.in
 six==1.16.0
     # via python-dateutil
-structlog==21.4.0
+structlog==21.5.0
     # via safir
 typing-extensions==4.0.1
     # via
