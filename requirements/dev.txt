@@ -18,7 +18,7 @@ aiosignal==1.2.0
     # via aiohttp
 asttokens==2.0.5
     # via devtools
-async-timeout==4.0.1
+async-timeout==4.0.2
     # via aiohttp
 attrs==21.2.0
     # via
@@ -42,7 +42,7 @@ distlib==0.3.4
     # via virtualenv
 executing==0.8.2
     # via devtools
-filelock==3.4.0
+filelock==3.4.2
     # via virtualenv
 flake8==4.0.1
     # via -r requirements/dev.in
@@ -64,7 +64,7 @@ multidict==5.2.0
     # via
     #   aiohttp
     #   yarl
-mypy==0.920
+mypy==0.930
     # via -r requirements/dev.in
 mypy-extensions==0.4.3
     # via mypy
@@ -72,7 +72,7 @@ nodeenv==1.6.0
     # via pre-commit
 packaging==21.3
     # via pytest
-platformdirs==2.4.0
+platformdirs==2.4.1
     # via virtualenv
 pluggy==1.0.0
     # via pytest
@@ -115,9 +115,7 @@ types-dateparser==1.0.8
 types-pyyaml==6.0.1
     # via -r requirements/dev.in
 typing-extensions==4.0.1
-    # via
-    #   async-timeout
-    #   mypy
+    # via mypy
 virtualenv==20.10.0
     # via pre-commit
 watchgod==0.7
