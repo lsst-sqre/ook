@@ -32,7 +32,7 @@ cffi==1.15.0
     # via
     #   cryptography
     #   pycares
-charset-normalizer==2.0.9
+charset-normalizer==2.0.10
     # via
     #   aiohttp
     #   requests
@@ -44,7 +44,7 @@ cssselect==1.1.0
     # via -r requirements/main.in
 dateparser==1.1.0
     # via -r requirements/main.in
-fastavro==1.4.8
+fastavro==1.4.9
     # via kafkit
 frozenlist==1.2.0
     # via
@@ -86,7 +86,7 @@ pyyaml==6.0
     # via -r requirements/main.in
 regex==2021.11.10
     # via dateparser
-requests==2.26.0
+requests==2.27.1
     # via algoliasearch
 safir @ git+git://github.com/lsst-sqre/safir@tickets/DM-23761
     # via -r requirements/main.in
@@ -104,7 +104,7 @@ uritemplate==4.1.1
     # via
     #   gidgethub
     #   kafkit
-urllib3==1.26.7
+urllib3==1.26.8
     # via requests
 yarl==1.7.2
     # via aiohttp
