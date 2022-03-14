@@ -62,7 +62,7 @@ multidict==6.0.2
     # via
     #   aiohttp
     #   yarl
-mypy==0.931
+mypy==0.940
     # via -r requirements/dev.in
 mypy-extensions==0.4.3
     # via mypy
@@ -86,7 +86,7 @@ pygments==2.11.2
     # via aiohttp-devtools
 pyparsing==3.0.7
     # via packaging
-pytest==7.0.1
+pytest==7.1.0
     # via
     #   -r requirements/dev.in
     #   pytest-aiohttp
@@ -116,7 +116,7 @@ types-pyyaml==6.0.4
     # via -r requirements/dev.in
 typing-extensions==4.1.1
     # via mypy
-virtualenv==20.13.2
+virtualenv==20.13.3
     # via pre-commit
 watchgod==0.7
     # via aiohttp-devtools
