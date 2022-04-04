@@ -14,7 +14,7 @@ mypy
 pytest
 pytest-aiohttp
 aiohttp-devtools
-holdup
+holdup<3
 aioresponses
 
 # typing stubs
