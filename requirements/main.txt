@@ -36,13 +36,13 @@ charset-normalizer==2.0.12
     # via
     #   aiohttp
     #   requests
-click==8.0.4
+click==8.1.2
     # via -r requirements/main.in
-cryptography==36.0.1
+cryptography==36.0.2
     # via pyjwt
 cssselect==1.1.0
     # via -r requirements/main.in
-dateparser==1.1.0
+dateparser==1.1.1
     # via -r requirements/main.in
 fastavro==1.4.10
     # via kafkit
@@ -78,7 +78,7 @@ pyjwt[crypto]==2.3.0
     # via gidgethub
 python-dateutil==2.8.2
     # via dateparser
-pytz==2021.3
+pytz==2022.1
     # via dateparser
 pytz-deprecation-shim==0.1.0.post0
     # via tzlocal
@@ -88,7 +88,7 @@ regex==2022.3.2
     # via dateparser
 requests==2.27.1
     # via algoliasearch
-safir @ git+git://github.com/lsst-sqre/safir@tickets/DM-23761
+safir @ git+https://github.com/lsst-sqre/safir@tickets/DM-23761
     # via -r requirements/main.in
 six==1.16.0
     # via python-dateutil
@@ -96,17 +96,17 @@ structlog==21.5.0
     # via safir
 typing-extensions==4.1.1
     # via pydantic
-tzdata==2021.5
+tzdata==2022.1
     # via pytz-deprecation-shim
-tzlocal==4.1
+tzlocal==4.2
     # via dateparser
 uritemplate==4.1.1
     # via
     #   gidgethub
     #   kafkit
-urllib3==1.26.8
+urllib3==1.26.9
     # via requests
 yarl==1.7.2
     # via aiohttp
-zipp==3.7.0
+zipp==3.8.0
     # via importlib-metadata
