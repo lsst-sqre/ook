@@ -116,13 +116,13 @@ tomli==2.0.1
     #   coverage
     #   mypy
     #   pytest
-types-dateparser==1.1.0
+types-dateparser==1.1.2
     # via -r requirements/dev.in
-types-pyyaml==6.0.5
+types-pyyaml==6.0.6
     # via -r requirements/dev.in
-typing-extensions==4.1.1
+typing-extensions==4.2.0
     # via mypy
-virtualenv==20.14.0
+virtualenv==20.14.1
     # via pre-commit
 watchgod==0.8.2
     # via aiohttp-devtools
