@@ -46,7 +46,7 @@ dateparser==1.1.1
     # via -r requirements/main.in
 fastavro==1.5.4
     # via kafkit
-frozenlist==1.3.0
+frozenlist==1.3.1
     # via
     #   aiohttp
     #   aiosignal
@@ -106,7 +106,7 @@ uritemplate==4.1.1
     #   kafkit
 urllib3==1.26.11
     # via requests
-yarl==1.7.2
+yarl==1.8.1
     # via aiohttp
 zipp==3.8.1
     # via importlib-metadata
