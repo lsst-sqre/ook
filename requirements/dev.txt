@@ -18,7 +18,7 @@ aiosignal==1.2.0
     # via aiohttp
 anyio==3.6.1
     # via watchgod
-asttokens==2.0.5
+asttokens==2.0.7
     # via devtools
 async-timeout==4.0.2
     # via aiohttp
@@ -40,9 +40,9 @@ devtools==0.9.0
     # via aiohttp-devtools
 distlib==0.3.5
     # via virtualenv
-executing==0.9.1
+executing==0.10.0
     # via devtools
-filelock==3.7.1
+filelock==3.8.0
     # via virtualenv
 flake8==5.0.4
     # via -r requirements/dev.in

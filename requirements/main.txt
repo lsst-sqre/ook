@@ -68,17 +68,17 @@ multidict==6.0.2
     # via
     #   aiohttp
     #   yarl
-pycares==4.2.1
+pycares==4.2.2
     # via aiodns
 pycparser==2.21
     # via cffi
-pydantic==1.9.1
+pydantic==1.9.2
     # via -r requirements/main.in
 pyjwt[crypto]==2.4.0
     # via gidgethub
 python-dateutil==2.8.2
     # via dateparser
-pytz==2022.1
+pytz==2022.2.1
     # via dateparser
 pytz-deprecation-shim==0.1.0.post0
     # via tzlocal
@@ -96,7 +96,7 @@ structlog==22.1.0
     # via safir
 typing-extensions==4.3.0
     # via pydantic
-tzdata==2022.1
+tzdata==2022.2
     # via pytz-deprecation-shim
 tzlocal==4.2
     # via dateparser
