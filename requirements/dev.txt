@@ -38,7 +38,7 @@ coverage[toml]==6.4.4
     # via -r requirements/dev.in
 devtools==0.9.0
     # via aiohttp-devtools
-distlib==0.3.5
+distlib==0.3.6
     # via virtualenv
 executing==0.10.0
     # via devtools
