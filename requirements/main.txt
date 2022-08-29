@@ -104,7 +104,7 @@ uritemplate==4.1.1
     # via
     #   gidgethub
     #   kafkit
-urllib3==1.26.11
+urllib3==1.26.12
     # via requests
 yarl==1.8.1
     # via aiohttp
