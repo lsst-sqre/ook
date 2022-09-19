@@ -54,7 +54,7 @@ holdup==2.0.0
     # via -r requirements/dev.in
 identify==2.5.5
     # via pre-commit
-idna==3.3
+idna==3.4
     # via
     #   anyio
     #   yarl
