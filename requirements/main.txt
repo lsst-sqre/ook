@@ -56,7 +56,7 @@ idna==3.4
     # via
     #   requests
     #   yarl
-importlib-metadata==4.12.0
+importlib-metadata==5.0.0
     # via -r requirements/main.in
 kafka-python==2.0.2
     # via aiokafka
@@ -78,7 +78,7 @@ pyjwt[crypto]==2.5.0
     # via gidgethub
 python-dateutil==2.8.2
     # via dateparser
-pytz==2022.2.1
+pytz==2022.4
     # via dateparser
 pytz-deprecation-shim==0.1.0.post0
     # via tzlocal
@@ -98,7 +98,7 @@ types-cryptography==3.3.23
     # via pyjwt
 typing-extensions==4.3.0
     # via pydantic
-tzdata==2022.2
+tzdata==2022.4
     # via pytz-deprecation-shim
 tzlocal==4.2
     # via dateparser
