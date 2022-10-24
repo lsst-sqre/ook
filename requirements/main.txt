@@ -42,7 +42,7 @@ cryptography==38.0.1
     # via pyjwt
 cssselect==1.1.0
     # via -r requirements/main.in
-dateparser==1.1.1
+dateparser==1.1.2
     # via -r requirements/main.in
 fastavro==1.6.1
     # via kafkit
@@ -74,11 +74,11 @@ pycparser==2.21
     # via cffi
 pydantic==1.10.2
     # via -r requirements/main.in
-pyjwt[crypto]==2.5.0
+pyjwt[crypto]==2.6.0
     # via gidgethub
 python-dateutil==2.8.2
     # via dateparser
-pytz==2022.4
+pytz==2022.5
     # via dateparser
 pytz-deprecation-shim==0.1.0.post0
     # via tzlocal
@@ -94,8 +94,6 @@ six==1.16.0
     # via python-dateutil
 structlog==22.1.0
     # via safir
-types-cryptography==3.3.23.1
-    # via pyjwt
 typing-extensions==4.4.0
     # via pydantic
 tzdata==2022.5
@@ -110,5 +108,5 @@ urllib3==1.26.12
     # via requests
 yarl==1.8.1
     # via aiohttp
-zipp==3.9.0
+zipp==3.10.0
     # via importlib-metadata
