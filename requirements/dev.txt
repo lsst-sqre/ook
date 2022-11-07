@@ -40,7 +40,7 @@ devtools==0.9.0
     # via aiohttp-devtools
 distlib==0.3.6
     # via virtualenv
-exceptiongroup==1.0.0
+exceptiongroup==1.0.1
     # via pytest
 executing==0.10.0
     # via devtools
@@ -76,7 +76,7 @@ nodeenv==1.7.0
     # via pre-commit
 packaging==21.3
     # via pytest
-platformdirs==2.5.2
+platformdirs==2.5.3
     # via virtualenv
 pluggy==1.0.0
     # via pytest
@@ -114,7 +114,7 @@ tomli==2.0.1
     #   coverage
     #   mypy
     #   pytest
-types-dateparser==1.1.4.1
+types-dateparser==1.1.4.2
     # via -r requirements/dev.in
 types-pyyaml==6.0.12.1
     # via -r requirements/dev.in
