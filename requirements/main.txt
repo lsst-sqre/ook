@@ -12,9 +12,9 @@ aiohttp==3.8.3
     #   safir
 aiojobs==1.1.0
     # via -r requirements/main.in
-aiokafka==0.7.2
+aiokafka==0.8.0
     # via safir
-aiosignal==1.2.0
+aiosignal==1.3.1
     # via aiohttp
 algoliasearch==2.6.2
     # via -r requirements/main.in
@@ -22,6 +22,7 @@ async-timeout==4.0.2
     # via
     #   aiohttp
     #   aiojobs
+    #   aiokafka
 attrs==22.1.0
     # via aiohttp
 cchardet==2.1.7
@@ -38,15 +39,15 @@ charset-normalizer==2.1.1
     #   requests
 click==8.1.3
     # via -r requirements/main.in
-cryptography==38.0.3
+cryptography==38.0.4
     # via pyjwt
 cssselect==1.2.0
     # via -r requirements/main.in
-dateparser==1.1.3
+dateparser==1.1.4
     # via -r requirements/main.in
 fastavro==1.7.0
     # via kafkit
-frozenlist==1.3.1
+frozenlist==1.3.3
     # via
     #   aiohttp
     #   aiosignal
@@ -56,7 +57,7 @@ idna==3.4
     # via
     #   requests
     #   yarl
-importlib-metadata==5.0.0
+importlib-metadata==5.1.0
     # via -r requirements/main.in
 kafka-python==2.0.2
     # via aiokafka
@@ -68,6 +69,8 @@ multidict==6.0.2
     # via
     #   aiohttp
     #   yarl
+packaging==21.3
+    # via aiokafka
 pycares==4.2.2
     # via aiodns
 pycparser==2.21
@@ -76,6 +79,8 @@ pydantic==1.10.2
     # via -r requirements/main.in
 pyjwt[crypto]==2.6.0
     # via gidgethub
+pyparsing==3.0.9
+    # via packaging
 python-dateutil==2.8.2
     # via dateparser
 pytz==2022.6
@@ -84,7 +89,7 @@ pytz-deprecation-shim==0.1.0.post0
     # via tzlocal
 pyyaml==6.0
     # via -r requirements/main.in
-regex==2022.3.2
+regex==2022.10.31
     # via dateparser
 requests==2.28.1
     # via algoliasearch
@@ -92,7 +97,7 @@ safir @ git+https://github.com/lsst-sqre/safir@tickets/DM-23761
     # via -r requirements/main.in
 six==1.16.0
     # via python-dateutil
-structlog==22.1.0
+structlog==22.3.0
     # via safir
 typing-extensions==4.4.0
     # via pydantic
@@ -104,9 +109,9 @@ uritemplate==4.1.1
     # via
     #   gidgethub
     #   kafkit
-urllib3==1.26.12
+urllib3==1.26.13
     # via requests
 yarl==1.8.1
     # via aiohttp
-zipp==3.10.0
+zipp==3.11.0
     # via importlib-metadata

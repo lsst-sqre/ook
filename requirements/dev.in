@@ -13,6 +13,7 @@ flake8
 mypy
 pytest
 pytest-aiohttp
+pytest-asyncio
 aiohttp-devtools
 holdup<3
 aioresponses

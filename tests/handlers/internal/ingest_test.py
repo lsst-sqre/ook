@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 from ook.app import create_app
 from tests.conftest import async_test_until
 
@@ -12,6 +14,7 @@ if TYPE_CHECKING:
     from aiohttp.pytest_plugin.test_utils import TestClient
 
 
+@pytest.mark.asyncio
 async def test_post_ingest_ltd_single(
     aiohttp_client: TestClient, caplog: LogCaptureFixture
 ) -> None:
@@ -32,6 +35,7 @@ async def test_post_ingest_ltd_single(
     )
 
 
+@pytest.mark.asyncio
 async def test_post_ingest_ltd_list(
     aiohttp_client: TestClient, caplog: LogCaptureFixture
 ) -> None:
@@ -58,6 +62,7 @@ async def test_post_ingest_ltd_list(
     )
 
 
+@pytest.mark.asyncio
 async def test_post_ingest_ltd_pattern(
     aiohttp_client: TestClient, caplog: LogCaptureFixture
 ) -> None:
