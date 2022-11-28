@@ -14,7 +14,7 @@ aiohttp-devtools==1.0.post0
     # via -r requirements/dev.in
 aioresponses==0.7.3
     # via -r requirements/dev.in
-aiosignal==1.2.0
+aiosignal==1.3.1
     # via aiohttp
 anyio==3.6.2
     # via watchgod
@@ -40,21 +40,21 @@ devtools==0.9.0
     # via aiohttp-devtools
 distlib==0.3.6
     # via virtualenv
-exceptiongroup==1.0.1
+exceptiongroup==1.0.4
     # via pytest
 executing==0.10.0
     # via devtools
 filelock==3.8.0
     # via virtualenv
-flake8==5.0.4
+flake8==6.0.0
     # via -r requirements/dev.in
-frozenlist==1.3.1
+frozenlist==1.3.3
     # via
     #   aiohttp
     #   aiosignal
 holdup==2.0.0
     # via -r requirements/dev.in
-identify==2.5.8
+identify==2.5.9
     # via pre-commit
 idna==3.4
     # via
@@ -68,7 +68,7 @@ multidict==6.0.2
     # via
     #   aiohttp
     #   yarl
-mypy==0.982
+mypy==0.991
     # via -r requirements/dev.in
 mypy-extensions==0.4.3
     # via mypy
@@ -76,15 +76,15 @@ nodeenv==1.7.0
     # via pre-commit
 packaging==21.3
     # via pytest
-platformdirs==2.5.3
+platformdirs==2.5.4
     # via virtualenv
 pluggy==1.0.0
     # via pytest
 pre-commit==2.20.0
     # via -r requirements/dev.in
-pycodestyle==2.9.1
+pycodestyle==2.10.0
     # via flake8
-pyflakes==2.5.0
+pyflakes==3.0.1
     # via flake8
 pygments==2.13.0
     # via aiohttp-devtools
@@ -97,7 +97,7 @@ pytest==7.2.0
     #   pytest-asyncio
 pytest-aiohttp==1.0.4
     # via -r requirements/dev.in
-pytest-asyncio==0.20.1
+pytest-asyncio==0.20.2
     # via pytest-aiohttp
 pyyaml==6.0
     # via
@@ -114,13 +114,13 @@ tomli==2.0.1
     #   coverage
     #   mypy
     #   pytest
-types-dateparser==1.1.4.2
+types-dateparser==1.1.4.3
     # via -r requirements/dev.in
-types-pyyaml==6.0.12.1
+types-pyyaml==6.0.12.2
     # via -r requirements/dev.in
 typing-extensions==4.4.0
     # via mypy
-virtualenv==20.16.6
+virtualenv==20.16.7
     # via pre-commit
 watchgod==0.8.2
     # via aiohttp-devtools
