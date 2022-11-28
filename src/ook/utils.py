@@ -29,7 +29,7 @@ async def get_json_data(
     url: str,
     http_session: ClientSession,
     logger: BoundLogger,
-    encoding: str = None,
+    encoding: Optional[str] = None,
     content_type: Optional[str] = "application/json",
 ) -> Dict[str, Any]:
     """Get and parse JSON content from a URL."""
