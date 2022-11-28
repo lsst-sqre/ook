@@ -6,6 +6,8 @@ import asyncio
 import datetime
 from typing import TYPE_CHECKING
 
+import pytest
+
 from ook.app import create_app
 from tests.conftest import async_test_until
 
@@ -16,6 +18,7 @@ if TYPE_CHECKING:
     from kafkit.registry.manager import RecordNameSchemaManager
 
 
+@pytest.mark.asyncio
 async def test_process_edition_updated(
     aiohttp_client: TestClient,
     caplog: LogCaptureFixture,

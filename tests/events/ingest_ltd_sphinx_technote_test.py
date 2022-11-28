@@ -7,6 +7,8 @@ from __future__ import annotations
 import datetime
 from typing import TYPE_CHECKING
 
+import pytest
+
 from ook.app import create_app
 from tests.conftest import async_test_until
 
@@ -16,6 +18,7 @@ if TYPE_CHECKING:
     from aiokafka import AIOKafkaProducer
 
 
+@pytest.mark.asyncio
 async def test_process_edition_updated(
     aiohttp_client: TestClient,
     caplog: LogCaptureFixture,

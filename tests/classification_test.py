@@ -28,6 +28,7 @@ from ook.classification import (
         ("pipelines", "https://pipelines.lsst.io", ContentType.LTD_GENERIC),
     ],
 )
+@pytest.mark.asyncio
 async def test_classify_ltd_site(
     product_slug: str,
     published_url: str,
@@ -76,6 +77,7 @@ def test_is_document_handle(product_slug: str, expected: bool) -> None:
         ),
     ],
 )
+@pytest.mark.asyncio
 async def test_has_jsonld_metadata(
     base_url: str, mock_url: str, status: int, expected: bool
 ) -> None:

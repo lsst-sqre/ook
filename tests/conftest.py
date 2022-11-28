@@ -10,12 +10,13 @@ from typing import AsyncGenerator, Callable
 
 import aiohttp
 import pytest
+import pytest_asyncio
 from aiokafka import AIOKafkaProducer
 from kafkit.registry.aiohttp import RegistryApi
 from kafkit.registry.manager import RecordNameSchemaManager
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def http_session() -> AsyncGenerator[aiohttp.ClientSession, None]:
     """Pytest fixture for an aiohttp ClientSession.
 
@@ -58,7 +59,7 @@ def registry_api(http_session: aiohttp.ClientSession) -> RegistryApi:
     )
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def schema_manager(registry_api: RegistryApi) -> RecordNameSchemaManager:
     """Pytest fixture for a RecordNameSchemaManager.
 
@@ -91,7 +92,7 @@ async def schema_manager(registry_api: RegistryApi) -> RecordNameSchemaManager:
     return schema_manager
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def producer() -> AsyncGenerator[AIOKafkaProducer, None]:
     """Pytest fixture for a Kafka producer.
 

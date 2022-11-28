@@ -98,7 +98,9 @@ pytest==7.2.0
 pytest-aiohttp==1.0.4
     # via -r requirements/dev.in
 pytest-asyncio==0.20.2
-    # via pytest-aiohttp
+    # via
+    #   -r requirements/dev.in
+    #   pytest-aiohttp
 pyyaml==6.0
     # via
     #   -c requirements/main.in
