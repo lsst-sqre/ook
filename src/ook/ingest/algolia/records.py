@@ -136,6 +136,9 @@ class DocumentRecord(BaseModel):
         }
         """Alias for fields that aren't allowable Python names."""
 
+        allow_population_by_field_name = True
+        """Enables use of Python name for constructing the record."""
+
         extra = "forbid"
         """Disable attributes that aren't part of the schema."""
 
