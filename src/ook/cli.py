@@ -7,9 +7,11 @@ from typing import Any, Union
 
 import click
 from aiohttp.web import run_app
+from algoliasearch.search_client import SearchClient
 
 from ook.app import create_app
 from ook.config import Configuration
+from ook.ingest.workflows.manualstub import add_manual_doc_stub
 from ook.utils import run_with_asyncio
 
 # Add -h as a help shortcut option
@@ -66,4 +68,13 @@ def run(ctx: click.Context, port: int) -> None:
 async def upload_doc_stub(ctx: click.Context, dataset: Path) -> None:
     """Upload a stub record for a document that can't be normally indexed."""
     config = Configuration()
-    print(config)
+    assert config.algolia_document_index_name is not None
+    assert config.algolia_app_id is not None
+    assert config.algolia_api_key is not None
+
+    async with SearchClient.create(
+        config.algolia_app_id,
+        api_key=config.algolia_api_key.get_secret_value(),
+    ) as client:
+        index = client.init_index(config.algolia_document_index_name)
+        await add_manual_doc_stub(index, dataset.read_text())
