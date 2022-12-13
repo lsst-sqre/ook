@@ -7,7 +7,7 @@ import uuid
 from base64 import b64encode
 from typing import List, Optional
 
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl
 
 __all__ = [
     "DocumentRecord",
@@ -21,96 +21,112 @@ __all__ = [
 class DocumentRecord(BaseModel):
     """Model for an Algolia record of a document."""
 
-    objectID: str
-    """The Algolia record object identifier."""
+    objectID: str = Field(description="The Algolia record object identifier.")
 
-    surrogateKey: str
-    """A key that groups records from the same URL together for a given
-    ingest so that old records can be dropped from the Algolia index.
-    """
+    surrogateKey: str = Field(
+        description=(
+            "A key that groups records from the same URL together for a given "
+            "ingest so that old records can be dropped from the Algolia index."
+        )
+    )
 
-    sourceUpdateTime: str
-    """An ISO 8601 date time for when the source was updated."""
+    sourceUpdateTime: str = Field(
+        description="An ISO 8601 date time for when the source was updated."
+    )
 
-    sourceUpdateTimestamp: int
-    """A Unix timestamp for when the source was updated.
+    sourceUpdateTimestamp: int = Field(
+        description=(
+            "A Unix timestamp for when the source was updated. This is "
+            "intended as a sortable version of `sourceUpdateTime`."
+        )
+    )
 
-    This is intended as a sortable version of `sourceUpdateTime`.
-    """
+    sourceCreationTimestamp: Optional[int] = Field(
+        None,
+        description=(
+            "A Unix timestamp for when the source document " "was created."
+        ),
+    )
 
-    sourceCreationTimestamp: Optional[int]
-    """A unix timestamp for when the source document was created."""
-
-    recordUpdateTime: str
-    """A ISO 8601 date time for when this record was created."""
+    recordUpdateTime: str = Field(
+        description="A ISO 8601 date time for when this record was created."
+    )
 
     # str, not HttpUrl because of
     # https://sqr-027.lsst.io/#What-is-observability?
     # Ideally we'd want to escape this properly
-    url: str
-    """The URL of the record."""
+    url: str = Field(
+        description=(
+            "The URL of the record. For subsection, this URL can end with an "
+            "anchor target."
+        ),
+        example="https://sqr-027.lsst.io/#What-is-observability?",
+    )
 
-    baseUrl: HttpUrl
-    """The base URL of the record (whereas ``url`` may refer to an anchor link.
-    """
+    baseUrl: HttpUrl = Field(
+        description=(
+            "The base URL of the record (whereas ``url`` may refer to an "
+            "anchor link."
+        )
+    )
 
-    content: str
-    """The full-text content of the record."""
+    content: str = Field(description="The full-text content of the record.")
 
-    importance: int = 1
-    """The importance of the record.
+    importance: int = Field(
+        1,
+        description=(
+            "The importance of the record. Generally importance should be set "
+            "by the header level: 1 for h1, 2 for h2, and so on."
+        ),
+    )
 
-    Generally importance should be set by the header level: 1 for h1, 2 for h2,
-    and so on.
-    """
+    contentCategories_lvl0: str = Field(description="Content category.")
 
-    contentCategories_lvl0: str
-    """Content category."""
+    contentCategories_lvl1: Optional[str] = Field(
+        None, description="Content sub-category (level 1)."
+    )
 
-    contentCategories_lvl1: Optional[str]
-    """Content sub-category (level 1)."""
+    contentType: str = Field(description="Content type (ook classification).")
 
-    contentType: str
-    """Content type (ook classification)."""
+    description: str = Field(
+        description=(
+            "Description of the URL or short summary for the ``baseUrl``."
+        )
+    )
 
-    description: str
-    """Description of the URL or short summary for the ``baseUrl``."""
+    handle: str = Field(description="Document handle.")
 
-    handle: str
-    """Document handle."""
+    number: int = Field(
+        description=(
+            "Serial number component of the document handle (``handle``)."
+        )
+    )
 
-    number: int
-    """Serial number component of the document handle."""
+    series: str = Field(
+        description="Series component of the document handle (``handle``)."
+    )
 
-    series: str
-    """Series component of the document handle."""
+    authorNames: List[str] = Field(description="Names of authors.")
 
-    authorNames: List[str]
-    """Names of authors."""
+    h1: str = Field(description="The H1 headline (title).")
 
-    h1: str
-    """The H1 headline (title)."""
+    h2: Optional[str] = Field(None, description="The h2 headline.")
 
-    h2: Optional[str]
-    """The h2 headline."""
+    h3: Optional[str] = Field(None, description="The h3 headline.")
 
-    h3: Optional[str]
-    """The h3 headline."""
+    h4: Optional[str] = Field(None, description="The h4 headline.")
 
-    h4: Optional[str]
-    """The h4 headline."""
+    h5: Optional[str] = Field(None, description="The h5 headline.")
 
-    h5: Optional[str]
-    """The h5 headline."""
+    h6: Optional[str] = Field(None, description="The h6 headline.")
 
-    h6: Optional[str]
-    """The h6 headline."""
+    pIndex: Optional[int] = Field(
+        None, description="The paragraph index corresponding to a section."
+    )
 
-    pIndex: Optional[int]
-    """The paragraph index corresponding to a section."""
-
-    githubRepoUrl: Optional[HttpUrl]
-    """URL of the source repository."""
+    githubRepoUrl: Optional[HttpUrl] = Field(
+        None, description="URL of the source repository."
+    )
 
     class Config:
 
