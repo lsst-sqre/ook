@@ -2,12 +2,15 @@
 
 __all__ = ["main", "help", "run"]
 
+from pathlib import Path
 from typing import Any, Union
 
 import click
 from aiohttp.web import run_app
 
 from ook.app import create_app
+from ook.config import Configuration
+from ook.utils import run_with_asyncio
 
 # Add -h as a help shortcut option
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
@@ -52,3 +55,15 @@ def run(ctx: click.Context, port: int) -> None:
     """Run the application (for production)."""
     app = create_app()
     run_app(app, port=port)
+
+
+@main.command()
+@click.option(
+    "--dataset", required=True, type=click.Path(exists=True, path_type=Path)
+)
+@click.pass_context
+@run_with_asyncio
+async def upload_doc_stub(ctx: click.Context, dataset: Path) -> None:
+    """Upload a stub record for a document that can't be normally indexed."""
+    config = Configuration()
+    print(config)
