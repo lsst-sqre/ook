@@ -2,6 +2,12 @@
 Change log
 ##########
 
+Unreleased
+==========
+
+- Update to Python 3.10.
+- Add ``ook upload-doc-stub`` CLI command to manually add a single record to Algolia to stub a document into the www.lsst.io search index. This is useful for cases where a document can't be normally indexed by Ook.
+
 0.5.0 (2021-12-01)
 ==================
 
