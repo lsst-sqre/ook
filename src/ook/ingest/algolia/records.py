@@ -129,7 +129,6 @@ class DocumentRecord(BaseModel):
     )
 
     class Config:
-
         fields = {
             "contentCategories_lvl0": "contentCategories.lvl0",
             "contentCategories_lvl1": "contentCategories.lvl1",
