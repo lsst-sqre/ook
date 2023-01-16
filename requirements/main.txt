@@ -43,7 +43,7 @@ cryptography==39.0.0
     # via pyjwt
 cssselect==1.2.0
     # via -r requirements/main.in
-dateparser==1.1.5
+dateparser==1.1.6
     # via -r requirements/main.in
 fastavro==1.7.0
     # via kafkit
@@ -81,7 +81,7 @@ pyjwt[crypto]==2.6.0
     # via gidgethub
 python-dateutil==2.8.2
     # via dateparser
-pytz==2022.7
+pytz==2022.7.1
     # via dateparser
 pytz-deprecation-shim==0.1.0.post0
     # via tzlocal
@@ -89,7 +89,7 @@ pyyaml==6.0
     # via -r requirements/main.in
 regex==2022.10.31
     # via dateparser
-requests==2.28.1
+requests==2.28.2
     # via algoliasearch
 safir @ git+https://github.com/lsst-sqre/safir@tickets/DM-23761
     # via -r requirements/main.in
@@ -107,7 +107,7 @@ uritemplate==4.1.1
     # via
     #   gidgethub
     #   kafkit
-urllib3==1.26.13
+urllib3==1.26.14
     # via requests
 yarl==1.8.2
     # via aiohttp
