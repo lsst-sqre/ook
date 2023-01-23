@@ -112,9 +112,9 @@ tomli==2.0.1
     #   coverage
     #   mypy
     #   pytest
-types-dateparser==1.1.4.4
+types-dateparser==1.1.4.5
     # via -r requirements/dev.in
-types-pyyaml==6.0.12.2
+types-pyyaml==6.0.12.3
     # via -r requirements/dev.in
 typing-extensions==4.4.0
     # via mypy
