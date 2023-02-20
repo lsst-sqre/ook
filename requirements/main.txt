@@ -75,7 +75,7 @@ pycares==4.3.0
     # via aiodns
 pycparser==2.21
     # via cffi
-pydantic==1.10.4
+pydantic==1.10.5
     # via -r requirements/main.in
 pyjwt[crypto]==2.6.0
     # via gidgethub
@@ -97,7 +97,7 @@ six==1.16.0
     # via python-dateutil
 structlog==22.3.0
     # via safir
-typing-extensions==4.4.0
+typing-extensions==4.5.0
     # via pydantic
 tzdata==2022.7
     # via pytz-deprecation-shim
@@ -111,5 +111,5 @@ urllib3==1.26.14
     # via requests
 yarl==1.8.2
     # via aiohttp
-zipp==3.13.0
+zipp==3.14.0
     # via importlib-metadata
