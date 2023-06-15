@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import datetime
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from datetime import UTC
+from typing import Any
 
 import dateparser
+from structlog.stdlib import BoundLogger
 
-from ook.classification import ContentType
-from ook.ingest.reducers.utils import Handle, normalize_root_url
-
-if TYPE_CHECKING:
-    from structlog.stdlib import BoundLogger
+from .algoliarecord import DocumentSourceType
+from .utils import Handle, normalize_root_url
 
 __all__ = ["ReducedLtdLanderDocument", "ContentChunk"]
 
@@ -28,15 +27,15 @@ class ReducedLtdLanderDocument:
         self,
         *,
         url: str,
-        metadata: Dict[str, Any],
+        metadata: dict[str, Any],
         logger: BoundLogger,
     ) -> None:
         self.url = url
-        self.content_type = ContentType.LTD_LANDER_JSONLD
+        self.content_type = DocumentSourceType.LTD_LANDER_JSONLD
         self._metadata = metadata
         self._logger = logger
 
-        self._chunks: List[ContentChunk] = []
+        self._chunks: list[ContentChunk] = []
 
         self._reduce_metadata()
 
@@ -64,7 +63,7 @@ class ReducedLtdLanderDocument:
         return self._series
 
     @property
-    def number(self) -> Optional[int]:
+    def number(self) -> int | None:
         """The serial number of the technote within the series."""
         return self._number
 
@@ -74,7 +73,7 @@ class ReducedLtdLanderDocument:
         return self._handle
 
     @property
-    def author_names(self) -> List[str]:
+    def author_names(self) -> list[str]:
         """Names of authors."""
         return self._authors
 
@@ -86,12 +85,12 @@ class ReducedLtdLanderDocument:
         return self._timestamp
 
     @property
-    def github_url(self) -> Optional[str]:
+    def github_url(self) -> str | None:
         """The URL of the technote's GitHub repository."""
         return self._github_url
 
     @property
-    def chunks(self) -> List[ContentChunk]:
+    def chunks(self) -> list[ContentChunk]:
         return self._chunks
 
     def _reduce_metadata(self) -> None:
@@ -107,7 +106,7 @@ class ReducedLtdLanderDocument:
             self._h1 = ""
 
         try:
-            self._authors: List[str] = [
+            self._authors: list[str] = [
                 a["name"].strip() for a in self._metadata["author"]
             ]
         except KeyError:
@@ -130,12 +129,12 @@ class ReducedLtdLanderDocument:
             if date:
                 self._timestamp: datetime.datetime = date
             else:
-                self._timestamp = datetime.datetime.utcnow()
+                self._timestamp = datetime.datetime.now(tz=UTC)
         except Exception:
-            self._timestamp = datetime.datetime.utcnow()
+            self._timestamp = datetime.datetime.now(tz=UTC)
 
         try:
-            self._github_url: Optional[str] = self._metadata["codeRepository"]
+            self._github_url: str | None = self._metadata["codeRepository"]
         except KeyError:
             self._github_url = None
 
@@ -198,7 +197,7 @@ class ContentChunk:
     content: str
     """The plain-text content of the chunk."""
 
-    headers: List[str]
+    headers: list[str]
     """The section headers, ordered by hierarchy.
 
     The header of the present section is the last element.

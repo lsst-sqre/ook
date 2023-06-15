@@ -3,21 +3,15 @@
 from __future__ import annotations
 
 import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any
 
 import dateparser
 import lxml.html
+from structlog.stdlib import BoundLogger
 
-from ook.classification import ContentType
-from ook.ingest.reducers.sphinxutils import (
-    SphinxSection,
-    clean_title_text,
-    iter_sphinx_sections,
-)
-from ook.ingest.reducers.utils import normalize_root_url
-
-if TYPE_CHECKING:
-    from structlog.stdlib import BoundLogger
+from .algoliarecord import DocumentSourceType
+from .sphinxutils import SphinxSection, clean_title_text, iter_sphinx_sections
+from .utils import normalize_root_url
 
 __all__ = ["ReducedLtdSphinxTechnote"]
 
@@ -47,16 +41,16 @@ class ReducedLtdSphinxTechnote:
         *,
         html_source: str,
         url: str,
-        metadata: Dict[str, Any],
+        metadata: dict[str, Any],
         logger: BoundLogger,
     ) -> None:
         self._logger = logger
         self._html_source = html_source
         self.url = url
         self._metadata = metadata
-        self.content_type = ContentType.LTD_SPHINX_TECHNOTE
+        self.content_type = DocumentSourceType.LTD_SPHINX_TECHNOTE
 
-        self._sections: List[SphinxSection] = []
+        self._sections: list[SphinxSection] = []
 
         self._reduce_metadata()
         self._reduce_html()
@@ -81,7 +75,7 @@ class ReducedLtdSphinxTechnote:
         return self._h1
 
     @property
-    def sections(self) -> List[SphinxSection]:
+    def sections(self) -> list[SphinxSection]:
         """The sections found in the technote."""
         return self._sections
 
@@ -96,7 +90,7 @@ class ReducedLtdSphinxTechnote:
         return self._series
 
     @property
-    def number(self) -> Optional[int]:
+    def number(self) -> int | None:
         """The serial number of the technote within the series."""
         return self._number
 
@@ -106,7 +100,7 @@ class ReducedLtdSphinxTechnote:
         return self._handle
 
     @property
-    def author_names(self) -> List[str]:
+    def author_names(self) -> list[str]:
         """Names of authors."""
         return self._authors
 
@@ -118,7 +112,7 @@ class ReducedLtdSphinxTechnote:
         return self._timestamp
 
     @property
-    def github_url(self) -> Optional[str]:
+    def github_url(self) -> str | None:
         """The URL of the technote's GitHub repository."""
         return self._github_url
 
@@ -140,7 +134,7 @@ class ReducedLtdSphinxTechnote:
             self._series = ""
 
         try:
-            self._number: Optional[int] = int(self._metadata["serial_number"])
+            self._number: int | None = int(self._metadata["serial_number"])
         except (KeyError, ValueError):
             self._number = None
 
@@ -152,12 +146,12 @@ class ReducedLtdSphinxTechnote:
             self._handle = ""
 
         try:
-            self._authors: List[str] = self._metadata["authors"]
+            self._authors: list[str] = self._metadata["authors"]
         except KeyError:
             self._authors = []
 
         try:
-            self._github_url: Optional[str] = self._metadata["github_url"]
+            self._github_url: str | None = self._metadata["github_url"]
         except KeyError:
             self._github_url = None
 
@@ -169,8 +163,10 @@ class ReducedLtdSphinxTechnote:
 
         try:
             article_body = doc.cssselect('[itemprop~="articleBody"]')[0]
-        except IndexError:
-            raise RuntimeError("Sphinx technote doesn't have a articleBody")
+        except IndexError as e:
+            raise RuntimeError(
+                "Sphinx technote doesn't have a articleBody"
+            ) from e
 
         presection = self._reduce_presection(article_body)
         if presection is not None:
@@ -186,16 +182,15 @@ class ReducedLtdSphinxTechnote:
 
     def _reduce_presection(
         self, root: lxml.html.Html.Element
-    ) -> Optional[SphinxSection]:
+    ) -> SphinxSection | None:
         """Create a SphinxSection from any content in the articleBody that
         appears before the first subsection (a div.section element).
         """
-        text_elements: List[str] = []
+        text_elements: list[str] = []
         for element in root:
             if element.tag == "div" and "section" in element.classes:
                 break
-            else:
-                text_elements.append(element.text_content().strip())
+            text_elements.append(element.text_content().strip())
 
         if len(text_elements) == 0:
             return None
@@ -208,8 +203,8 @@ class ReducedLtdSphinxTechnote:
 
     def _reduce_sections(
         self, root_section: lxml.html.Html.Element
-    ) -> List[SphinxSection]:
-        sections: List[SphinxSection] = []
+    ) -> list[SphinxSection]:
+        sections: list[SphinxSection] = []
 
         for s in iter_sphinx_sections(
             base_url=self._url,
@@ -242,12 +237,11 @@ class ReducedLtdSphinxTechnote:
     ) -> datetime.datetime:
         try:
             date_element = doc.cssselect('a[href="#change-record"]')[0]
-            date_text = date_element.text_content()
-            date = dateparser.parse(date_text, settings={"TIMEZONE": "UTC"})
-            if date:
-                return date
-            else:
-                return datetime.datetime.utcnow()
-        except IndexError as e:
-            print(e)
-            return datetime.datetime.utcnow()
+        except IndexError:
+            return datetime.datetime.now(tz=datetime.UTC)
+        date_text = date_element.text_content()
+        date = dateparser.parse(date_text, settings={"TIMEZONE": "UTC"})
+        if date:
+            return date
+        else:
+            return datetime.datetime.now(tz=datetime.UTC)

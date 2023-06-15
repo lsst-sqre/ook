@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Self
 from urllib.parse import urlparse
 
 __all__ = ["normalize_root_url", "HANDLE_PATTERN", "Handle"]
@@ -47,24 +48,24 @@ class Handle:
     number: str
 
     @classmethod
-    def parse(cls, handle: str) -> Handle:
+    def parse(cls, handle: str) -> Self:
         """Parse a handle in string form."""
         try:
             match = HANDLE_PATTERN.match(handle)
             if match is None:
-                raise ValueError
-        except Exception:
-            raise ValueError(f"Could not parse handle: {handle}")
+                raise ValueError(f"Could not parse handle: {handle}")
+        except Exception as e:
+            raise ValueError(f"Could not parse handle: {handle}") from e
 
-        return Handle(match["series"].upper(), match["number"])
+        return cls(match["series"].upper(), match["number"])
 
     @classmethod
-    def parse_from_subdomain(self, url: str) -> Handle:
+    def parse_from_subdomain(cls, url: str) -> Self:
         """Parse the handle from an LSST the Docs publication URL."""
         parts = urlparse(url)
         netloc = parts[1]
         subdomain = netloc.split(".")[0]
-        return Handle.parse(subdomain)
+        return cls.parse(subdomain)
 
     @property
     def handle(self) -> str:
@@ -75,5 +76,7 @@ class Handle:
     def number_as_int(self) -> int:
         try:
             return int(self.number)
-        except ValueError:
-            raise ValueError(f"Serial number is not an integer: {self.number}")
+        except ValueError as e:
+            raise ValueError(
+                f"Serial number is not an integer: {self.number}"
+            ) from e
