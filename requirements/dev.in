@@ -1,3 +1,5 @@
+# -*- conf -*-
+#
 # Editable development dependencies
 # Add direct development, test, and documentation dependencies here, as well
 # as implicit dev dependencies with constrained versions.
@@ -5,19 +7,14 @@
 # After editing, update requirements/dev.txt by running:
 #     make update-deps
 
--c main.in
+-c main.txt
 
-pre-commit
+asgi-lifespan
 coverage[toml]
-flake8
+httpx
 mypy
+pre-commit
+pydantic
 pytest
-pytest-aiohttp
 pytest-asyncio
-aiohttp-devtools
-holdup<3
-aioresponses
-
-# typing stubs
-types-PyYAML
-types-dateparser
+pytest-cov

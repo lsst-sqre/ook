@@ -1,3 +1,5 @@
+# -*- conf -*-
+#
 # Editable runtime dependencies (equivalent to install_requires)
 # Add direct runtime dependencies here, as well as implicit dependencies
 # with constrained versions.
@@ -5,17 +7,13 @@
 # After editing, update requirements/main.txt by running:
 #     make update-deps
 
-git+https://github.com/lsst-sqre/safir@tickets/DM-23761#egg=safir
-aiohttp
-aiodns
-cchardet
-importlib_metadata
+# These dependencies are for fastapi including some optional features.
+fastapi
+starlette
+uvicorn[standard]
+
+# Other dependencies.
+safir>=4.3.0
+algoliasearch>=3.0,<4.0
 click
-pydantic
-aiojobs
-lxml
-cssselect
-PyYAML
 dateparser
-algoliasearch>=2.0,<3.0
-gidgethub
