@@ -169,6 +169,9 @@ target-version = "py311"
     "T201",    # print is fine
     "D205",    # summary-only docsting is fine.
 ]
+"src/ook/config.py" = [
+    "FBT001",  # positional booleans needed for Pydantic validators
+]
 "src/ook/domain/**" = [
     "C901",    # long methods
     "PLR0912", # complex methods
