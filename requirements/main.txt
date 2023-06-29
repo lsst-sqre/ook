@@ -4,6 +4,8 @@
 #
 #    pip-compile --allow-unsafe --output-file=requirements/main.txt --resolver=backtracking requirements/main.in
 #
+aiokafka==0.8.1
+    # via kafkit
 algoliasearch==3.0.0
     # via -r requirements/main.in
 anyio==3.7.0
@@ -11,6 +13,10 @@ anyio==3.7.0
     #   httpcore
     #   starlette
     #   watchfiles
+async-timeout==4.0.2
+    # via aiokafka
+casefy==0.1.7
+    # via dataclasses-avroschema
 certifi==2023.5.7
     # via
     #   httpcore
@@ -28,12 +34,22 @@ cryptography==41.0.1
     # via
     #   pyjwt
     #   safir
+dacite==1.8.1
+    # via dataclasses-avroschema
+dataclasses-avroschema[pydantic]==0.43.10
+    # via kafkit
 dateparser==1.1.8
     # via -r requirements/main.in
-fastapi==0.97.0
+faker==18.11.2
+    # via dataclasses-avroschema
+fastapi==0.98.0
     # via
     #   -r requirements/main.in
     #   safir
+fastavro==1.7.4
+    # via
+    #   dataclasses-avroschema
+    #   kafkit
 gidgethub==5.3.0
     # via safir
 h11==0.14.0
@@ -45,22 +61,36 @@ httpcore==0.17.2
 httptools==0.5.0
     # via uvicorn
 httpx==0.24.1
-    # via safir
+    # via
+    #   kafkit
+    #   safir
 idna==3.4
     # via
     #   anyio
     #   httpx
     #   requests
+inflector==3.1.0
+    # via dataclasses-avroschema
+kafka-python==2.0.2
+    # via aiokafka
+kafkit @ git+https://github.com/lsst-sqre/kafkit.git@tickets/DM-39646
+    # via -r requirements/main.in
+packaging==23.1
+    # via aiokafka
 pycparser==2.21
     # via cffi
 pydantic==1.10.9
     # via
+    #   dataclasses-avroschema
     #   fastapi
+    #   kafkit
     #   safir
 pyjwt[crypto]==2.7.0
     # via gidgethub
 python-dateutil==2.8.2
-    # via dateparser
+    # via
+    #   dateparser
+    #   faker
 python-dotenv==1.0.0
     # via uvicorn
 pytz==2023.3
@@ -87,12 +117,14 @@ starlette==0.27.0
     #   safir
 structlog==23.1.0
     # via safir
-typing-extensions==4.6.3
+typing-extensions==4.7.0
     # via pydantic
 tzlocal==5.0.1
     # via dateparser
 uritemplate==4.1.1
-    # via gidgethub
+    # via
+    #   gidgethub
+    #   kafkit
 urllib3==2.0.3
     # via requests
 uvicorn[standard]==0.22.0

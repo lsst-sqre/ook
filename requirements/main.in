@@ -15,5 +15,6 @@ uvicorn[standard]
 # Other dependencies.
 safir>=4.3.0
 algoliasearch>=3.0,<4.0
+kafkit[aiokafka,pydantic,httpx] @ git+https://github.com/lsst-sqre/kafkit.git@tickets/DM-39646
 click
 dateparser
