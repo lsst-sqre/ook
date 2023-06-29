@@ -1,40 +1,38 @@
 """Administrative command-line interface."""
 
-__all__ = ["main", "help", "run"]
+from __future__ import annotations
+
+__all__ = ["main", "help", "upload_doc_stub"]
 
 from pathlib import Path
-from typing import Any, Union
+from typing import Any
 
 import click
-from aiohttp.web import run_app
+import structlog
 from algoliasearch.search_client import SearchClient
+from safir.asyncio import run_with_asyncio
 
-from ook.app import create_app
 from ook.config import Configuration
-from ook.ingest.workflows.manualstub import add_manual_doc_stub
-from ook.utils import run_with_asyncio
+from ook.domain.algoliarecord import MinimalDocumentModel
+from ook.services.algoliadocindex import AlgoliaDocIndexService
 
 # Add -h as a help shortcut option
-CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
+CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 
 
 @click.group(context_settings=CONTEXT_SETTINGS)
 @click.version_option(message="%(version)s")
-@click.pass_context
-def main(ctx: click.Context) -> None:
-    """ook
+def main() -> None:
+    """ook.
 
     Administrative command-line interface for ook.
     """
-    # Subcommands should use the click.pass_obj decorator to get this
-    # ctx object as the first argument.
-    ctx.obj = {}
 
 
 @main.command()
 @click.argument("topic", default=None, required=False, nargs=1)
 @click.pass_context
-def help(ctx: click.Context, topic: Union[None, str], **kw: Any) -> None:
+def help(ctx: click.Context, topic: None | str, **kw: Any) -> None:
     """Show help for any command."""
     # The help command implementation is taken from
     # https://www.burgundywall.com/post/having-click-help-subcommand
@@ -44,37 +42,47 @@ def help(ctx: click.Context, topic: Union[None, str], **kw: Any) -> None:
         else:
             raise click.UsageError(f"Unknown help topic {topic}", ctx)
     else:
-        assert ctx.parent
+        if not ctx.parent:
+            raise RuntimeError("help called without topic or parent")
         click.echo(ctx.parent.get_help())
 
 
 @main.command()
 @click.option(
-    "--port", default=8080, type=int, help="Port to run the application on."
+    "--dataset",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    description="Path to the JSON-formatted document stub dataset to upload.",
 )
-@click.pass_context
-def run(ctx: click.Context, port: int) -> None:
-    """Run the application (for production)."""
-    app = create_app()
-    run_app(app, port=port)
-
-
-@main.command()
-@click.option(
-    "--dataset", required=True, type=click.Path(exists=True, path_type=Path)
-)
-@click.pass_context
 @run_with_asyncio
-async def upload_doc_stub(ctx: click.Context, dataset: Path) -> None:
-    """Upload a stub record for a document that can't be normally indexed."""
-    config = Configuration()
-    assert config.algolia_document_index_name is not None
-    assert config.algolia_app_id is not None
-    assert config.algolia_api_key is not None
+async def upload_doc_stub(dataset: Path) -> None:
+    """Upload a stub record for a document that can't be normally indexed.
 
+    The schema for the document stub is the
+    `ook.domain.algoliarecord.MinimalDocumentModel` Pydantic class.
+    """
+    config = Configuration()
+    logger = structlog.get_logger("ook")
+    if any(
+        _ is None
+        for _ in (
+            config.algolia_document_index_name,
+            config.algolia_app_id,
+            config.algolia_api_key,
+        )
+    ):
+        raise click.UsageError("Algolia credentials not set in environment.")
+
+    stub_record = MinimalDocumentModel.from_json(dataset.read_text())
+
+    if config.algolia_api_key is None or config.algolia_app_id is None:
+        raise RuntimeError(
+            "Algolia app ID and API key must be set to use this service."
+        )
     async with SearchClient.create(
         config.algolia_app_id,
         api_key=config.algolia_api_key.get_secret_value(),
     ) as client:
         index = client.init_index(config.algolia_document_index_name)
-        await add_manual_doc_stub(index, dataset.read_text())
+        algolia_doc_service = AlgoliaDocIndexService(index, logger)
+        await algolia_doc_service.save_doc_stub(stub_record)
