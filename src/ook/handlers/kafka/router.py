@@ -7,8 +7,12 @@ from dataclasses import dataclass
 
 from aiokafka import AIOKafkaConsumer, ConsumerRecord
 from dataclasses_avroschema.avrodantic import AvroBaseModel
+from httpx import AsyncClient
 from kafkit.registry import UnmanagedSchemaError
+from kafkit.registry.httpx import RegistryApi
 from kafkit.registry.manager import PydanticSchemaManager
+
+from ook.config import config
 
 
 @dataclass
@@ -117,3 +121,23 @@ class PydanticAIOKafkaConsumer:
         await self.register_models(key_models)
         await self.register_models(value_models)
         self._routes.append(Route(callback, topics, key_models, value_models))
+
+
+async def consume_kafka_messages(http_client: AsyncClient) -> None:
+    """Consume Kafka messages."""
+    # Set up the schema manager
+    registry = RegistryApi(http_client=http_client, url=config.registry_url)
+    schema_manager = PydanticSchemaManager(registry=registry)
+    aiokafka_consumer = AIOKafkaConsumer(
+        [config.ingest_kafka_topic],  # TODO add topics
+        bootstrap_servers=config.kafka.bootstrap_servers,
+        group_id=config.kafka_consumer_group_id,
+        security_protocol=config.kafka.security_protocol,
+        ssl_context=config.kafka.ssl_context,
+    )
+
+    consumer = PydanticAIOKafkaConsumer(
+        schema_manager=schema_manager, consumer=aiokafka_consumer
+    )
+    # TODO add routes
+    await consumer.start()

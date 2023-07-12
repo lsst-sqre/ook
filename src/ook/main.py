@@ -9,6 +9,7 @@ called.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -24,6 +25,7 @@ from structlog import get_logger
 from .config import config
 from .handlers.external.paths import external_router
 from .handlers.internal.paths import internal_router
+from .handlers.kafka.router import consume_kafka_messages
 
 __all__ = ["app", "create_openapi"]
 
@@ -34,13 +36,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator:
     logger = get_logger()
     logger.info("Ook is starting up.")
 
-    # TODO set up an asyncio task for the Kafka consumer
+    kafka_consumer_task = asyncio.create_task(
+        consume_kafka_messages(await http_client_dependency())
+    )
 
     logger.info("Ook start up complete.")
 
     yield
 
     # Shut down
+    logger.info("Ook is shutting down.")
+
+    kafka_consumer_task.cancel()
+    await kafka_consumer_task
 
     await http_client_dependency.aclose()
 
