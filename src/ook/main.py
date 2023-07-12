@@ -10,6 +10,8 @@ called.
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from importlib.metadata import metadata, version
 
 from fastapi import FastAPI
@@ -26,10 +28,29 @@ from .handlers.internal.paths import internal_router
 __all__ = ["app", "create_openapi"]
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator:
+    """Context manager for the application lifespan."""
+    logger = get_logger()
+    logger.info("Ook is starting up.")
+
+    # TODO set up an asyncio task for the Kafka consumer
+
+    logger.info("Ook start up complete.")
+
+    yield
+
+    # Shut down
+
+    await http_client_dependency.aclose()
+
+    logger.info("Ook shut down up complete.")
+
+
 configure_logging(
     profile=config.profile,
     log_level=config.log_level,
-    name="squarebot",
+    name="ook",
 )
 configure_uvicorn_logging(config.log_level)
 
@@ -40,6 +61,7 @@ app = FastAPI(
     openapi_url=f"{config.path_prefix}/openapi.json",
     docs_url=f"{config.path_prefix}/docs",
     redoc_url=f"{config.path_prefix}/redoc",
+    lifespan=lifespan,
 )
 """The main FastAPI application for squarebot."""
 
@@ -49,25 +71,6 @@ app.include_router(external_router, prefix=config.path_prefix)
 
 # Set up middleware
 app.add_middleware(XForwardedMiddleware)
-
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    """Application start-up hook."""
-    logger = get_logger()
-    logger.info("Ook is starting up.")
-
-    # TODO set up an asyncio task for the Kafka consumer
-
-    logger.info("Ook start up complete.")
-
-
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    """Application shut-down hook."""
-    logger = get_logger()
-    await http_client_dependency.aclose()
-    logger.info("Ook shut down up complete.")
 
 
 def create_openapi() -> str:
