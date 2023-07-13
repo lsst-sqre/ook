@@ -20,3 +20,4 @@ algoliasearch>=3.0,<4.0
 kafkit[pydantic,httpx] @ git+https://github.com/lsst-sqre/kafkit.git@main
 click
 dateparser
+lxml
