@@ -15,6 +15,8 @@ from kafkit.registry.httpx import RegistryApi
 from kafkit.registry.manager import PydanticSchemaManager
 
 from ook.config import config
+from ook.domain.kafka import LtdUrlIngestV1, UrlIngestKeyV1
+from ook.handlers.kafka.handlers import handle_ltd_document_ingest
 
 
 class HandlerProtocol(Protocol):
@@ -208,5 +210,10 @@ async def consume_kafka_messages(http_client: AsyncClient) -> None:
     consumer = PydanticAIOKafkaConsumer(
         schema_manager=schema_manager, consumer=aiokafka_consumer
     )
-    # TODO add routes
+    await consumer.add_route(
+        cast(HandlerProtocol, handle_ltd_document_ingest),
+        [config.ingest_kafka_topic],
+        [UrlIngestKeyV1],
+        [LtdUrlIngestV1],
+    )
     await consumer.start()
