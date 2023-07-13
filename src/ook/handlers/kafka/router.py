@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, Protocol, Self, cast
 
 from aiokafka import AIOKafkaConsumer, ConsumerRecord
 from dataclasses_avroschema.avrodantic import AvroBaseModel
@@ -16,6 +17,20 @@ from kafkit.registry.manager import PydanticSchemaManager
 from ook.config import config
 
 
+class HandlerProtocol(Protocol):
+    """A protocol for a Kafka message handler."""
+
+    async def __call__(
+        self,
+        *,
+        message_metadata: MessageMetadata,
+        key: AvroBaseModel,
+        value: AvroBaseModel,
+        **kwargs: Any,
+    ) -> None:
+        """Handle a Kafka message."""
+
+
 @dataclass
 class Route:
     """A pointer to a route for a Kafka message.
@@ -24,12 +39,13 @@ class Route:
     for the key and value.
     """
 
-    callback: Callable[[str, AvroBaseModel, AvroBaseModel], None]
+    callback: HandlerProtocol
     """The callback to invoke when a message is routed to this route.
 
-    The callback is a async function that takes three arguments:
+    The callback is a async function that takes three keyword arguments, plus
+    any additional keyword arguments specified in `kwargs`:
 
-    1. The Kafka topic name (`str`).
+    1. The Kafka message metadata (`MessageMetadata`).
     2. The deserialized key (`AvroBaseModel`).
     3. The deserialized value (`AvroBaseModel`).
     """
@@ -57,9 +73,48 @@ class Route:
         key and value models.
         """
         return (
-            topic in self._topics
-            and type(key) in self._key_models
-            and type(value) in self._value_models
+            topic in self.topics
+            and type(key) in self.key_models
+            and type(value) in self.value_models
+        )
+
+
+@dataclass
+class MessageMetadata:
+    """Metadata about a Kafka message."""
+
+    topic: str
+    """The Kafka topic name."""
+
+    offset: int
+    """The Kafka message offset in the partition"""
+
+    partition: int
+    """The Kafka partition."""
+
+    timestamp: datetime
+    """The Kafka message timestamp."""
+
+    serialized_key_size: int
+    """The size of the serialized key, in bytes."""
+
+    serialized_value_size: int
+    """The size of the serialized value, in bytes."""
+
+    headers: dict[str, bytes]
+    """The Kafka message headers."""
+
+    @classmethod
+    def from_consumer_record(cls, record: ConsumerRecord) -> Self:
+        """Create a MessageMetadata instance from a ConsumerRecord."""
+        return cls(
+            topic=record.topic,
+            offset=record.offset,
+            partition=record.partition,
+            timestamp=datetime.fromtimestamp(record.timestamp, tz=UTC),
+            serialized_key_size=record.serialized_key_size,
+            serialized_value_size=record.serialized_value_size,
+            headers=record.headers,
         )
 
 
@@ -101,10 +156,16 @@ class PydanticAIOKafkaConsumer:
         except UnmanagedSchemaError:
             # TODO log
             return
+        message_metadata = MessageMetadata.from_consumer_record(msg)
         for route in self._routes:
             if route.matches(msg.topic, key, value):
                 kwargs = route.kwargs or {}
-                await route.callback(msg.topic, key, value, **kwargs)
+                await route.callback(
+                    message_metadata=message_metadata,
+                    key=key,
+                    value=value,
+                    **kwargs,
+                )
                 break
 
     async def register_models(
@@ -115,7 +176,7 @@ class PydanticAIOKafkaConsumer:
 
     async def add_route(
         self,
-        callback: Callable[[str, AvroBaseModel, AvroBaseModel], None],
+        callback: HandlerProtocol,
         topics: Sequence[str],
         key_models: Sequence[type[AvroBaseModel]],
         value_models: Sequence[type[AvroBaseModel]],
