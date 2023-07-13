@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from aiokafka import AIOKafkaConsumer, ConsumerRecord
 from dataclasses_avroschema.avrodantic import AvroBaseModel
@@ -45,6 +46,9 @@ class Route:
     """The Pydantic model types that this route is associated with for the
     message value.
     """
+
+    kwargs: dict[str, Any] | None = None
+    """Keyword arguments to pass to the callback."""
 
     def matches(
         self, topic: str, key: AvroBaseModel, value: AvroBaseModel
@@ -99,7 +103,8 @@ class PydanticAIOKafkaConsumer:
             return
         for route in self._routes:
             if route.matches(msg.topic, key, value):
-                await route.callback(msg.topic, key, value)
+                kwargs = route.kwargs or {}
+                await route.callback(msg.topic, key, value, **kwargs)
                 break
 
     async def register_models(
@@ -114,13 +119,16 @@ class PydanticAIOKafkaConsumer:
         topics: Sequence[str],
         key_models: Sequence[type[AvroBaseModel]],
         value_models: Sequence[type[AvroBaseModel]],
+        kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Register a handler for a Kafka topic given the support key and
         value models.
         """
         await self.register_models(key_models)
         await self.register_models(value_models)
-        self._routes.append(Route(callback, topics, key_models, value_models))
+        self._routes.append(
+            Route(callback, topics, key_models, value_models, kwargs)
+        )
 
 
 async def consume_kafka_messages(http_client: AsyncClient) -> None:
