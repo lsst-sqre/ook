@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import re
-from typing import Any, dict
-from urllib.parse import urlparse
 
-import yaml
 from httpx import AsyncClient
-from structlog import BoundLogger
+from structlog.stdlib import BoundLogger
 
 from ook.domain.algoliarecord import DocumentSourceType
-from ook.utils import make_raw_github_url
+
+from .githubmetadata import GitHubMetadataService
 
 __all__ = ["ClassificationService"]
 
@@ -36,10 +34,15 @@ class ClassificationService:
     """
 
     def __init__(
-        self, *, http_client: AsyncClient, logger: BoundLogger
+        self,
+        *,
+        http_client: AsyncClient,
+        github_service: GitHubMetadataService,
+        logger: BoundLogger,
     ) -> None:
         self._http_client = http_client
         self._logger = logger
+        self._gh_service = github_service
 
     async def classify_ltd_site(
         self, *, product_slug: str, published_url: str
@@ -121,47 +124,26 @@ class ClassificationService:
         )
         product_data = response.json()
 
-        try:
-            await self._get_metadata_yaml(
+        default_git_refs = ["main", "master"]
+        for git_ref in default_git_refs:
+            if await self._has_metadata_yaml(
                 repo_url=product_data["doc_repo"],
-                git_ref="main",
-            )
-        except RuntimeError:
-            try:
-                await self._get_metadata_yaml(
-                    repo_url=product_data["doc_repo"],
-                    git_ref="master",
-                )
-            except RuntimeError:
-                return False
+                git_ref=git_ref,
+            ):
+                return True
+        return False
 
-        return True
-
-    async def _get_metadata_yaml(
+    async def _has_metadata_yaml(
         self,
         *,
         repo_url: str,
         git_ref: str,
-    ) -> dict[str, Any]:
-        # Note this is copied from ook.ingest.workflows.ltdsphinxtechnote.
-        # We'll want to refactor this code to avoid circular dependencies.
-        if repo_url.endswith("/"):
-            repo_url = repo_url.rstrip("/")
-        if repo_url.endswith(".git"):
-            repo_url = repo_url[: -len(".git")]
-
-        repo_url_parts = urlparse(repo_url)
-        repo_path = repo_url_parts[2]
-
-        raw_url = make_raw_github_url(
-            repo_path=repo_path, git_ref=git_ref, file_path="metadata.yaml"
+    ) -> bool:
+        owner, repo = self._gh_service.parse_repo_from_github_url(repo_url)
+        raw_url = self._gh_service.format_raw_content_url(
+            owner=owner, repo=repo, git_ref=git_ref, path="metadata.yaml"
         )
-
         response = await self._http_client.get(raw_url)
         if response.status_code != 200:
-            raise RuntimeError(
-                f"Could not download {raw_url}. Got status {response.status}."
-            )
-        metadata_text = await response.text()
-
-        return yaml.safe_load(metadata_text)
+            return False
+        return True

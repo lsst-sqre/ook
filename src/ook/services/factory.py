@@ -78,6 +78,7 @@ class Factory:
         """Create a ClassificationService."""
         return ClassificationService(
             http_client=self._http_client,
+            github_service=self.create_github_metadata_service(),
             logger=self._logger,
         )
 
