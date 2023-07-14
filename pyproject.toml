@@ -144,6 +144,7 @@ ignore = [
     "S106",    # good idea but too many false positives on non-passwords
     "SIM102",  # sometimes the formatting of nested if statements is clearer
     "SIM117",  # sometimes nested with contexts are clearer
+    "T201",    # allow print
     "TCH001",  # we decided to not maintain separate TYPE_CHECKING blocks
     "TCH002",  # we decided to not maintain separate TYPE_CHECKING blocks
     "TCH003",  # we decided to not maintain separate TYPE_CHECKING blocks
