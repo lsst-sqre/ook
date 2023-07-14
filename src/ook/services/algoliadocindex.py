@@ -74,7 +74,6 @@ class AlgoliaDocIndexService:
         record = doc.make_algolia_record().export_for_algolia()
         await self._index.save_objects_async([record])
         await self.delete_old_records(
-            index=self._index,
             base_url=record["baseUrl"],
             surrogate_key=record["surrogateKey"],
         )
@@ -109,12 +108,12 @@ class AlgoliaDocIndexService:
         """Delete all records for a URL that don't match the given surrogate
         key.
         """
-        object_ids: list[str] = []
-        async for record in self._find_for_old_records(
-            base_url=base_url, surrogate_key=surrogate_key
-        ):
-            object_ids.append(record["objectID"])
-
+        object_ids = [
+            record["objectID"]
+            async for record in self.find_old_records(
+                base_url=base_url, surrogate_key=surrogate_key
+            )
+        ]
         self._logger.debug(
             "Collected old objectIDs for deletion",
             base_url=base_url,
