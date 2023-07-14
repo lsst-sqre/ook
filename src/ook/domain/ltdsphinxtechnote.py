@@ -204,16 +204,15 @@ class ReducedLtdSphinxTechnote:
     def _reduce_sections(
         self, root_section: lxml.html.Html.Element
     ) -> list[SphinxSection]:
-        sections: list[SphinxSection] = []
-
-        for s in iter_sphinx_sections(
-            base_url=self._url,
-            root_section=root_section,
-            headers=[self.h1],
-            header_callback=clean_title_text,
-            content_callback=lambda x: x.strip(),
-        ):
-            sections.append(s)
+        sections: list[SphinxSection] = list(
+            iter_sphinx_sections(
+                base_url=self._url,
+                root_section=root_section,
+                headers=[self.h1],
+                header_callback=clean_title_text,
+                content_callback=lambda x: x.strip(),
+            )
+        )
         # Also look for additional h1 section on the page.
         # Technically, the page should only have one h1, and all content
         # should be subsections of that. In first-generation technotes, though,
@@ -221,14 +220,17 @@ class ReducedLtdSphinxTechnote:
         # separately.
         for sibling in root_section.itersiblings(tag="div"):
             if "section" in sibling.classes:
-                for s in iter_sphinx_sections(
-                    root_section=sibling,
-                    base_url=self._url,
-                    headers=[self.h1],
-                    header_callback=clean_title_text,
-                    content_callback=lambda x: x.strip(),
-                ):
-                    sections.append(s)
+                sections.extend(
+                    list(
+                        iter_sphinx_sections(
+                            root_section=sibling,
+                            base_url=self._url,
+                            headers=[self.h1],
+                            header_callback=clean_title_text,
+                            content_callback=lambda x: x.strip(),
+                        )
+                    )
+                )
 
         return sections
 
