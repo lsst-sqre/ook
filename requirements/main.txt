@@ -131,7 +131,7 @@ uritemplate==4.1.1
     #   kafkit
 urllib3==2.0.3
     # via requests
-uvicorn[standard]==0.22.0
+uvicorn[standard]==0.23.0
     # via -r requirements/main.in
 uvloop==0.17.0
     # via uvicorn

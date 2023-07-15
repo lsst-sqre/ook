@@ -109,7 +109,7 @@ class Configuration(BaseSettings):
         None, env="OOK_GITHUB_APP_PRIVATE_KEY"
     )
     """The GitHub app private key. See
-    https://docs.github.com/en/developers/apps/building-github-apps/authenticating-with-github-apps#generating-a-private-key
+    https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps
     """
 
     enable_github_app: bool = Field(True, env="OOK_ENABLE_GITHUB_APP")

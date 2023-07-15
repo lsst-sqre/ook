@@ -28,11 +28,12 @@ def _make_env_vars() -> dict[str, str]:
     the app to start up.
     """
     return {
-        "SAFIR_KAFKA_BROKER_URL": "localhost:9092",
-        "SAFIR_SCHEMA_REGISTRY_URL": "http://localhost:8081",
-        "ENABLE_LTD_EVENTS_KAFKA_TOPIC": "true",
-        "ENABLE_OOK_INGEST_KAFKA_TOPIC": "true",
+        "SAFIR_PROFILE": "development",
         "SAFIR_LOG_LEVEL": "DEBUG",
+        "SAFIR_ENVIRONMENT_URL": "http://example.com/",
+        "KAFKA_BOOTSTRAP_SERVERS": "localhost:9092",
+        "OOK_REGISTRY_URL": "http://localhost:8081",
+        "OOK_ENABLE_CONSUMER": "false",
     }
 
 

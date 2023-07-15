@@ -1,0 +1,63 @@
+[project]
+title = "Ook"
+copyright = "2020-2023 Association of Universities for Research in Astronomy, Inc. (AURA)"
+
+[project.python]
+package = "ook"
+
+[project.openapi]
+openapi_path = "_static/openapi.json"
+doc_path = "api"
+
+[project.openapi.generator]
+function = "ook.main:create_openapi"
+
+[sphinx]
+rst_epilog_file = "_rst_epilog.rst"
+extensions = [
+    "sphinxcontrib.autodoc_pydantic",
+]
+nitpick_ignore = [
+    # Ignore missing cross-references for modules that don't provide
+    # intersphinx.  The documentation itself should use double-quotes instead
+    # of single-quotes to not generate a reference, but automatic references
+    # are generated from the type signatures and can't be avoided.  These are
+    # intentionally listed specifically because I've caught documentation bugs
+    # by having Sphinx complain about a new symbol.
+    ["py:class", "fastapi.applications.FastAPI"],
+    ["py:class", "fastapi.datastructures.DefaultPlaceholder"],
+    ["py:class", "fastapi.exceptions.HTTPException"],
+    ["py:class", "fastapi.params.Depends"],
+    ["py:class", "fastapi.routing.APIRoute"],
+    ["py:class", "httpx.AsyncClient"],
+    ["py:exc", "fastapi.HTTPException"],
+    ["py:exc", "fastapi.exceptions.RequestValidationError"],
+    ["py:exc", "httpx.HTTPError"],
+    ["py:obj", "fastapi.routing.APIRoute"],
+    ["py:class", "pydantic.env_settings.BaseSettings"],
+    ["py:class", "pydantic.error_wrappers.ValidationError"],
+    ["py:class", "pydantic.main.BaseModel"],
+    ["py:class", "pydantic.networks.AnyHttpUrl"],
+    ["py:class", "pydantic.networks.IPvAnyNetwork"],
+    ["py:class", "pydantic.types.SecretStr"],
+    ["py:class", "pydantic.types.FilePath"],
+    ["py:class", "pydantic.types.DirectoryPath"],
+    ["py:class", "pydantic.utils.Representation"],
+    ["py:class", "redis.asyncio.client.Redis"],
+    ["py:class", "starlette.middleware.base.BaseHTTPMiddleware"],
+    ["py:class", "starlette.requests.Request"],
+    ["py:class", "starlette.responses.Response"],
+    ["py:class", "starlette.routing.Route"],
+    ["py:class", "starlette.routing.BaseRoute"],
+    ["py:exc", "starlette.exceptions.HTTPException"],
+]
+
+[sphinx.intersphinx.projects]
+python = "https://docs.python.org/3/"
+safir = "https://safir.lsst.io/"
+kafkit = "https://kafkit.lsst.io/"
+structlog = "https://www.structlog.org/en/stable/"
+aiokafka = "https://aiokafka.readthedocs.io/en/stable/"
+
+[sphinx.linkcheck]
+ignore = []
