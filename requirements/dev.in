@@ -18,3 +18,5 @@ pydantic
 pytest
 pytest-asyncio
 pytest-cov
+types-dateparser
+types-PyYAML
