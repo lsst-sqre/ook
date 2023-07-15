@@ -63,12 +63,10 @@ class Configuration(BaseSettings):
         env="OOK_REGISTRY_URL", title="Schema Registry URL"
     )
 
-    enable_ingest_kafka_topic: bool = Field(
+    enable_kafka_consumer: bool = Field(
         True,
-        env="ENABLE_OOK_INGEST_KAFKA_TOPIC",
-        description=(
-            "Enable Kafka consumer for ingest_kafka_topic (ook.ingest)."
-        ),
+        env="OOK_ENABLE_CONSUMER",
+        description="Enable Kafka consumer.",
     )
 
     ingest_kafka_topic: str = Field(

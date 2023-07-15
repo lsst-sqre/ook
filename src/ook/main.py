@@ -36,9 +36,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator:
     logger = get_logger()
     logger.info("Ook is starting up.")
 
-    kafka_consumer_task = asyncio.create_task(
-        consume_kafka_messages(await http_client_dependency())
-    )
+    if config.enable_kafka_consumer:
+        kafka_consumer_task = asyncio.create_task(
+            consume_kafka_messages(await http_client_dependency())
+        )
 
     logger.info("Ook start up complete.")
 
@@ -47,8 +48,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator:
     # Shut down
     logger.info("Ook is shutting down.")
 
-    kafka_consumer_task.cancel()
-    await kafka_consumer_task
+    if config.enable_kafka_consumer:
+        kafka_consumer_task.cancel()
+        await kafka_consumer_task
 
     await http_client_dependency.aclose()
 
