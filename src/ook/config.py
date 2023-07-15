@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Any
 
 from kafkit.settings import KafkaConnectionSettings
@@ -37,7 +36,7 @@ class Configuration(BaseSettings):
     )
 
     path_prefix: str = Field(
-        "/squarebot",
+        "/ook",
         title="API URL path prefix",
         env="SAFIR_PATH_PREFIX",
         description=(
@@ -76,13 +75,6 @@ class Configuration(BaseSettings):
         "ook.ingest",
         env="OOK_INGEST_KAFKA_TOPIC",
         description="The name of the Kafka topic for the ingest queue.",
-    )
-
-    schema_root_dir: Path = Field(
-        Path(__file__).parent / "avro_schemas",
-        description=(
-            "Directory containing Avro schemas managed directly by the app."
-        ),
     )
 
     kafka_consumer_group_id: str = Field(
