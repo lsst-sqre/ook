@@ -8,7 +8,7 @@ from typing import Any
 
 from kafkit.settings import KafkaConnectionSettings
 from pydantic import AnyHttpUrl, BaseSettings, Field, SecretStr, validator
-from safir.logging import Profile
+from safir.logging import LogLevel, Profile
 
 __all__ = ["Configuration", "config"]
 
@@ -28,6 +28,12 @@ class Configuration(BaseSettings):
         description=(
             "Application logging profile: 'development' or 'production'."
         ),
+    )
+
+    log_level: LogLevel = Field(
+        LogLevel.INFO,
+        title="Log level of the application's logger",
+        env="SAFIR_LOG_LEVEL",
     )
 
     path_prefix: str = Field(
