@@ -2,14 +2,34 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from unittest.mock import Mock
 
+import pytest
 import pytest_asyncio
 from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 from httpx import AsyncClient
 
 from ook import main
+
+from .support.kafkaproducer import patch_aiokafkaproducer
+from .support.schemamanager import (
+    MockPydanticSchemaManager,
+    patch_schema_manager,
+)
+
+
+@pytest.fixture
+def mock_schema_manager() -> Iterator[MockPydanticSchemaManager]:
+    """Return a mock PydanticSchemaManager for testing."""
+    yield from patch_schema_manager()
+
+
+@pytest.fixture
+def mock_kafka_producer() -> Iterator[Mock]:
+    """Return a mock KafkaProducer for testing."""
+    yield from patch_aiokafkaproducer()
 
 
 @pytest_asyncio.fixture
@@ -19,7 +39,10 @@ async def http_client() -> AsyncIterator[AsyncClient]:
 
 
 @pytest_asyncio.fixture
-async def app() -> AsyncIterator[FastAPI]:
+async def app(
+    mock_kafka_producer: Mock,
+    mock_schema_manager: MockPydanticSchemaManager,
+) -> AsyncIterator[FastAPI]:
     """Return a configured test application.
 
     Wraps the application in a lifespan manager so that startup and shutdown

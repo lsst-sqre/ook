@@ -9,8 +9,16 @@ including from dependencies.
 from dataclasses import dataclass
 from typing import Any
 
+from aiokafka import AIOKafkaProducer
 from fastapi import Depends, Request
 from httpx import AsyncClient
+from kafkit.fastapi.dependencies.aiokafkaproducer import (
+    kafka_producer_dependency,
+)
+from kafkit.fastapi.dependencies.pydanticschemamanager import (
+    pydantic_schema_manager_dependency,
+)
+from kafkit.registry.manager import PydanticSchemaManager
 from safir.dependencies.http_client import http_client_dependency
 from safir.dependencies.logger import logger_dependency
 from structlog.stdlib import BoundLogger
@@ -72,12 +80,21 @@ class ContextDependency:
         request: Request,
         logger: BoundLogger = Depends(logger_dependency),
         http_client: AsyncClient = Depends(http_client_dependency),
+        kafka_producer: AIOKafkaProducer = Depends(kafka_producer_dependency),
+        schema_manager: PydanticSchemaManager = Depends(
+            pydantic_schema_manager_dependency
+        ),
     ) -> RequestContext:
         """Create a per-request context and return it."""
         return RequestContext(
             request=request,
             logger=logger,
-            factory=Factory(logger=logger, http_client=http_client),
+            factory=Factory(
+                logger=logger,
+                http_client=http_client,
+                kafka_producer=kafka_producer,
+                schema_manager=schema_manager,
+            ),
         )
 
 

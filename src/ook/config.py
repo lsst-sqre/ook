@@ -63,6 +63,30 @@ class Configuration(BaseSettings):
         env="OOK_REGISTRY_URL", title="Schema Registry URL"
     )
 
+    subject_suffix: str = Field(
+        "",
+        title="Schema subject name suffix",
+        env="OOK_SUBJECT_SUFFIX",
+        description=(
+            "Suffix to add to Schema Registry suffix names. This is useful "
+            "when deploying for testing/staging and you do not "
+            "want to affect the production subject and its "
+            "compatibility lineage."
+        ),
+    )
+
+    # TODO convert to enum?
+    subject_compatibility: str = Field(
+        "FORWARD_TRANSITIVE",
+        title="Schema subject compatibility",
+        env="OOK_SUBJECT_COMPATIBILITY",
+        description=(
+            "Compatibility level to apply to Schema Registry subjects. Use "
+            "NONE for testing and development, but prefer FORWARD_TRANSITIVE "
+            "for production."
+        ),
+    )
+
     enable_kafka_consumer: bool = Field(
         True,
         env="OOK_ENABLE_CONSUMER",

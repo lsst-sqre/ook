@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+from aiokafka import AIOKafkaProducer
 from algoliasearch.search_client import SearchClient
 from httpx import AsyncClient
+from kafkit.fastapi.dependencies.aiokafkaproducer import (
+    kafka_producer_dependency,
+)
+from kafkit.fastapi.dependencies.pydanticschemamanager import (
+    pydantic_schema_manager_dependency,
+)
+from kafkit.registry.manager import PydanticSchemaManager
 from safir.dependencies.http_client import http_client_dependency
 from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
@@ -14,6 +22,7 @@ from ..config import config
 from .algoliadocindex import AlgoliaDocIndexService
 from .classification import ClassificationService
 from .githubmetadata import GitHubMetadataService
+from .kafkaproducer import PydanticKafkaProducer
 from .landerjsonldingest import LtdLanderJsonLdIngestService
 
 
@@ -21,19 +30,43 @@ class Factory:
     """A factory for creating Ook services."""
 
     def __init__(
-        self, *, logger: BoundLogger, http_client: AsyncClient
+        self,
+        *,
+        logger: BoundLogger,
+        http_client: AsyncClient,
+        kafka_producer: AIOKafkaProducer,
+        schema_manager: PydanticSchemaManager,
     ) -> None:
         self._http_client = http_client
         self._logger = logger
+        self._kafka_producer = kafka_producer
+        self._schema_manager = schema_manager
 
     @classmethod
     async def create(cls, *, logger: BoundLogger) -> Factory:
         """Create a Factory (for use outside a request context)."""
-        return cls(logger=logger, http_client=await http_client_dependency())
+        return cls(
+            logger=logger,
+            http_client=await http_client_dependency(),
+            kafka_producer=await kafka_producer_dependency(),
+            schema_manager=await pydantic_schema_manager_dependency(),
+        )
 
     def set_logger(self, logger: BoundLogger) -> None:
         """Set the logger for the factory."""
         self._logger = logger
+
+    @property
+    def kafka_producer(self) -> PydanticKafkaProducer:
+        """The PydanticKafkaProducer."""
+        return PydanticKafkaProducer(
+            producer=self._kafka_producer, schema_manager=self._schema_manager
+        )
+
+    @property
+    def schema_manager(self) -> PydanticSchemaManager:
+        """The PydanticSchemaManager."""
+        return self._schema_manager
 
     @property
     def http_client(self) -> AsyncClient:

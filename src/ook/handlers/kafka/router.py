@@ -9,14 +9,14 @@ from typing import Any, Protocol, Self, cast
 
 from aiokafka import AIOKafkaConsumer, ConsumerRecord
 from dataclasses_avroschema.avrodantic import AvroBaseModel
-from httpx import AsyncClient
 from kafkit.registry import UnmanagedSchemaError
-from kafkit.registry.httpx import RegistryApi
 from kafkit.registry.manager import PydanticSchemaManager
+from structlog import get_logger
 
 from ook.config import config
 from ook.domain.kafka import LtdUrlIngestV1, UrlIngestKeyV1
 from ook.handlers.kafka.handlers import handle_ltd_document_ingest
+from ook.services.factory import Factory
 
 
 class HandlerProtocol(Protocol):
@@ -194,13 +194,13 @@ class PydanticAIOKafkaConsumer:
         )
 
 
-async def consume_kafka_messages(http_client: AsyncClient) -> None:
+async def consume_kafka_messages() -> None:
     """Consume Kafka messages."""
-    # Set up the schema manager
-    registry = RegistryApi(http_client=http_client, url=config.registry_url)
-    schema_manager = PydanticSchemaManager(registry=registry)
+    logger = get_logger("ook")
+    factory = await Factory.create(logger=logger)
+    schema_manager = factory.schema_manager
     aiokafka_consumer = AIOKafkaConsumer(
-        [config.ingest_kafka_topic],  # TODO add topics
+        [config.ingest_kafka_topic],
         bootstrap_servers=config.kafka.bootstrap_servers,
         group_id=config.kafka_consumer_group_id,
         security_protocol=config.kafka.security_protocol,
