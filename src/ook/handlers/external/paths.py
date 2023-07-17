@@ -1,11 +1,12 @@
 """Handlers for the app's external root endpoints, ``/ook/``."""
 
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import AnyHttpUrl
 from safir.metadata import get_metadata
 
 from ook.config import config
+from ook.dependencies.context import RequestContext, context_dependency
 
 from .models import IndexResponse, LtdIngestRequest
 
@@ -45,6 +46,12 @@ async def get_index(
 )
 async def post_ingest_ltd(
     ingest_request: LtdIngestRequest,
+    context: RequestContext = Depends(context_dependency),
 ) -> Response:
     """Trigger an ingest of a project in LSST the Docs."""
+    logger = context.logger
+    logger.info(
+        "Received request to ingest a project in LSST the Docs.",
+        payload=ingest_request.dict(),
+    )
     return Response(status_code=501)

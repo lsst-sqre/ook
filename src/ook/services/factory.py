@@ -28,8 +28,12 @@ class Factory:
 
     @classmethod
     async def create(cls, *, logger: BoundLogger) -> Factory:
-        """Create a Factory."""
+        """Create a Factory (for use outside a request context)."""
         return cls(logger=logger, http_client=await http_client_dependency())
+
+    def set_logger(self, logger: BoundLogger) -> None:
+        """Set the logger for the factory."""
+        self._logger = logger
 
     @property
     def http_client(self) -> AsyncClient:
