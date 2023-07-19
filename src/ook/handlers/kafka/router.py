@@ -149,7 +149,16 @@ class PydanticAIOKafkaConsumer:
                     offset=msg.offset,
                     timestamp=msg.timestamp,
                 )
-                await self._handle_message(msg)
+                try:
+                    await self._handle_message(msg)
+                except Exception as e:
+                    self._logger.exception(
+                        "Error handling message",
+                        topic=msg.topic,
+                        partition=msg.partition,
+                        offset=msg.offset,
+                        exception=e,
+                    )
                 self._logger.debug(
                     "Finished handling message",
                     topic=msg.topic,
