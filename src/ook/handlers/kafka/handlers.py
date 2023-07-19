@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from safir.datetime import format_datetime_for_logging
 from structlog import get_logger
 from structlog.stdlib import BoundLogger
 
@@ -31,9 +30,6 @@ def bind_logger_with_message_metadata(
         kafka_topic=message_metadata.topic,
         kafka_partition=message_metadata.partition,
         kafka_offset=message_metadata.offset,
-        kafka_timestamp=format_datetime_for_logging(
-            message_metadata.timestamp
-        ),
     )
 
 

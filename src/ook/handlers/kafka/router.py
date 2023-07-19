@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any, Protocol, Self, cast
 
 from aiokafka import AIOKafkaConsumer, ConsumerRecord
@@ -95,9 +94,6 @@ class MessageMetadata:
     partition: int
     """The Kafka partition."""
 
-    timestamp: datetime
-    """The Kafka message timestamp."""
-
     serialized_key_size: int
     """The size of the serialized key, in bytes."""
 
@@ -114,7 +110,6 @@ class MessageMetadata:
             topic=record.topic,
             offset=record.offset,
             partition=record.partition,
-            timestamp=datetime.fromtimestamp(record.timestamp, tz=UTC),
             serialized_key_size=record.serialized_key_size,
             serialized_value_size=record.serialized_value_size,
             headers=record.headers,
@@ -152,6 +147,7 @@ class PydanticAIOKafkaConsumer:
                     topic=msg.topic,
                     partition=msg.partition,
                     offset=msg.offset,
+                    timestamp=msg.timestamp,
                 )
                 await self._handle_message(msg)
                 self._logger.debug(
