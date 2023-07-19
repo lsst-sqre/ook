@@ -22,4 +22,6 @@ kafkit[pydantic,httpx,aiokafka]>=1.0.0a1
 click<8.1.4  # see https://github.com/pallets/click/issues/2558
 dateparser
 lxml
-cssselect
+cssselect # for lxml
+aiohttp>=2.0,<4.0 # for algoliasearch
+async_timeout>=2.0,<4.0 # for algoliasearch
