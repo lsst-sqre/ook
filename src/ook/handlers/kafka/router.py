@@ -200,7 +200,7 @@ async def consume_kafka_messages() -> None:
     factory = await Factory.create(logger=logger)
     schema_manager = factory.schema_manager
     aiokafka_consumer = AIOKafkaConsumer(
-        [config.ingest_kafka_topic],
+        config.ingest_kafka_topic,
         bootstrap_servers=config.kafka.bootstrap_servers,
         group_id=config.kafka_consumer_group_id,
         security_protocol=config.kafka.security_protocol,
