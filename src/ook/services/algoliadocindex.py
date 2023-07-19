@@ -92,17 +92,16 @@ class AlgoliaDocIndexService:
             " AND NOT "
             f"surrogateKey:{self.escape_facet_value(surrogate_key)}"
         )
+        settings = {
+            "filters": filters,
+            "attributesToRetrieve": ["baseUrl", "surrogateKey"],
+            "attributesToHighlight": [],
+        }
 
-        records: list[dict[str, Any]] = []
-        async for result in self._index.browse_objects_async(
-            {
-                "filters": filters,
-                "attributesToRetrieve": ["baseUrl", "surrogateKey"],
-                "attributesToHighlight": [],
-            }
-        ):
-            records.append(result)
-        return records
+        # Ideally we want to use browse_objects_async here, but I think there's
+        # a bug:
+        # https://github.com/algolia/algoliasearch-client-python/issues/559
+        return list(self._index.browse_objects(settings))
 
     async def delete_old_records(
         self, base_url: str, surrogate_key: str
@@ -112,12 +111,18 @@ class AlgoliaDocIndexService:
         """
         records = await self.find_old_records(base_url, surrogate_key)
         object_ids = [record["objectID"] for record in records]
+        if object_ids:
+            self._logger.debug(
+                "Collected old objectIDs for deletion",
+                base_url=base_url,
+                object_id_count=len(object_ids),
+            )
+            await self._index.delete_objects_async(object_ids)
         self._logger.debug(
-            "Collected old objectIDs for deletion",
+            "No old objectIDs to delete",
             base_url=base_url,
             object_id_count=len(object_ids),
         )
-        await self._index.delete_objects_async(object_ids)
 
     @staticmethod
     def escape_facet_value(value: str) -> str:
