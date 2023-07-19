@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
-
 from kafkit.settings import KafkaConnectionSettings
 from pydantic import AnyHttpUrl, BaseSettings, Field, SecretStr, validator
 from safir.logging import LogLevel, Profile
@@ -122,13 +119,6 @@ class Configuration(BaseSettings):
     App.
     """
 
-    github_webhook_secret: SecretStr | None = Field(
-        None, env="OOK_GITHUB_WEBHOOK_SECRET"
-    )
-    """The GitHub app's webhook secret, as set when the App was created. See
-    https://docs.github.com/en/developers/webhooks-and-events/webhooks/securing-your-webhooks
-    """
-
     github_app_private_key: SecretStr | None = Field(
         None, env="OOK_GITHUB_APP_PRIVATE_KEY"
     )
@@ -136,15 +126,7 @@ class Configuration(BaseSettings):
     https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps
     """
 
-    enable_github_app: bool = Field(True, env="OOK_ENABLE_GITHUB_APP")
-    """Toggle to enable GitHub App functionality.
-
-    If configurations required to function as a GitHub App are not set,
-    this configuration is automatically toggled to False. It also also be
-    manually toggled to False if necessary.
-    """
-
-    @validator("github_webhook_secret", "github_app_private_key", pre=True)
+    @validator("github_app_private_key", pre=True)
     def validate_none_secret(cls, v: SecretStr | None) -> SecretStr | None:
         """Validate a SecretStr setting which may be "None" that is intended
         to be `None`.
@@ -161,25 +143,6 @@ class Configuration(BaseSettings):
                 return v
         else:
             raise ValueError(f"Value must be None or a string: {v!r}")
-
-    @validator("enable_github_app")
-    def validate_github_app(cls, v: bool, values: Mapping[str, Any]) -> bool:
-        """Validate ``enable_github_app`` by ensuring that other GitHub
-        configurations are also set.
-        """
-        if v is False:
-            # Allow the GitHub app to be disabled regardless of other
-            # configurations.
-            return False
-
-        if (
-            (values.get("github_app_private_key") is None)
-            or (values.get("github_webhook_secret") is None)
-            or (values.get("github_app_id") is None)
-        ):
-            return False
-
-        return True
 
 
 config = Configuration()
