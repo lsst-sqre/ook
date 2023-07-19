@@ -17,7 +17,8 @@ aiokafka
 pydantic < 2.0.0
 safir>=4.3.0
 algoliasearch>=3.0,<4.0
-kafkit[pydantic,httpx,aiokafka] @ git+https://github.com/lsst-sqre/kafkit.git@tickets/DM-39646
+# kafkit[pydantic,httpx,aiokafka] @ git+https://github.com/lsst-sqre/kafkit.git@tickets/DM-39646
+kafkit[pydantic,httpx,aiokafka]>=1.0.0a1
 click<8.1.4  # see https://github.com/pallets/click/issues/2558
 dateparser
 lxml

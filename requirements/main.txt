@@ -38,7 +38,7 @@ cryptography==41.0.2
     #   safir
 dacite==1.8.1
     # via dataclasses-avroschema
-dataclasses-avroschema[pydantic]==0.44.0
+dataclasses-avroschema[pydantic]==0.45.0
     # via kafkit
 dateparser==1.1.8
     # via -r requirements/main.in
@@ -48,7 +48,7 @@ fastapi==0.100.0
     # via
     #   -r requirements/main.in
     #   safir
-fastavro==1.8.0
+fastavro==1.8.1
     # via
     #   dataclasses-avroschema
     #   kafkit
@@ -75,7 +75,7 @@ inflector==3.1.0
     # via dataclasses-avroschema
 kafka-python==2.0.2
     # via aiokafka
-kafkit @ git+https://github.com/lsst-sqre/kafkit.git@tickets/DM-39646
+kafkit[aiokafka,httpx,pydantic]==1.0.0a1
     # via -r requirements/main.in
 lxml==4.9.3
     # via -r requirements/main.in
@@ -89,7 +89,7 @@ pydantic==1.10.11
     #   fastapi
     #   kafkit
     #   safir
-pyjwt[crypto]==2.7.0
+pyjwt[crypto]==2.8.0
     # via gidgethub
 python-dateutil==2.8.2
     # via
@@ -99,13 +99,13 @@ python-dotenv==1.0.0
     # via uvicorn
 pytz==2023.3
     # via dateparser
-pyyaml==6.0
+pyyaml==6.0.1
     # via uvicorn
 regex==2023.6.3
     # via dateparser
 requests==2.31.0
     # via algoliasearch
-safir==4.3.0
+safir==4.3.1
     # via -r requirements/main.in
 six==1.16.0
     # via python-dateutil
@@ -133,7 +133,7 @@ uritemplate==4.1.1
     #   kafkit
 urllib3==2.0.3
     # via requests
-uvicorn[standard]==0.23.0
+uvicorn[standard]==0.23.1
     # via -r requirements/main.in
 uvloop==0.17.0
     # via uvicorn
