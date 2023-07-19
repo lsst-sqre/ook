@@ -16,14 +16,14 @@ from safir.dependencies.http_client import http_client_dependency
 from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
 
-from ook.services.sphinxtechnoteingest import SphinxTechnoteIngestService
-
 from ..config import config
 from .algoliadocindex import AlgoliaDocIndexService
 from .classification import ClassificationService
 from .githubmetadata import GitHubMetadataService
 from .kafkaproducer import PydanticKafkaProducer
 from .landerjsonldingest import LtdLanderJsonLdIngestService
+from .ltdmetadataservice import LtdMetadataService
+from .sphinxtechnoteingest import SphinxTechnoteIngestService
 
 
 class Factory:
@@ -111,11 +111,20 @@ class Factory:
             logger=self._logger,
         )
 
+    def create_ltd_metadata_service(self) -> LtdMetadataService:
+        """Create an LtdMetadataService."""
+        return LtdMetadataService(
+            http_client=self._http_client,
+            logger=self._logger,
+        )
+
     def create_classification_service(self) -> ClassificationService:
         """Create a ClassificationService."""
         return ClassificationService(
             http_client=self._http_client,
             github_service=self.create_github_metadata_service(),
+            ltd_service=self.create_ltd_metadata_service(),
+            kafka_producer=self.kafka_producer,
             logger=self._logger,
         )
 

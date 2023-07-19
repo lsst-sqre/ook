@@ -54,4 +54,10 @@ async def post_ingest_ltd(
         "Received request to ingest a project in LSST the Docs.",
         payload=ingest_request.dict(),
     )
-    return Response(status_code=501)
+    classifier = context.factory.create_classification_service()
+    if ingest_request.product_slug is not None:
+        await classifier.queue_ingest_for_ltd_product_slug(
+            product_slug=ingest_request.product_slug,
+            edition_slug=ingest_request.edition_slug,
+        )
+    return Response(status_code=202)

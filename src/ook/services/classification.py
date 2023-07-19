@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 
 from httpx import AsyncClient
+from safir.datetime import parse_isodatetime
 from structlog.stdlib import BoundLogger
 
+from ook.config import config
 from ook.domain.algoliarecord import DocumentSourceType
+from ook.domain.kafka import (
+    LtdEditionV1,
+    LtdProjectV1,
+    LtdUrlIngestV1,
+    UrlIngestKeyV1,
+)
+from ook.services.kafkaproducer import PydanticKafkaProducer
+from ook.services.ltdmetadataservice import LtdMetadataService
 
 from .githubmetadata import GitHubMetadataService
 
@@ -38,11 +49,59 @@ class ClassificationService:
         *,
         http_client: AsyncClient,
         github_service: GitHubMetadataService,
+        ltd_service: LtdMetadataService,
         logger: BoundLogger,
+        kafka_producer: PydanticKafkaProducer,
     ) -> None:
         self._http_client = http_client
         self._logger = logger
         self._gh_service = github_service
+        self._ltd_service = ltd_service
+        self._kafka_producer = kafka_producer
+
+    async def queue_ingest_for_ltd_product_slug(
+        self, *, product_slug: str, edition_slug: str
+    ) -> None:
+        """Queue an ingest for a LSST the Docs product slug."""
+        product_data = await self._ltd_service.get_project(product_slug)
+        edition_data = await self._ltd_service.get_edition(
+            product_slug, edition_slug=edition_slug
+        )
+
+        published_url = product_data["published_url"]
+        content_type = await self.classify_ltd_site(
+            product_slug=product_slug, published_url=published_url
+        )
+
+        date_rebuilt = parse_isodatetime(edition_data["date_rebuilt"])
+        if date_rebuilt is None:
+            raise RuntimeError(
+                f"Could not parse date_rebuilt {edition_data['date_rebuilt']}"
+            )
+
+        kafka_key = UrlIngestKeyV1(url=published_url)
+        kafka_value = LtdUrlIngestV1(
+            url=published_url,
+            content_type=content_type,
+            request_timestamp=datetime.now(tz=UTC),
+            update_timestamp=date_rebuilt,
+            edition=LtdEditionV1(
+                slug=edition_slug,
+                published_url=edition_data["published_url"],
+                url=edition_data["self_url"],
+                build_url=edition_data["build_url"],
+            ),
+            project=LtdProjectV1(
+                slug=product_slug,
+                published_url=product_data["published_url"],
+                url=product_data["self_url"],
+            ),
+        )
+        await self._kafka_producer.send(
+            topic=config.ingest_kafka_topic,
+            key=kafka_key,
+            value=kafka_value,
+        )
 
     async def classify_ltd_site(
         self, *, product_slug: str, published_url: str

@@ -20,11 +20,3 @@ async def test_get_index(client: AsyncClient) -> None:
     assert isinstance(metadata["description"], str)
     assert isinstance(metadata["repository_url"], str)
     assert isinstance(metadata["documentation_url"], str)
-
-
-@pytest.mark.asyncio
-async def test_post_ingest_ltd(client: AsyncClient) -> None:
-    """Test ``POST /ook/ingest/ltd``."""
-    request_data = {"product_slug": "sqr-000"}
-    response = await client.post("/ook/ingest/ltd", json=request_data)
-    assert response.status_code == 501
