@@ -26,7 +26,7 @@ class UrlIngestKeyV1(AvroBaseModel):
         """Metadata for the model."""
 
         namespace = "lsst.square-events.ook"
-        schema_name = "url-ingest-key-v1"
+        schema_name = "url_ingest_key_v1"
 
 
 class LtdEditionV1(AvroBaseModel):
@@ -91,4 +91,4 @@ class LtdUrlIngestV1(AvroBaseModel):
         """Metadata for the model."""
 
         namespace = "lsst.square-events.ook"
-        schema_name = "ltd-url-ingest-v1"
+        schema_name = "ltd_url_ingest_v1"
