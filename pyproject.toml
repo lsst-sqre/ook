@@ -161,6 +161,12 @@ target-version = "py311"
 "src/ook/handlers/**" = [
     "D103",    # FastAPI handlers should not have docstrings
 ]
+"src/ook/dependencies/algoliasearch.py" = [
+    "D401",    # A dependency does not need to be in imperative mood
+]
+"src/ook/services/algoliadocindex.py" = [
+    "PERF402"  # allow list append here
+]
 "tests/**" = [
     "D103",    # tests don't need docstrings
     "PLR0915", # tests are allowed to be long, sometimes that's convenient

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import AsyncIterable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 from algoliasearch.search_index import SearchIndex
@@ -83,7 +83,7 @@ class AlgoliaDocIndexService:
 
     async def find_old_records(
         self, base_url: str, surrogate_key: str
-    ) -> AsyncIterable[dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Find all records for a URL that don't match the given surrogate
         key.
         """
@@ -93,6 +93,7 @@ class AlgoliaDocIndexService:
             f"surrogateKey:{self.escape_facet_value(surrogate_key)}"
         )
 
+        records: list[dict[str, Any]] = []
         async for result in self._index.browse_objects_async(
             {
                 "filters": filters,
@@ -100,7 +101,8 @@ class AlgoliaDocIndexService:
                 "attributesToHighlight": [],
             }
         ):
-            yield result
+            records.append(result)
+        return records
 
     async def delete_old_records(
         self, base_url: str, surrogate_key: str
@@ -108,12 +110,8 @@ class AlgoliaDocIndexService:
         """Delete all records for a URL that don't match the given surrogate
         key.
         """
-        object_ids = [
-            record["objectID"]
-            async for record in self.find_old_records(
-                base_url=base_url, surrogate_key=surrogate_key
-            )
-        ]
+        records = await self.find_old_records(base_url, surrogate_key)
+        object_ids = [record["objectID"] for record in records]
         self._logger.debug(
             "Collected old objectIDs for deletion",
             base_url=base_url,

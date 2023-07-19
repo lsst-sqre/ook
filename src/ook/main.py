@@ -29,6 +29,7 @@ from safir.middleware.x_forwarded import XForwardedMiddleware
 from structlog import get_logger
 
 from .config import config
+from .dependencies.algoliasearch import algolia_client_dependency
 from .domain.kafka import LtdUrlIngestV1, UrlIngestKeyV1
 from .handlers.external.paths import external_router
 from .handlers.internal.paths import internal_router
@@ -82,6 +83,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator:
         await kafka_consumer_task
 
     await kafka_producer_dependency.stop()
+
+    await algolia_client_dependency.close()
 
     await http_client_dependency.aclose()
 

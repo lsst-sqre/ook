@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from aiokafka import AIOKafkaProducer
+from algoliasearch.search_client import SearchClient
 from fastapi import Depends, Request
 from httpx import AsyncClient
 from kafkit.fastapi.dependencies.aiokafkaproducer import (
@@ -22,6 +23,8 @@ from kafkit.registry.manager import PydanticSchemaManager
 from safir.dependencies.http_client import http_client_dependency
 from safir.dependencies.logger import logger_dependency
 from structlog.stdlib import BoundLogger
+
+from ook.dependencies.algoliasearch import algolia_client_dependency
 
 from ..services.factory import Factory
 
@@ -84,6 +87,7 @@ class ContextDependency:
         schema_manager: PydanticSchemaManager = Depends(
             pydantic_schema_manager_dependency
         ),
+        algolia_client: SearchClient = Depends(algolia_client_dependency),
     ) -> RequestContext:
         """Create a per-request context and return it."""
         return RequestContext(
@@ -94,6 +98,7 @@ class ContextDependency:
                 http_client=http_client,
                 kafka_producer=kafka_producer,
                 schema_manager=schema_manager,
+                algolia_client=algolia_client,
             ),
         )
 

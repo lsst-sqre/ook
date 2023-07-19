@@ -17,6 +17,7 @@ from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
 
 from ..config import config
+from ..dependencies.algoliasearch import algolia_client_dependency
 from .algoliadocindex import AlgoliaDocIndexService
 from .classification import ClassificationService
 from .githubmetadata import GitHubMetadataService
@@ -36,11 +37,13 @@ class Factory:
         http_client: AsyncClient,
         kafka_producer: AIOKafkaProducer,
         schema_manager: PydanticSchemaManager,
+        algolia_client: SearchClient,
     ) -> None:
         self._http_client = http_client
         self._logger = logger
         self._kafka_producer = kafka_producer
         self._schema_manager = schema_manager
+        self._algolia_client = algolia_client
 
     @classmethod
     async def create(cls, *, logger: BoundLogger) -> Factory:
@@ -50,6 +53,7 @@ class Factory:
             http_client=await http_client_dependency(),
             kafka_producer=await kafka_producer_dependency(),
             schema_manager=await pydantic_schema_manager_dependency(),
+            algolia_client=await algolia_client_dependency(),
         )
 
     def set_logger(self, logger: BoundLogger) -> None:
@@ -75,15 +79,9 @@ class Factory:
 
     def create_algolia_doc_index_service(self) -> AlgoliaDocIndexService:
         """Create an Algolia document indexing service."""
-        if config.algolia_app_id is None or config.algolia_api_key is None:
-            raise RuntimeError(
-                "Algolia app ID and API key must be set to use this service."
-            )
-
-        client = SearchClient.create(
-            config.algolia_app_id, config.algolia_api_key
+        index = self._algolia_client.init_index(
+            config.algolia_document_index_name
         )
-        index = client.init_index(config.algolia_document_index_name)
 
         return AlgoliaDocIndexService(
             index=index,
