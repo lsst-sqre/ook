@@ -12,6 +12,7 @@ from dataclasses_avroschema.avrodantic import AvroBaseModel
 from kafkit.registry import UnmanagedSchemaError
 from kafkit.registry.manager import PydanticSchemaManager
 from structlog import get_logger
+from structlog.stdlib import BoundLogger
 
 from ook.config import config
 from ook.domain.kafka import LtdUrlIngestV1, UrlIngestKeyV1
@@ -130,22 +131,38 @@ class PydanticAIOKafkaConsumer:
         *,
         schema_manager: PydanticSchemaManager,
         consumer: AIOKafkaConsumer,
+        logger: BoundLogger,
     ) -> None:
         self._schema_manager = schema_manager
         self._consumer = consumer
+        self._logger = logger
         self._routes: list[Route] = []
 
     async def start(self) -> None:
         """Start the consumer."""
         await self._consumer.start()
+        self._logger.info("Started Kafka consumer")
         try:
             # Consume messages
             async for msg in self._consumer:
                 # print("consumed: ", msg.topic, msg.partition, msg.offset,
                 #     msg.key, msg.value, msg.timestamp)
+                self._logger.debug(
+                    "Got kafka message",
+                    topic=msg.topic,
+                    partition=msg.partition,
+                    offset=msg.offset,
+                )
                 await self._handle_message(msg)
+                self._logger.debug(
+                    "Finished handling message",
+                    topic=msg.topic,
+                    partition=msg.partition,
+                    offset=msg.offset,
+                )
         finally:
             # Will leave consumer group; perform autocommit if enabled.
+            self._logger.info("Stopping Kafka consumer")
             await self._consumer.stop()
 
     async def _handle_message(self, msg: ConsumerRecord) -> None:
@@ -156,11 +173,27 @@ class PydanticAIOKafkaConsumer:
             key = await self._schema_manager.deserialize(msg.key)
             value = await self._schema_manager.deserialize(msg.value)
         except UnmanagedSchemaError:
-            # TODO log
+            self._logger.exception(
+                "Could not deserialize message due to unmanaged schema",
+                topic=msg.topic,
+                partition=msg.partition,
+                offset=msg.offset,
+            )
             return
         message_metadata = MessageMetadata.from_consumer_record(msg)
+        self._logger.debug(
+            "Deserialized message",
+            key=key.dict(),
+            value=value.dict(),
+        )
+        match_count = 0
         for route in self._routes:
             if route.matches(msg.topic, key, value):
+                match_count += 1
+                self._logger.debug(
+                    "Routing message to handler",
+                    handler=route,
+                )
                 kwargs = route.kwargs or {}
                 await route.callback(
                     message_metadata=message_metadata,
@@ -168,7 +201,13 @@ class PydanticAIOKafkaConsumer:
                     value=value,
                     **kwargs,
                 )
-                break
+        if match_count == 0:
+            self._logger.warning(
+                "No matching route for message",
+                topic=msg.topic,
+                partition=msg.partition,
+                offset=msg.offset,
+            )
 
     async def register_models(
         self, models: Iterable[type[AvroBaseModel]]
@@ -206,9 +245,12 @@ async def consume_kafka_messages() -> None:
         security_protocol=config.kafka.security_protocol,
         ssl_context=config.kafka.ssl_context,
     )
+    logger.info("Starting Kafka consumer")
 
     consumer = PydanticAIOKafkaConsumer(
-        schema_manager=schema_manager, consumer=aiokafka_consumer
+        schema_manager=schema_manager,
+        consumer=aiokafka_consumer,
+        logger=logger,
     )
     await consumer.add_route(
         cast(HandlerProtocol, handle_ltd_document_ingest),
