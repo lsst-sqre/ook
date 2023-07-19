@@ -36,6 +36,8 @@ cryptography==41.0.2
     # via
     #   pyjwt
     #   safir
+cssselect==1.2.0
+    # via -r requirements/main.in
 dacite==1.8.1
     # via dataclasses-avroschema
 dataclasses-avroschema[pydantic]==0.45.0
@@ -48,7 +50,7 @@ fastapi==0.100.0
     # via
     #   -r requirements/main.in
     #   safir
-fastavro==1.8.1
+fastavro==1.8.2
     # via
     #   dataclasses-avroschema
     #   kafkit
@@ -131,7 +133,7 @@ uritemplate==4.1.1
     # via
     #   gidgethub
     #   kafkit
-urllib3==2.0.3
+urllib3==2.0.4
     # via requests
 uvicorn[standard]==0.23.1
     # via -r requirements/main.in
