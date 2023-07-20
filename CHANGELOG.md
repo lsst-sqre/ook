@@ -2,11 +2,25 @@
 
 <!-- scriv-insert-here -->
 
-## Unreleased
+## 0.6.0 (2023-07-20)
+
+### Backwards-incompatible changes
+
+- The app is rewritten as a FastAPI/Safir app, replacing its heritage as an aiohttp/Safir app. The app is also now deployed with Helm via [Phalanx](https://phalanx.lsst.io) Because of this, Ook should be considered as an entirely new app, with no backwards compatibility with the previous version.
+- Ook no longer receives GitHub webhooks; the intent is to get GitHub webhook events from Squarebot (through Kafka) in the future.
+- Ook no longer receives Kafka messages from LTD Events since that app isn't avabile in the new Roundtable deployment. A new ingest trigger is being developed in the interim. Until then, ingests can be manually triggered by the `POST /ook/ingest/ltd` endpoint.
 
 ### New features
 
+- Ook is now a FastAPI/Safir app.
+- Ook uses Pydantic models for its Kafka message schemas.
+- Ook is now built around a service/domain/handler architecture, bringing it in line with SQuaRE's modern apps. The Kafka consumer is considered a handler.
 - Add `ook upload-doc-stub` CLI command to manually add a single record to Algolia to stub a document into the www.lsst.io search index. This is useful for cases where a document can't be normally indexed by Ook.
+
+### Other changes
+
+- The change log is maintained with scriv
+- Tests are now orchestrated through nox.
 
 ## 0.5.0 (2021-12-01)
 
