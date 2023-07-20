@@ -72,4 +72,11 @@ async def post_ingest_ltd(
                         edition_slug=ingest_request.edition_slug,
                     )
                 )
+        if ingest_request.product_slug_pattern is not None:
+            task_group.create_task(
+                classifier.queue_ingest_for_ltd_product_slug_pattern(
+                    product_slug_pattern=ingest_request.product_slug_pattern,
+                    edition_slug=ingest_request.edition_slug,
+                )
+            )
     return Response(status_code=202)

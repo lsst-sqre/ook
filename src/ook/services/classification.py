@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import UTC, datetime
 
@@ -102,6 +103,24 @@ class ClassificationService:
             key=kafka_key,
             value=kafka_value,
         )
+
+    async def queue_ingest_for_ltd_product_slug_pattern(
+        self, *, product_slug_pattern: str, edition_slug: str
+    ) -> None:
+        """Queue an ingest for a LSST the Docs project slug pattern."""
+        pattern = re.compile(product_slug_pattern)
+        project_urls = await self._ltd_service.get_project_urls()
+        async with asyncio.TaskGroup() as task_group:
+            for project_url in project_urls:
+                # The slug is the last component of the API URL
+                project_slug = project_url.split("/")[-1]
+                if pattern.match(project_slug) is not None:
+                    task_group.create_task(
+                        self.queue_ingest_for_ltd_product_slug(
+                            product_slug=project_slug,
+                            edition_slug=edition_slug,
+                        )
+                    )
 
     async def classify_ltd_site(
         self, *, product_slug: str, published_url: str
