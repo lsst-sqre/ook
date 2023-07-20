@@ -1,5 +1,6 @@
 """Handlers for the app's external root endpoints, ``/ook/``."""
 
+import asyncio
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import AnyHttpUrl
@@ -55,9 +56,20 @@ async def post_ingest_ltd(
         payload=ingest_request.dict(),
     )
     classifier = context.factory.create_classification_service()
-    if ingest_request.product_slug is not None:
-        await classifier.queue_ingest_for_ltd_product_slug(
-            product_slug=ingest_request.product_slug,
-            edition_slug=ingest_request.edition_slug,
-        )
+    async with asyncio.TaskGroup() as task_group:
+        if ingest_request.product_slug is not None:
+            task_group.create_task(
+                classifier.queue_ingest_for_ltd_product_slug(
+                    product_slug=ingest_request.product_slug,
+                    edition_slug=ingest_request.edition_slug,
+                )
+            )
+        if ingest_request.product_slugs is not None:
+            for product_slug in ingest_request.product_slugs:
+                task_group.create_task(
+                    classifier.queue_ingest_for_ltd_product_slug(
+                        product_slug=product_slug,
+                        edition_slug=ingest_request.edition_slug,
+                    )
+                )
     return Response(status_code=202)
