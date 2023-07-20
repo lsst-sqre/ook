@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, HttpUrl
 __all__ = ["DocumentRecord", "MinimalDocumentModel", "DocumentSourceType"]
 
 
-class DocumentSourceType(Enum):
+class DocumentSourceType(str, Enum):  # noqa: SLOT000
     """Types of content that can be classified by Ook."""
 
     LTD_LANDER_JSONLD = "ltd_lander_jsonld"
