@@ -14,7 +14,7 @@
 #   - Runs a non-root user.
 #   - Sets up the entrypoint and port.
 
-FROM python:3.10.7-slim-bullseye as base-image
+FROM python:3.11.4-slim-bullseye as base-image
 
 # Update system packages
 COPY scripts/install-base-packages.sh .
@@ -65,4 +65,4 @@ USER appuser
 EXPOSE 8080
 
 # Run the application.
-CMD ["ook", "run", "--port", "8080"]
+CMD ["uvicorn", "ook.main:app", "--host", "0.0.0.0", "--port", "8080"]

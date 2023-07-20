@@ -1,3 +1,5 @@
+# -*- conf -*-
+#
 # Editable runtime dependencies (equivalent to install_requires)
 # Add direct runtime dependencies here, as well as implicit dependencies
 # with constrained versions.
@@ -5,17 +7,21 @@
 # After editing, update requirements/main.txt by running:
 #     make update-deps
 
-git+https://github.com/lsst-sqre/safir@tickets/DM-23761#egg=safir
-aiohttp
-aiodns
-cchardet
-importlib_metadata
-click
-pydantic
-aiojobs
-lxml
-cssselect
-PyYAML
+# These dependencies are for fastapi including some optional features.
+fastapi
+starlette
+uvicorn[standard]
+
+# Other dependencies.
+aiokafka
+pydantic < 2.0.0
+safir>=4.3.0
+algoliasearch>=3.0,<4.0
+# kafkit[pydantic,httpx,aiokafka] @ git+https://github.com/lsst-sqre/kafkit.git@tickets/DM-39646
+kafkit[pydantic,httpx,aiokafka]>=1.0.0a1
+click<8.1.4  # see https://github.com/pallets/click/issues/2558
 dateparser
-algoliasearch>=2.0,<3.0
-gidgethub
+lxml
+cssselect # for lxml
+aiohttp>=2.0,<4.0 # for algoliasearch
+async_timeout>=2.0,<4.0 # for algoliasearch

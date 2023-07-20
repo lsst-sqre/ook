@@ -1,4 +1,4 @@
-.vscode
+# Everything below this point is a copy of .gitignore.
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -72,7 +72,6 @@ instance/
 
 # Sphinx documentation
 docs/_build/
-docs/_static/openapi.json
 
 # PyBuilder
 target/
@@ -136,4 +135,5 @@ dmypy.json
 # pytype static type analyzer
 .pytype/
 
-.ruff_cache
+# macOS
+.DS_Store

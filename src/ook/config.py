@@ -2,56 +2,11 @@
 
 from __future__ import annotations
 
-from enum import Enum
-from pathlib import Path
-from typing import TYPE_CHECKING, Optional
-
+from kafkit.settings import KafkaConnectionSettings
 from pydantic import AnyHttpUrl, BaseSettings, Field, SecretStr, validator
+from safir.logging import LogLevel, Profile
 
-__all__ = ["Configuration"]
-
-
-if TYPE_CHECKING:
-    from typing import Any, Mapping, TypeVar
-
-    ValuesType = Mapping[str, Any]
-    ValueType = TypeVar("ValueType")
-
-
-class ProfileEnum(str, Enum):
-    """Application run profile."""
-
-    production = "production"
-    development = "development"
-
-
-class LogLevelEnum(str, Enum):
-    """Logging level."""
-
-    DEBUG = "DEBUG"
-    INFO = "INFO"
-    WARNING = "WARNING"
-    ERROR = "ERROR"
-    CRITICAL = "CRITICAL"
-
-
-class KafkaProtocolEnum(str, Enum):
-    """Kafka protocol."""
-
-    SSL = "SSL"
-    PLAINTEXT = "PLAINTEXT"
-
-
-class SchemaCompatibilityEnum(str, Enum):
-    """Schema compatibility settings for the Confluent Schema Registry."""
-
-    BACKWARD = "BACKWARD"
-    BACKWARD_TRANSITIVE = "BACKWARD_TRANSITIVE"
-    FORWARD = "FORWARD"
-    FORWARD_TRANSITIVE = "FORWARD_TRANSITIVE"
-    FULL = "FULL"
-    FULL_TRANSITIVE = "FULL_TRANSITIVE"
-    NONE = "NONE"
+__all__ = ["Configuration", "config"]
 
 
 class Configuration(BaseSettings):
@@ -60,125 +15,79 @@ class Configuration(BaseSettings):
     name: str = Field(
         "ook",
         env="SAFIR_NAME",
-        description=(
-            "The application's name, which doubles as the root HTTP "
-            "endpoint path."
-        ),
+        description="The application's name",
     )
 
-    profile: ProfileEnum = Field(
-        ProfileEnum.development,
+    profile: Profile = Field(
+        Profile.production,
         env="SAFIR_PROFILE",
-        description="Application run profile: 'development' or 'production'.",
+        description=(
+            "Application logging profile: 'development' or 'production'."
+        ),
     )
 
-    logger_name: str = Field(
-        "ook",
-        env="SAFIR_LOGGER",
-        description="The root name of the application's logger.",
-    )
-
-    log_level: LogLevelEnum = Field(
-        LogLevelEnum.INFO,
+    log_level: LogLevel = Field(
+        LogLevel.INFO,
+        title="Log level of the application's logger",
         env="SAFIR_LOG_LEVEL",
-        description="The log level of the application's logger.",
     )
 
-    kafka_protocol: KafkaProtocolEnum = Field(
-        KafkaProtocolEnum.PLAINTEXT,
-        env="SAFIR_KAFKA_PROTOCOL",
+    path_prefix: str = Field(
+        "/ook",
+        title="API URL path prefix",
+        env="SAFIR_PATH_PREFIX",
         description=(
-            "The protocol used for communicating with Kafka brokers. The "
-            "``SSL`` protocol requires that certificate paths are also "
-            "configured."
+            "The URL prefix where the application's externally-accessible "
+            "endpoints are hosted."
         ),
     )
 
-    kafka_cluster_ca_path: Optional[Path] = Field(
-        None,
-        env="SAFIR_KAFKA_CLUSTER_CA",
+    environment_url: AnyHttpUrl = Field(
+        ...,
+        title="Base URL of the environment",
+        env="SAFIR_ENVIRONMENT_URL",
         description=(
-            "The path of the Strimzi-generated SSL cluster CA file for the "
-            "Kafka brokers."
+            "The base URL of the environment where the application is hosted."
         ),
     )
 
-    kafka_client_cert_path: Optional[Path] = Field(
-        None,
-        env="SAFIR_KAFKA_CLIENT_CERT",
-        description=(
-            "The path of the Strimzi-generated SSL cluster cert file for the "
-            "Kafka client."
-        ),
+    kafka: KafkaConnectionSettings = Field(
+        default_factory=KafkaConnectionSettings,
+        description="Kafka connection configuration.",
     )
 
-    kafka_client_key_path: Optional[Path] = Field(
-        None,
-        env="SAFIR_KAFKA_CLIENT_KEY",
-        description=(
-            "The path of the Strimzi-generated SSL client key file for the "
-            "Kafka client."
-        ),
+    registry_url: AnyHttpUrl = Field(
+        env="OOK_REGISTRY_URL", title="Schema Registry URL"
     )
 
-    kafka_broker_url: Optional[str] = Field(
-        None,
-        env="SAFIR_KAFKA_BROKER_URL",
-        description=(
-            "The URL of the Kafka broker without the scheme "
-            "(e.g. ``localhost:9092``)."
-        ),
-    )
-
-    schema_registry_url: Optional[AnyHttpUrl] = Field(
-        None,
-        env="SAFIR_SCHEMA_REGISTRY_URL",
-        description="The URL of the Confluent Schema Registry.",
-    )
-
-    schema_suffix: str = Field(
+    subject_suffix: str = Field(
         "",
-        env="SAFIR_SCHEMA_SUFFIX",
+        title="Schema subject name suffix",
+        env="OOK_SUBJECT_SUFFIX",
         description=(
-            "A suffix for Avro schema names / Schema Registry subject names "
-            "for development and staging. Leave as an empty string for "
-            "production."
+            "Suffix to add to Schema Registry suffix names. This is useful "
+            "when deploying for testing/staging and you do not "
+            "want to affect the production subject and its "
+            "compatibility lineage."
         ),
     )
 
-    schema_compatibility: Optional[SchemaCompatibilityEnum] = Field(
-        None,
-        env="SAFIR_SCHEMA_COMPATIBILITY",
+    # TODO convert to enum?
+    subject_compatibility: str = Field(
+        "FORWARD_TRANSITIVE",
+        title="Schema subject compatibility",
+        env="OOK_SUBJECT_COMPATIBILITY",
         description=(
-            "The Schema Registry subject compatibility setting to use for "
-            "schemas registered by the app. Leave unset (i.e., the default of "
-            "`None` to use the Schema Registry's default compatibility "
-            "setting."
+            "Compatibility level to apply to Schema Registry subjects. Use "
+            "NONE for testing and development, but prefer FORWARD_TRANSITIVE "
+            "for production."
         ),
     )
 
-    enable_ltd_events_kafka_topic: bool = Field(
+    enable_kafka_consumer: bool = Field(
         True,
-        env="ENABLE_LTD_EVENTS_KAFKA_TOPIC",
-        description=(
-            "Enable Kafka consumer for ltd_events_kafka_topic (ltd.events)."
-        ),
-    )
-
-    ltd_events_kafka_topic: str = Field(
-        "ltd.events",
-        env="LTD_EVENTS_KAFKA_TOPIC",
-        description=(
-            "The name of the Kafka topic for messages produced by LTD Events."
-        ),
-    )
-
-    enable_ingest_kafka_topic: bool = Field(
-        True,
-        env="ENABLE_OOK_INGEST_KAFKA_TOPIC",
-        description=(
-            "Enable Kafka consumer for ingest_kafka_topic (ook.ingest)."
-        ),
+        env="OOK_ENABLE_CONSUMER",
+        description="Enable Kafka consumer.",
     )
 
     ingest_kafka_topic: str = Field(
@@ -187,22 +96,15 @@ class Configuration(BaseSettings):
         description="The name of the Kafka topic for the ingest queue.",
     )
 
-    schema_root_dir: Path = Field(
-        Path(__file__).parent / "avro_schemas",
-        description=(
-            "Directory containing Avro schemas managed directly by the app."
-        ),
-    )
-
     kafka_consumer_group_id: str = Field(
         "ook", env="OOK_GROUP_ID", description="Kafka consumer group ID."
     )
 
-    algolia_app_id: Optional[str] = Field(
+    algolia_app_id: str | None = Field(
         None, env="ALGOLIA_APP_ID", description="The Algolia app ID"
     )
 
-    algolia_api_key: Optional[SecretStr] = Field(
+    algolia_api_key: SecretStr | None = Field(
         None, env="ALGOLIA_API_KEY", description="The Algolia API key"
     )
 
@@ -212,72 +114,23 @@ class Configuration(BaseSettings):
         description="Name of the Algolia document index",
     )
 
-    github_app_id: Optional[str] = Field(None, env="OOK_GITHUB_APP_ID")
+    github_app_id: str | None = Field(None, env="OOK_GITHUB_APP_ID")
     """The GitHub App ID, as determined by GitHub when setting up a GitHub
     App.
     """
 
-    github_webhook_secret: Optional[SecretStr] = Field(
-        None, env="OOK_GITHUB_WEBHOOK_SECRET"
-    )
-    """The GitHub app's webhook secret, as set when the App was created. See
-    https://docs.github.com/en/developers/webhooks-and-events/webhooks/securing-your-webhooks
-    """
-
-    github_app_private_key: Optional[SecretStr] = Field(
+    github_app_private_key: SecretStr | None = Field(
         None, env="OOK_GITHUB_APP_PRIVATE_KEY"
     )
     """The GitHub app private key. See
-    https://docs.github.com/en/developers/apps/building-github-apps/authenticating-with-github-apps#generating-a-private-key
+    https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps
     """
 
-    enable_github_app: bool = Field(True, env="OOK_ENABLE_GITHUB_APP")
-    """Toggle to enable GitHub App functionality.
-
-    If configurations required to function as a GitHub App are not set,
-    this configuration is automatically toggled to False. It also also be
-    manually toggled to False if necessary.
-    """
-
-    @validator("kafka_cluster_ca_path")
-    def validate_kafka_cluster_ca_path(
-        cls, v: ValueType, values: ValuesType
-    ) -> ValueType:
-        if values["kafka_protocol"] == "SSL" and v is None:
-            raise ValueError(
-                "SAFIR_KAFKA_CLUSTER_CA must be set if SAFIR_KAFKA_PROTOCOL "
-                "is 'SSL'."
-            )
-        return v
-
-    @validator("kafka_client_cert_path")
-    def validate_kafka_client_cert_path(
-        cls, v: ValueType, values: ValuesType
-    ) -> ValueType:
-        if values["kafka_protocol"] == "SSL" and v is None:
-            raise ValueError(
-                "SAFIR_KAFKA_CLIENT_CERT must be set if SAFIR_KAFKA_PROTOCOL "
-                "is 'SSL'."
-            )
-        return v
-
-    @validator("kafka_client_key_path")
-    def validate_kafka_client_key_path(
-        cls, v: ValueType, values: ValuesType
-    ) -> ValueType:
-        if values["kafka_protocol"] == "SSL" and v is None:
-            raise ValueError(
-                "SAFIR_KAFKA_CLIENT_KEY must be set if SAFIR_KAFKA_PROTOCOL "
-                "is 'SSL'."
-            )
-        return v
-
-    @validator("github_webhook_secret", "github_app_private_key", pre=True)
-    def validate_none_secret(
-        cls, v: Optional[SecretStr]
-    ) -> Optional[SecretStr]:
+    @validator("github_app_private_key", pre=True)
+    def validate_none_secret(cls, v: SecretStr | None) -> SecretStr | None:
         """Validate a SecretStr setting which may be "None" that is intended
         to be `None`.
+
         This is useful for secrets generated from 1Password or environment
         variables where the value cannot be null.
         """
@@ -291,21 +144,6 @@ class Configuration(BaseSettings):
         else:
             raise ValueError(f"Value must be None or a string: {v!r}")
 
-    @validator("enable_github_app")
-    def validate_github_app(cls, v: bool, values: Mapping[str, Any]) -> bool:
-        """Validate ``enable_github_app`` by ensuring that other GitHub
-        configurations are also set.
-        """
-        if v is False:
-            # Allow the GitHub app to be disabled regardless of other
-            # configurations.
-            return False
 
-        if (
-            (values.get("github_app_private_key") is None)
-            or (values.get("github_webhook_secret") is None)
-            or (values.get("github_app_id") is None)
-        ):
-            return False
-
-        return True
+config = Configuration()
+"""Configuration instance."""
