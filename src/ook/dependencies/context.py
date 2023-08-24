@@ -26,7 +26,7 @@ from structlog.stdlib import BoundLogger
 
 from ook.dependencies.algoliasearch import algolia_client_dependency
 
-from ..services.factory import Factory
+from ..factory import Factory
 
 __all__ = [
     "ContextDependency",

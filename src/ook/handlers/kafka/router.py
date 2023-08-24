@@ -15,8 +15,8 @@ from structlog.stdlib import BoundLogger
 
 from ook.config import config
 from ook.domain.kafka import LtdUrlIngestV1, UrlIngestKeyV1
+from ook.factory import Factory
 from ook.handlers.kafka.handlers import handle_ltd_document_ingest
-from ook.services.factory import Factory
 
 
 class HandlerProtocol(Protocol):

@@ -16,15 +16,15 @@ from safir.dependencies.http_client import http_client_dependency
 from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
 
-from ..config import config
-from ..dependencies.algoliasearch import algolia_client_dependency
-from .algoliadocindex import AlgoliaDocIndexService
-from .classification import ClassificationService
-from .githubmetadata import GitHubMetadataService
-from .kafkaproducer import PydanticKafkaProducer
-from .landerjsonldingest import LtdLanderJsonLdIngestService
-from .ltdmetadataservice import LtdMetadataService
-from .sphinxtechnoteingest import SphinxTechnoteIngestService
+from .config import config
+from .dependencies.algoliasearch import algolia_client_dependency
+from .services.algoliadocindex import AlgoliaDocIndexService
+from .services.classification import ClassificationService
+from .services.githubmetadata import GitHubMetadataService
+from .services.kafkaproducer import PydanticKafkaProducer
+from .services.landerjsonldingest import LtdLanderJsonLdIngestService
+from .services.ltdmetadataservice import LtdMetadataService
+from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
 
 
 class Factory:
