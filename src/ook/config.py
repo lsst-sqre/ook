@@ -100,12 +100,12 @@ class Configuration(BaseSettings):
         "ook", env="OOK_GROUP_ID", description="Kafka consumer group ID."
     )
 
-    algolia_app_id: str | None = Field(
-        None, env="ALGOLIA_APP_ID", description="The Algolia app ID"
+    algolia_app_id: str = Field(
+        env="ALGOLIA_APP_ID", description="The Algolia app ID"
     )
 
-    algolia_api_key: SecretStr | None = Field(
-        None, env="ALGOLIA_API_KEY", description="The Algolia API key"
+    algolia_api_key: SecretStr = Field(
+        env="ALGOLIA_API_KEY", description="The Algolia API key"
     )
 
     algolia_document_index_name: str = Field(
