@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import aclosing, asynccontextmanager
+from dataclasses import dataclass
+from typing import Self
+
 from aiokafka import AIOKafkaProducer
 from algoliasearch.search_client import SearchClient
 from httpx import AsyncClient
@@ -18,6 +23,7 @@ from structlog.stdlib import BoundLogger
 
 from .config import config
 from .dependencies.algoliasearch import algolia_client_dependency
+from .domain.kafka import LtdUrlIngestV1, UrlIngestKeyV1
 from .services.algoliadocindex import AlgoliaDocIndexService
 from .services.classification import ClassificationService
 from .services.githubmetadata import GitHubMetadataService
@@ -27,6 +33,71 @@ from .services.ltdmetadataservice import LtdMetadataService
 from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
 
 
+@dataclass(kw_only=True, frozen=True, slots=True)
+class ProcessContext:
+    """Holds singletons in the context of a Ook process, which might be a
+    API server or a CLI command.
+    """
+
+    http_client: AsyncClient
+    """Shared HTTP client."""
+
+    kafka_producer: AIOKafkaProducer
+    """The aiokafka producer."""
+
+    schema_manager: PydanticSchemaManager
+    """Pydantic schema manager."""
+
+    algolia_client: SearchClient
+    """Algolia client."""
+
+    @classmethod
+    async def create(cls) -> ProcessContext:
+        """Create a ProcessContext."""
+        http_client = await http_client_dependency()
+
+        # Initialize the Pydantic Schema Manager and register models
+        await pydantic_schema_manager_dependency.initialize(
+            http_client=http_client,
+            registry_url=config.registry_url,
+            models=[
+                UrlIngestKeyV1,
+                LtdUrlIngestV1,
+            ],
+            suffix=config.subject_suffix,
+            compatibility=config.subject_compatibility,
+        )
+
+        # Initialize the Kafka producer
+        await kafka_producer_dependency.initialize(config.kafka)
+
+        kafka_producer = await kafka_producer_dependency()
+        schema_manager = await pydantic_schema_manager_dependency()
+        algolia_client = await algolia_client_dependency()
+
+        return cls(
+            http_client=http_client,
+            kafka_producer=kafka_producer,
+            schema_manager=schema_manager,
+            algolia_client=algolia_client,
+        )
+
+    async def aclose(self) -> None:
+        """Clean up a process context.
+
+        Called during shutdown, or before recreating the process context using
+        a different configuration.
+        """
+        kafka_producer = await kafka_producer_dependency()
+        await kafka_producer.stop()
+
+        algolia_client = await algolia_client_dependency()
+        await algolia_client.close_async()
+
+        http_client = await http_client_dependency()
+        await http_client.aclose()
+
+
 class Factory:
     """A factory for creating Ook services."""
 
@@ -34,27 +105,37 @@ class Factory:
         self,
         *,
         logger: BoundLogger,
-        http_client: AsyncClient,
-        kafka_producer: AIOKafkaProducer,
-        schema_manager: PydanticSchemaManager,
-        algolia_client: SearchClient,
+        process_context: ProcessContext,
     ) -> None:
-        self._http_client = http_client
+        self._process_context = process_context
         self._logger = logger
-        self._kafka_producer = kafka_producer
-        self._schema_manager = schema_manager
-        self._algolia_client = algolia_client
 
     @classmethod
-    async def create(cls, *, logger: BoundLogger) -> Factory:
+    async def create(cls, *, logger: BoundLogger) -> Self:
         """Create a Factory (for use outside a request context)."""
+        context = await ProcessContext.create()
         return cls(
             logger=logger,
-            http_client=await http_client_dependency(),
-            kafka_producer=await kafka_producer_dependency(),
-            schema_manager=await pydantic_schema_manager_dependency(),
-            algolia_client=await algolia_client_dependency(),
+            process_context=context,
         )
+
+    @classmethod
+    @asynccontextmanager
+    async def create_standalone(
+        cls, *, logger: BoundLogger
+    ) -> AsyncIterator[Self]:
+        """Create a standalone factory, outside the FastAPI process, as a
+        context manager.
+
+        Use this for creating a factory in CLI commands.
+        """
+        factory = await cls.create(logger=logger)
+        async with aclosing(factory):
+            yield factory
+
+    async def aclose(self) -> None:
+        """Shut down the factory and the internal process context."""
+        await self._process_context.aclose()
 
     def set_logger(self, logger: BoundLogger) -> None:
         """Set the logger for the factory."""
@@ -64,22 +145,23 @@ class Factory:
     def kafka_producer(self) -> PydanticKafkaProducer:
         """The PydanticKafkaProducer."""
         return PydanticKafkaProducer(
-            producer=self._kafka_producer, schema_manager=self._schema_manager
+            producer=self._process_context.kafka_producer,
+            schema_manager=self._process_context.schema_manager,
         )
 
     @property
     def schema_manager(self) -> PydanticSchemaManager:
         """The PydanticSchemaManager."""
-        return self._schema_manager
+        return self._process_context.schema_manager
 
     @property
     def http_client(self) -> AsyncClient:
         """The shared HTTP client."""
-        return self._http_client
+        return self._process_context.http_client
 
     def create_algolia_doc_index_service(self) -> AlgoliaDocIndexService:
         """Create an Algolia document indexing service."""
-        index = self._algolia_client.init_index(
+        index = self._process_context.algolia_client.init_index(
             config.algolia_document_index_name
         )
 
@@ -102,7 +184,7 @@ class Factory:
             id=config.github_app_id,
             key=config.github_app_private_key.get_secret_value(),
             name="lsst-sqre/ook",
-            http_client=self._http_client,
+            http_client=self.http_client,
         )
         return GitHubMetadataService(
             gh_factory=gh_factory,
@@ -112,14 +194,14 @@ class Factory:
     def create_ltd_metadata_service(self) -> LtdMetadataService:
         """Create an LtdMetadataService."""
         return LtdMetadataService(
-            http_client=self._http_client,
+            http_client=self.http_client,
             logger=self._logger,
         )
 
     def create_classification_service(self) -> ClassificationService:
         """Create a ClassificationService."""
         return ClassificationService(
-            http_client=self._http_client,
+            http_client=self.http_client,
             github_service=self.create_github_metadata_service(),
             ltd_service=self.create_ltd_metadata_service(),
             kafka_producer=self.kafka_producer,
@@ -129,7 +211,7 @@ class Factory:
     def create_lander_ingest_service(self) -> LtdLanderJsonLdIngestService:
         """Create a LtdLanderJsonLdIngestService."""
         return LtdLanderJsonLdIngestService(
-            http_client=self._http_client,
+            http_client=self.http_client,
             algolia_service=self.create_algolia_doc_index_service(),
             github_service=self.create_github_metadata_service(),
             logger=self._logger,
@@ -140,7 +222,7 @@ class Factory:
     ) -> SphinxTechnoteIngestService:
         """Create a SphinxTechnoteIngestService."""
         return SphinxTechnoteIngestService(
-            http_client=self._http_client,
+            http_client=self.http_client,
             algolia_service=self.create_algolia_doc_index_service(),
             github_service=self.create_github_metadata_service(),
             logger=self._logger,

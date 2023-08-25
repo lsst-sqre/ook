@@ -9,24 +9,11 @@ including from dependencies.
 from dataclasses import dataclass
 from typing import Any
 
-from aiokafka import AIOKafkaProducer
-from algoliasearch.search_client import SearchClient
 from fastapi import Depends, Request
-from httpx import AsyncClient
-from kafkit.fastapi.dependencies.aiokafkaproducer import (
-    kafka_producer_dependency,
-)
-from kafkit.fastapi.dependencies.pydanticschemamanager import (
-    pydantic_schema_manager_dependency,
-)
-from kafkit.registry.manager import PydanticSchemaManager
-from safir.dependencies.http_client import http_client_dependency
 from safir.dependencies.logger import logger_dependency
 from structlog.stdlib import BoundLogger
 
-from ook.dependencies.algoliasearch import algolia_client_dependency
-
-from ..factory import Factory
+from ..factory import Factory, ProcessContext
 
 __all__ = [
     "ContextDependency",
@@ -76,31 +63,53 @@ class ContextDependency:
     """
 
     def __init__(self) -> None:
-        pass
+        self._process_context: ProcessContext | None = None
 
     async def __call__(
         self,
         request: Request,
         logger: BoundLogger = Depends(logger_dependency),
-        http_client: AsyncClient = Depends(http_client_dependency),
-        kafka_producer: AIOKafkaProducer = Depends(kafka_producer_dependency),
-        schema_manager: PydanticSchemaManager = Depends(
-            pydantic_schema_manager_dependency
-        ),
-        algolia_client: SearchClient = Depends(algolia_client_dependency),
     ) -> RequestContext:
         """Create a per-request context and return it."""
         return RequestContext(
             request=request,
             logger=logger,
             factory=Factory(
-                logger=logger,
-                http_client=http_client,
-                kafka_producer=kafka_producer,
-                schema_manager=schema_manager,
-                algolia_client=algolia_client,
+                logger=logger, process_context=self.process_context
             ),
         )
+
+    @property
+    def process_context(self) -> ProcessContext:
+        """The underlying process context, primarily for use in tests."""
+        if not self._process_context:
+            raise RuntimeError("ContextDependency not initialized")
+        return self._process_context
+
+    async def initialize(self) -> None:
+        """Initialize the process-wide shared context.
+
+        Parameters
+        ----------
+        config
+            Gafaelfawr configuration.
+        """
+        if self._process_context:
+            await self._process_context.aclose()
+        self._process_context = await ProcessContext.create()
+
+    def create_factory(self, logger: BoundLogger) -> Factory:
+        """Create a factory for use outside a request context."""
+        return Factory(
+            logger=logger,
+            process_context=self.process_context,
+        )
+
+    async def aclose(self) -> None:
+        """Clean up the per-process configuration."""
+        if self._process_context:
+            await self._process_context.aclose()
+        self._process_context = None
 
 
 context_dependency = ContextDependency()
