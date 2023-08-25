@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-__all__ = ["main", "help", "upload_doc_stub"]
-
 from pathlib import Path
 from typing import Any
 
@@ -12,9 +10,13 @@ import structlog
 from algoliasearch.search_client import SearchClient
 from safir.asyncio import run_with_asyncio
 
+# from ook.factory import Factory  # noqa: ERA001
 from ook.config import Configuration
 from ook.domain.algoliarecord import MinimalDocumentModel
+from ook.factory import Factory
 from ook.services.algoliadocindex import AlgoliaDocIndexService
+
+__all__ = ["main", "help", "upload_doc_stub"]
 
 # Add -h as a help shortcut option
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
@@ -52,7 +54,7 @@ def help(ctx: click.Context, topic: None | str, **kw: Any) -> None:
     "--dataset",
     required=True,
     type=click.Path(exists=True, path_type=Path),
-    description="Path to the JSON-formatted document stub dataset to upload.",
+    help="Path to the JSON-formatted document stub dataset to upload.",
 )
 @run_with_asyncio
 async def upload_doc_stub(dataset: Path) -> None:
@@ -86,3 +88,25 @@ async def upload_doc_stub(dataset: Path) -> None:
         index = client.init_index(config.algolia_document_index_name)
         algolia_doc_service = AlgoliaDocIndexService(index, logger)
         await algolia_doc_service.save_doc_stub(stub_record)
+
+
+@main.command()
+@run_with_asyncio
+async def audit() -> None:
+    """Audit the Algolia document index and check if any documents are missing
+    based on the listing of projects registered in the LTD Keeper service.
+    """
+    config = Configuration()
+    logger = structlog.get_logger("ook")
+    if any(
+        _ is None
+        for _ in (
+            config.algolia_document_index_name,
+            config.algolia_app_id,
+            config.algolia_api_key,
+        )
+    ):
+        raise click.UsageError("Algolia credentials not set in environment.")
+    async with Factory.create_standalone(logger=logger) as factory:
+        algolia_audit_service = factory.create_algolia_audit_service()
+        await algolia_audit_service.audit_missing_documents()

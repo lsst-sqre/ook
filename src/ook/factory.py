@@ -24,6 +24,7 @@ from structlog.stdlib import BoundLogger
 from .config import config
 from .dependencies.algoliasearch import algolia_client_dependency
 from .domain.kafka import LtdUrlIngestV1, UrlIngestKeyV1
+from .services.algoliaaudit import AlgoliaAuditService
 from .services.algoliadocindex import AlgoliaDocIndexService
 from .services.classification import ClassificationService
 from .services.githubmetadata import GitHubMetadataService
@@ -225,5 +226,13 @@ class Factory:
             http_client=self.http_client,
             algolia_service=self.create_algolia_doc_index_service(),
             github_service=self.create_github_metadata_service(),
+            logger=self._logger,
+        )
+
+    def create_algolia_audit_service(self) -> AlgoliaAuditService:
+        """Create an AlgoliaAuditService."""
+        return AlgoliaAuditService(
+            http_client=self.http_client,
+            algolia_search_client=self._process_context.algolia_client,
             logger=self._logger,
         )
