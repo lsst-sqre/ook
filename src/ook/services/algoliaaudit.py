@@ -10,6 +10,7 @@ from httpx import AsyncClient
 from structlog.stdlib import BoundLogger
 
 from ..config import config
+from .classification import ClassificationService
 
 # Python regular expression pattern that matches an LTD document slug such as
 # "sqr-000".
@@ -57,13 +58,17 @@ class AlgoliaAuditService:
         http_client: AsyncClient,
         logger: BoundLogger,
         algolia_search_client: SearchClient,
+        classification_service: ClassificationService,
     ) -> None:
         """Initialize the service."""
         self._http_client = http_client
         self._search_client = algolia_search_client
+        self._classifier = classification_service
         self._logger = logger
 
-    async def audit_missing_documents(self) -> list[LtdDocument]:
+    async def audit_missing_documents(
+        self, *, ingest_missing: bool = False
+    ) -> list[LtdDocument]:
         """Audit the Algolia indices for completeness of missing documents.
 
         A document is considered "missing" if it is registered in the LTD API,
@@ -97,6 +102,7 @@ class AlgoliaAuditService:
                     published_url=expected_ltd_doc.published_url,
                 )
                 missing_docs.append(expected_ltd_doc)
+        missing_docs.sort()
 
         self._logger.info(
             "Audit complete.",
@@ -104,7 +110,12 @@ class AlgoliaAuditService:
             missing=len(missing_docs),
         )
 
-        missing_docs.sort()
+        if ingest_missing and len(missing_docs) > 0:
+            for doc in missing_docs:
+                await self._classifier.queue_ingest_for_ltd_product_slug(
+                    product_slug=doc.slug, edition_slug="main"
+                )
+
         return missing_docs
 
     async def _get_ltd_documents(self) -> list[LtdDocument]:

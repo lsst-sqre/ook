@@ -235,4 +235,5 @@ class Factory:
             http_client=self.http_client,
             algolia_search_client=self._process_context.algolia_client,
             logger=self._logger,
+            classification_service=self.create_classification_service(),
         )

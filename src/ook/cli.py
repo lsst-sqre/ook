@@ -91,8 +91,9 @@ async def upload_doc_stub(dataset: Path) -> None:
 
 
 @main.command()
+@click.option("--reingest", is_flag=True, help="Reingest missing documents.")
 @run_with_asyncio
-async def audit() -> None:
+async def audit(*, reingest: bool = False) -> None:
     """Audit the Algolia document index and check if any documents are missing
     based on the listing of projects registered in the LTD Keeper service.
     """
@@ -109,4 +110,6 @@ async def audit() -> None:
         raise click.UsageError("Algolia credentials not set in environment.")
     async with Factory.create_standalone(logger=logger) as factory:
         algolia_audit_service = factory.create_algolia_audit_service()
-        await algolia_audit_service.audit_missing_documents()
+        await algolia_audit_service.audit_missing_documents(
+            ingest_missing=reingest
+        )
