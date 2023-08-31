@@ -13,7 +13,7 @@ from structlog.stdlib import BoundLogger
 
 from ook.domain.algoliarecord import DocumentSourceType
 from ook.domain.kafka import LtdUrlIngestV1, UrlIngestKeyV1
-from ook.services.factory import Factory
+from ook.factory import Factory
 
 if TYPE_CHECKING:
     from .router import MessageMetadata

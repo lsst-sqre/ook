@@ -47,7 +47,7 @@ class PydanticKafkaProducer:
         topic: str,
         value: AvroBaseModel,
         key: AvroBaseModel | None = None,
-        partition: None | None = None,
+        partition: int | None = None,
         timestamp_ms: int | None = None,
         headers: dict[str, bytes] | None = None,
     ) -> Future:

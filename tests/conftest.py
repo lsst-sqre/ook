@@ -13,11 +13,18 @@ from httpx import AsyncClient
 
 from ook import main
 
+from .support.algoliasearch import MockSearchClient, patch_algoliasearch
 from .support.kafkaproducer import patch_aiokafkaproducer
 from .support.schemamanager import (
     MockPydanticSchemaManager,
     patch_schema_manager,
 )
+
+
+@pytest.fixture
+def mock_algoliasearch() -> Iterator[MockSearchClient]:
+    """Return a mock Algolia SearchClient for testing."""
+    yield from patch_algoliasearch()
 
 
 @pytest.fixture
@@ -42,6 +49,7 @@ async def http_client() -> AsyncIterator[AsyncClient]:
 async def app(
     mock_kafka_producer: Mock,
     mock_schema_manager: MockPydanticSchemaManager,
+    mock_algoliasearch: MockSearchClient,
 ) -> AsyncIterator[FastAPI]:
     """Return a configured test application.
 

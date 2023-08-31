@@ -23,7 +23,7 @@ dependencies = []
 dynamic = ["version"]
 
 [project.scripts]
-squarebot = "ook.cli:main"
+ook = "ook.cli:main"
 
 [project.urls]
 Homepage = "https://ook.lsst.io"

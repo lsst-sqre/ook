@@ -14,9 +14,9 @@ from structlog import get_logger
 from structlog.stdlib import BoundLogger
 
 from ook.config import config
+from ook.dependencies.context import context_dependency
 from ook.domain.kafka import LtdUrlIngestV1, UrlIngestKeyV1
 from ook.handlers.kafka.handlers import handle_ltd_document_ingest
-from ook.services.factory import Factory
 
 
 class HandlerProtocol(Protocol):
@@ -241,7 +241,8 @@ class PydanticAIOKafkaConsumer:
 async def consume_kafka_messages() -> None:
     """Consume Kafka messages."""
     logger = get_logger("ook")
-    factory = await Factory.create(logger=logger)
+    factory = context_dependency.create_factory(logger)
+
     schema_manager = factory.schema_manager
     aiokafka_consumer = AIOKafkaConsumer(
         config.ingest_kafka_topic,

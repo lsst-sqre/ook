@@ -16,11 +16,6 @@ class AlgoliaSearchDependency:
     async def __call__(self) -> SearchClient:
         """Return SearchClient."""
         if self._search_client is None:
-            if config.algolia_app_id is None or config.algolia_api_key is None:
-                raise RuntimeError(
-                    "Algolia app ID and API key must be set to use this "
-                    "service."
-                )
             self._search_client = await SearchClient.create(
                 config.algolia_app_id,
                 config.algolia_api_key.get_secret_value(),

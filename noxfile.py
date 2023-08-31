@@ -34,6 +34,8 @@ def _make_env_vars() -> dict[str, str]:
         "KAFKA_BOOTSTRAP_SERVERS": "localhost:9092",
         "OOK_REGISTRY_URL": "http://localhost:8081",
         "OOK_ENABLE_CONSUMER": "false",
+        "ALGOLIA_APP_ID": "test",
+        "ALGOLIA_API_KEY": "test",
     }
 
 
