@@ -112,9 +112,16 @@ class AlgoliaAuditService:
 
         if ingest_missing and len(missing_docs) > 0:
             for doc in missing_docs:
-                await self._classifier.queue_ingest_for_ltd_product_slug(
-                    product_slug=doc.slug, edition_slug="main"
-                )
+                try:
+                    await self._classifier.queue_ingest_for_ltd_product_slug(
+                        product_slug=doc.slug, edition_slug="main"
+                    )
+                except Exception:
+                    self._logger.exception(
+                        "Failed to queue ingest for missing document",
+                        handle=doc.slug.upper(),
+                        published_url=doc.published_url,
+                    )
 
         return missing_docs
 
