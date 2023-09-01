@@ -118,11 +118,12 @@ class AlgoliaAuditService:
                         product_slug=doc.slug, edition_slug="main"
                     )
                     reingest_count += 1
-                except Exception:
-                    self._logger.exception(
+                except Exception as e:
+                    self._logger.error(
                         "Failed to queue ingest for missing document",
                         handle=doc.slug.upper(),
                         published_url=doc.published_url,
+                        exception=str(e),
                     )
             self._logger.info(
                 "Queued ingest for missing documents",

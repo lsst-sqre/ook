@@ -152,7 +152,7 @@ class PydanticAIOKafkaConsumer:
                 try:
                     await self._handle_message(msg)
                 except Exception as e:
-                    self._logger.exception(
+                    self._logger.error(
                         "Error handling message",
                         topic=msg.topic,
                         partition=msg.partition,
@@ -177,12 +177,13 @@ class PydanticAIOKafkaConsumer:
         try:
             key = await self._schema_manager.deserialize(msg.key)
             value = await self._schema_manager.deserialize(msg.value)
-        except UnmanagedSchemaError:
-            self._logger.exception(
+        except UnmanagedSchemaError as e:
+            self._logger.error(
                 "Could not deserialize message due to unmanaged schema",
                 topic=msg.topic,
                 partition=msg.partition,
                 offset=msg.offset,
+                exception=str(e),
             )
             return
         message_metadata = MessageMetadata.from_consumer_record(msg)
