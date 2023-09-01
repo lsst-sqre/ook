@@ -118,7 +118,11 @@ class LtdLanderJsonLdIngestService:
 
         await self._algolia_service.save_document_records(records)
 
-        self._logger.info("Finished building records")
+        self._logger.info(
+            "Finished uploading document records",
+            record_count=len(records),
+            surrogate_key=records[0].surrogate_key,
+        )
 
     def _create_records(
         self,
