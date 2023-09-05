@@ -21,6 +21,7 @@ from ook.domain.kafka import (
 from ook.services.kafkaproducer import PydanticKafkaProducer
 from ook.services.ltdmetadataservice import LtdMetadataService
 
+from ..exceptions import LtdSlugClassificationError
 from .githubmetadata import GitHubMetadataService
 
 __all__ = ["ClassificationService"]
@@ -76,33 +77,51 @@ class ClassificationService:
 
         date_rebuilt = parse_isodatetime(edition_data["date_rebuilt"])
         if date_rebuilt is None:
-            raise RuntimeError(
-                f"Could not parse date_rebuilt {edition_data['date_rebuilt']}"
+            raise LtdSlugClassificationError(
+                "Could not parse date_rebuilt: "
+                f"{edition_data['date_rebuilt']}",
+                product_slug=product_slug,
+                edition_slug=edition_slug,
             )
 
-        kafka_key = UrlIngestKeyV1(url=published_url)
-        kafka_value = LtdUrlIngestV1(
-            url=published_url,
-            content_type=content_type,
-            request_timestamp=datetime.now(tz=UTC),
-            update_timestamp=date_rebuilt,
-            edition=LtdEditionV1(
-                slug=edition_slug,
-                published_url=edition_data["published_url"],
-                url=edition_data["self_url"],
-                build_url=edition_data["build_url"],
-            ),
-            project=LtdProjectV1(
-                slug=product_slug,
-                published_url=product_data["published_url"],
-                url=product_data["self_url"],
-            ),
-        )
-        await self._kafka_producer.send(
-            topic=config.ingest_kafka_topic,
-            key=kafka_key,
-            value=kafka_value,
-        )
+        try:
+            kafka_key = UrlIngestKeyV1(url=published_url)
+            kafka_value = LtdUrlIngestV1(
+                url=published_url,
+                content_type=content_type,
+                request_timestamp=datetime.now(tz=UTC),
+                update_timestamp=date_rebuilt,
+                edition=LtdEditionV1(
+                    slug=edition_slug,
+                    published_url=edition_data["published_url"],
+                    url=edition_data["self_url"],
+                    build_url=edition_data["build_url"],
+                ),
+                project=LtdProjectV1(
+                    slug=product_slug,
+                    published_url=product_data["published_url"],
+                    url=product_data["self_url"],
+                ),
+            )
+        except Exception as e:
+            raise LtdSlugClassificationError(
+                f"Failed to create Kafka ingest key/value:\n\n{e}",
+                product_slug=product_slug,
+                edition_slug=edition_slug,
+            ) from e
+
+        try:
+            await self._kafka_producer.send(
+                topic=config.ingest_kafka_topic,
+                key=kafka_key,
+                value=kafka_value,
+            )
+        except Exception as e:
+            raise LtdSlugClassificationError(
+                f"Failed to queue ingest:\n\n{e}",
+                product_slug=product_slug,
+                edition_slug=edition_slug,
+            ) from e
 
     async def queue_ingest_for_ltd_product_slug_pattern(
         self, *, product_slug_pattern: str, edition_slug: str
