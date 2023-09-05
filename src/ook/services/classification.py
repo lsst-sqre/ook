@@ -82,6 +82,7 @@ class ClassificationService:
                 f"{edition_data['date_rebuilt']}",
                 product_slug=product_slug,
                 edition_slug=edition_slug,
+                error=None,
             )
 
         try:
@@ -105,9 +106,10 @@ class ClassificationService:
             )
         except Exception as e:
             raise LtdSlugClassificationError(
-                f"Failed to create Kafka ingest key/value:\n\n{e}",
+                "Failed to create Kafka ingest key/value",
                 product_slug=product_slug,
                 edition_slug=edition_slug,
+                error=e,
             ) from e
 
         try:
@@ -118,9 +120,10 @@ class ClassificationService:
             )
         except Exception as e:
             raise LtdSlugClassificationError(
-                f"Failed to queue ingest:\n\n{e}",
+                "Failed to send Kafka ingest message",
                 product_slug=product_slug,
                 edition_slug=edition_slug,
+                error=e,
             ) from e
 
     async def queue_ingest_for_ltd_product_slug_pattern(
