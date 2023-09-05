@@ -92,7 +92,7 @@ class DocumentRecord(BaseModel):
             "The base URL of the record (whereas ``url`` may refer to an "
             "anchor link."
         ),
-        alias="baseURL",
+        alias="baseUrl",
     )
 
     content: str = Field(description="The full-text content of the record.")

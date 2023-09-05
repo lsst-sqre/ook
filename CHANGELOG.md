@@ -2,6 +2,15 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.7.1'></a>
+## 0.7.1 (2023-09-05)
+
+### Bug fixes
+
+- Improved and logging and exception reporting around the `ook audit` command.
+- Fixed the `base_url` attribute's JSON alias for the Algolia DocumentRecord model. Was `baseURL` and is now restored to `baseUrl`.
+- Fix typo in creating records for Lander content types (`source_update_time` and `source_update_timestamp` fields).
+
 <a id='changelog-0.7.0'></a>
 ## 0.7.0 (2023-08-31)
 

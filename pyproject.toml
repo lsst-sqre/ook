@@ -153,6 +153,7 @@ ignore = [
     "TD004",   # skip requiring TODOs to have issue links
     "TID252",  # if we're going to use relative imports, use them always
     "TRY003",  # good general advice but lint is way too aggressive
+    "TRY400",  # We want JSON formatting of the exception messages
 ]
 select = ["ALL"]
 target-version = "py311"

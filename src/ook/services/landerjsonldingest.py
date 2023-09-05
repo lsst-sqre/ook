@@ -118,7 +118,11 @@ class LtdLanderJsonLdIngestService:
 
         await self._algolia_service.save_document_records(records)
 
-        self._logger.info("Finished building records")
+        self._logger.info(
+            "Finished uploading document records",
+            record_count=len(records),
+            surrogate_key=records[0].surrogate_key,
+        )
 
     def _create_records(
         self,
@@ -170,9 +174,9 @@ class LtdLanderJsonLdIngestService:
         record_args = {
             "object_id": object_id,
             "surrogate_key": surrogate_key,
-            "source_update_Time": format_utc_datetime(document.timestamp),
+            "source_update_time": format_utc_datetime(document.timestamp),
             "source_update_timestamp": format_timestamp(document.timestamp),
-            "source_creation_Timestamp": (
+            "source_creation_timestamp": (
                 format_timestamp(creation_date) if creation_date else None
             ),
             "record_update_time": format_utc_datetime(datetime.now(tz=UTC)),
