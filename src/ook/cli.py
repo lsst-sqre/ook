@@ -9,9 +9,9 @@ import click
 import structlog
 from algoliasearch.search_client import SearchClient
 from safir.asyncio import run_with_asyncio
+from safir.logging import configure_logging
 
-# from ook.factory import Factory  # noqa: ERA001
-from ook.config import Configuration
+from ook.config import config
 from ook.domain.algoliarecord import MinimalDocumentModel
 from ook.factory import Factory
 from ook.services.algoliadocindex import AlgoliaDocIndexService
@@ -29,6 +29,11 @@ def main() -> None:
 
     Administrative command-line interface for ook.
     """
+    configure_logging(
+        profile=config.profile,
+        log_level=config.log_level,
+        name="ook",
+    )
 
 
 @main.command()
@@ -63,7 +68,6 @@ async def upload_doc_stub(dataset: Path) -> None:
     The schema for the document stub is the
     `ook.domain.algoliarecord.MinimalDocumentModel` Pydantic class.
     """
-    config = Configuration()
     logger = structlog.get_logger("ook")
     if any(
         _ is None
@@ -97,7 +101,6 @@ async def audit(*, reingest: bool = False) -> None:
     """Audit the Algolia document index and check if any documents are missing
     based on the listing of projects registered in the LTD Keeper service.
     """
-    config = Configuration()
     logger = structlog.get_logger("ook")
     if any(
         _ is None
