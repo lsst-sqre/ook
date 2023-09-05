@@ -14,6 +14,7 @@ algoliasearch==3.0.0
     # via -r requirements/main.in
 anyio==3.7.1
     # via
+    #   fastapi
     #   httpcore
     #   starlette
     #   watchfiles
@@ -51,13 +52,15 @@ cssselect==1.2.0
     # via -r requirements/main.in
 dacite==1.8.1
     # via dataclasses-avroschema
-dataclasses-avroschema[pydantic]==0.46.2
+dataclasses-avroschema[pydantic]==0.47.2
     # via kafkit
 dateparser==1.1.8
     # via -r requirements/main.in
-faker==18.13.0
-    # via dataclasses-avroschema
-fastapi==0.101.1
+dnspython==2.4.2
+    # via email-validator
+email-validator==2.0.0.post2
+    # via pydantic
+fastapi==0.103.1
     # via
     #   -r requirements/main.in
     #   safir
@@ -82,6 +85,7 @@ httpx==0.24.1
 idna==3.4
     # via
     #   anyio
+    #   email-validator
     #   httpx
     #   requests
     #   yarl
@@ -101,21 +105,20 @@ packaging==23.1
     # via aiokafka
 pycparser==2.21
     # via cffi
-pydantic==1.10.12
+pydantic[email]==1.10.12
     # via
     #   -r requirements/main.in
+    #   dataclasses-avroschema
     #   fastapi
     #   kafkit
     #   safir
 pyjwt[crypto]==2.8.0
     # via gidgethub
 python-dateutil==2.8.2
-    # via
-    #   dateparser
-    #   faker
+    # via dateparser
 python-dotenv==1.0.0
     # via uvicorn
-pytz==2023.3
+pytz==2023.3.post1
     # via dateparser
 pyyaml==6.0.1
     # via uvicorn
