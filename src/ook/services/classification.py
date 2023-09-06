@@ -72,6 +72,7 @@ class ClassificationService:
             The time window to check for updated projects.
         """
         since = datetime.now(tz=UTC) - window
+        updated_project_count = 0
         async for project_slug in self._ltd_service.iter_updated_projects(
             since
         ):
@@ -82,6 +83,11 @@ class ClassificationService:
             self._logger.info(
                 "Queued ingest for updated LTD project", slug=project_slug
             )
+            updated_project_count += 1
+        self._logger.info(
+            "Finished queueing ingest for updated LTD projects",
+            count=updated_project_count,
+        )
 
     async def queue_ingest_for_ltd_product_slug(
         self, *, product_slug: str, edition_slug: str
