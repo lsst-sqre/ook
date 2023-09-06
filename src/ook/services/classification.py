@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from httpx import AsyncClient
 from safir.datetime import parse_isodatetime
@@ -60,6 +60,34 @@ class ClassificationService:
         self._gh_service = github_service
         self._ltd_service = ltd_service
         self._kafka_producer = kafka_producer
+
+    async def queue_ingest_for_updated_ltd_projects(
+        self, window: timedelta
+    ) -> None:
+        """Queue an ingest for all updated LSST the Docs projects.
+
+        Parameters
+        ----------
+        window
+            The time window to check for updated projects.
+        """
+        since = datetime.now(tz=UTC) - window
+        updated_project_count = 0
+        async for project_slug in self._ltd_service.iter_updated_projects(
+            since
+        ):
+            await self.queue_ingest_for_ltd_product_slug(
+                product_slug=project_slug,
+                edition_slug="main",
+            )
+            self._logger.info(
+                "Queued ingest for updated LTD project", slug=project_slug
+            )
+            updated_project_count += 1
+        self._logger.info(
+            "Finished queueing ingest for updated LTD projects",
+            count=updated_project_count,
+        )
 
     async def queue_ingest_for_ltd_product_slug(
         self, *, product_slug: str, edition_slug: str

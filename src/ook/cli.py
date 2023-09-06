@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -116,3 +118,41 @@ async def audit(*, reingest: bool = False) -> None:
         await algolia_audit_service.audit_missing_documents(
             ingest_missing=reingest
         )
+
+
+@main.command(name="ingest-updated")
+@click.option(
+    "--window",
+    default="2d",
+    help="Time window to check for document updates. E.g. 2d, 1w, 1m, 1y.",
+)
+@run_with_asyncio
+async def ingest_updated(*, window: str) -> None:
+    logger = structlog.get_logger("ook")
+    window_timedelta = parse_timedelta(window)
+    async with Factory.create_standalone(logger=logger) as factory:
+        classification_service = factory.create_classification_service()
+        await classification_service.queue_ingest_for_updated_ltd_projects(
+            window_timedelta
+        )
+
+
+timespan_pattern = re.compile(
+    r"((?P<weeks>\d+?)\s*(weeks|week|w))?\s*"
+    r"((?P<days>\d+?)\s*(days|day|d))?\s*"
+    r"((?P<hours>\d+?)\s*(hours|hour|hr|h))?\s*"
+    r"((?P<minutes>\d+?)\s*(minutes|minute|mins|min|m))?\s*"
+    r"((?P<seconds>\d+?)\s*(seconds|second|secs|sec|s))?$"
+)
+"""Regular expression pattern for a time duration."""
+
+
+def parse_timedelta(text: str) -> timedelta:
+    """Parse a `datetime.timedelta` from a string containing integer numbers
+    of weeks, days, hours, minutes, and seconds.
+    """
+    m = timespan_pattern.match(text.strip())
+    if m is None:
+        raise ValueError(f"Could not parse a timespan from {text!r}.")
+    td_args = {k: int(v) for k, v in m.groupdict().items() if v is not None}
+    return timedelta(**td_args)

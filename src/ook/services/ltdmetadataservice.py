@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from datetime import datetime
+
 from httpx import AsyncClient
+from safir.datetime import parse_isodatetime
 from structlog.stdlib import BoundLogger
 
 
@@ -53,3 +57,36 @@ class LtdMetadataService:
         raise RuntimeError(
             f"Could not find edition {edition_slug} for product {product_slug}"
         )
+
+    async def iter_updated_projects(
+        self, since: datetime, edition_slug: str = "main"
+    ) -> AsyncIterator[str]:
+        """Get all LTD projects that have been updated since a given date.
+
+        Parameters
+        ----------
+        since
+            The date to compare against.
+        edition_slug
+            The slug of the edition. ``main`` is the default edition.
+
+        Yields
+        ------
+        str
+            The slug of the project that was updated recently.
+        """
+        for project_url in await self.get_project_urls():
+            r = await self._http_client.get(project_url)
+            project = r.json()
+            project_slug = project["slug"]
+            try:
+                edition = await self.get_edition(
+                    product_slug=project_slug, edition_slug=edition_slug
+                )
+            except RuntimeError:
+                continue
+            date_rebuilt = parse_isodatetime(edition["date_rebuilt"])
+            if date_rebuilt is None:
+                continue
+            if date_rebuilt >= since:
+                yield project_slug
