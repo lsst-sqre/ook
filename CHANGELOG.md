@@ -2,6 +2,13 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.8.0'></a>
+## 0.8.0 (2023-09-06)
+
+### New features
+
+- Add a new `ook ingest-updated` command to queue ingest tasks for all LTD projects that have updated within a specified time period. This command is intended to be run as a Kubernetes cron job. Once push-based queueing from LTD is available on the roundtable-prod Kubernetes cluster this command can be deprecated.
+
 <a id='changelog-0.7.1'></a>
 ## 0.7.1 (2023-09-05)
 
