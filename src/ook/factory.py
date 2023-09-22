@@ -17,7 +17,6 @@ from kafkit.fastapi.dependencies.pydanticschemamanager import (
     pydantic_schema_manager_dependency,
 )
 from kafkit.registry.manager import PydanticSchemaManager
-from safir.dependencies.http_client import http_client_dependency
 from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
 
@@ -55,7 +54,11 @@ class ProcessContext:
     @classmethod
     async def create(cls) -> ProcessContext:
         """Create a ProcessContext."""
-        http_client = await http_client_dependency()
+        # Not using Safir's http_client_dependency because I found that in
+        # standalone Factory setting the http_client wasn't opened, for some
+        # reason. Ook doesn't use any http_client beyond this one from
+        # ProcessContext.
+        http_client = AsyncClient()
 
         # Initialize the Pydantic Schema Manager and register models
         await pydantic_schema_manager_dependency.initialize(
@@ -89,14 +92,9 @@ class ProcessContext:
         Called during shutdown, or before recreating the process context using
         a different configuration.
         """
-        kafka_producer = await kafka_producer_dependency()
-        await kafka_producer.stop()
-
-        algolia_client = await algolia_client_dependency()
-        await algolia_client.close_async()
-
-        http_client = await http_client_dependency()
-        await http_client.aclose()
+        await self.kafka_producer.stop()
+        await self.algolia_client.close_async()
+        await self.http_client.aclose()
 
 
 class Factory:
