@@ -6,6 +6,7 @@ import asyncio
 import re
 from datetime import UTC, datetime, timedelta
 
+import lxml.html
 from httpx import AsyncClient
 from safir.datetime import parse_isodatetime
 from structlog.stdlib import BoundLogger
@@ -190,6 +191,10 @@ class ClassificationService:
         ContentType
             The known site type.
         """
+        html_classification = await self._inspect_html(published_url)
+        if html_classification:
+            return html_classification
+
         if self.is_document_handle(product_slug):
             # Either a lander-based site or a sphinx technote
             if await self.has_jsonld_metadata(published_url=published_url):
@@ -200,6 +205,36 @@ class ClassificationService:
                 return DocumentSourceType.LTD_GENERIC
         else:
             return DocumentSourceType.LTD_GENERIC
+
+    async def _inspect_html(
+        self, published_url: str
+    ) -> DocumentSourceType | None:
+        """Inspect the HTML of a site to determine its type based on metadata
+        and other elements in the HTML.
+
+        Parameters
+        ----------
+        published_url
+            The published URL of the site (which should provide the index.html
+            document).
+
+        Returns
+        -------
+        `DocumentSourceType` or `None`
+            The content type of the site or `None` if it could not be
+            determined.
+        """
+        r = await self._http_client.get(published_url)
+        r.raise_for_status()
+        html = r.text
+        doc = lxml.html.document_fromstring(html)
+
+        # Look for a generator meta tag
+        for tag in doc.cssselect("meta[name='generator']"):
+            if tag.get("content").split(" ")[0] == "technote":
+                return DocumentSourceType.LTD_TECHNOTE
+
+        return None
 
     def is_document_handle(self, product_slug: str) -> bool:
         """Test if a LSST the Docs product slug belongs to a Rubin Observatory
