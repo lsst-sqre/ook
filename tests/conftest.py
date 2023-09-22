@@ -7,11 +7,13 @@ from unittest.mock import Mock
 
 import pytest
 import pytest_asyncio
+import structlog
 from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 from httpx import AsyncClient
 
 from ook import main
+from ook.factory import Factory
 
 from .support.algoliasearch import MockSearchClient, patch_algoliasearch
 from .support.kafkaproducer import patch_aiokafkaproducer
@@ -65,3 +67,16 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     """Return an ``httpx.AsyncClient`` configured to talk to the test app."""
     async with AsyncClient(app=app, base_url="https://example.com/") as client:
         yield client
+
+
+@pytest_asyncio.fixture
+async def factory(
+    mock_kafka_producer: Mock,
+    mock_schema_manager: MockPydanticSchemaManager,
+    mock_algoliasearch: MockSearchClient,
+) -> AsyncIterator[Factory]:
+    """Return a configured ``Factory``."""
+    logger = structlog.get_logger("ook")
+    async with Factory.create_standalone(logger=logger) as factory:
+        yield factory
+        await factory.aclose()
