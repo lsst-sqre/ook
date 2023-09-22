@@ -17,6 +17,9 @@ __all__ = ["DocumentRecord", "MinimalDocumentModel", "DocumentSourceType"]
 class DocumentSourceType(str, Enum):
     """Types of content that can be classified by Ook."""
 
+    LTD_TECHNOTE = "ltd_technote"
+    """A technote (technote.lsst.io) that is hosted on LSST the Docs."""
+
     LTD_LANDER_JSONLD = "ltd_lander_jsonld"
     """A lander-based site for PDF-based content that includes a
     ``metadata.jsonld`` file and is hosted on LSST the Docs.
