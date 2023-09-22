@@ -79,6 +79,7 @@ httpx==0.25.0
     # via
     #   -c requirements/main.txt
     #   -r requirements/dev.in
+    #   respx
 identify==2.5.29
     # via pre-commit
 idna==3.4
@@ -197,6 +198,8 @@ requests==2.31.0
     #   -c requirements/main.txt
     #   documenteer
     #   sphinx
+respx==0.20.2
+    # via -r requirements/dev.in
 rpds-py==0.10.3
     # via
     #   jsonschema
