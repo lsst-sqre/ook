@@ -209,6 +209,11 @@ class DocumentRecord(BaseModel):
         """Export into a dict that can be uploaded to Algolia."""
         return self.dict(by_alias=True, exclude_none=True)
 
+    @property
+    def headers(self) -> list[str | None]:
+        """The headers of the document."""
+        return [self.h1, self.h2, self.h3, self.h4, self.h5, self.h6]
+
 
 def generate_surrogate_key() -> str:
     """Generate a surrogate key that applies to all records for a given

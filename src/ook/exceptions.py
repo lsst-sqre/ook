@@ -38,3 +38,7 @@ class LtdSlugClassificationError(Exception):
         if self.error is not None:
             message += f"\n\n{self.error}"
         return message
+
+
+class DocumentParsingError(Exception):
+    """Raised when there is a document parsing error."""

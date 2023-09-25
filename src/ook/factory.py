@@ -31,6 +31,7 @@ from .services.kafkaproducer import PydanticKafkaProducer
 from .services.landerjsonldingest import LtdLanderJsonLdIngestService
 from .services.ltdmetadataservice import LtdMetadataService
 from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
+from .services.technoteingest import TechnoteIngestService
 
 
 @dataclass(kw_only=True, frozen=True, slots=True)
@@ -224,6 +225,14 @@ class Factory:
             http_client=self.http_client,
             algolia_service=self.create_algolia_doc_index_service(),
             github_service=self.create_github_metadata_service(),
+            logger=self._logger,
+        )
+
+    def create_technote_ingest_service(self) -> TechnoteIngestService:
+        """Create a TechnoteIngestService."""
+        return TechnoteIngestService(
+            http_client=self.http_client,
+            algolia_service=self.create_algolia_doc_index_service(),
             logger=self._logger,
         )
 

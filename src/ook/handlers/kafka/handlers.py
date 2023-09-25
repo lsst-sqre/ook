@@ -66,7 +66,14 @@ async def handle_ltd_document_ingest(
 
     factory = await Factory.create(logger=logger)
 
-    if value.content_type == DocumentSourceType.LTD_SPHINX_TECHNOTE:
+    if value.content_type == DocumentSourceType.LTD_TECHNOTE:
+        technote_service = factory.create_technote_ingest_service()
+        await technote_service.ingest(
+            published_url=value.url,
+            project_url=value.project.url,
+            edition_url=value.edition.url,
+        )
+    elif value.content_type == DocumentSourceType.LTD_SPHINX_TECHNOTE:
         sphinx_technote_service = (
             factory.create_sphinx_technote_ingest_service()
         )
