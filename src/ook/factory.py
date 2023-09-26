@@ -22,7 +22,7 @@ from structlog.stdlib import BoundLogger
 
 from .config import config
 from .dependencies.algoliasearch import algolia_client_dependency
-from .domain.kafka import LtdUrlIngestV1, UrlIngestKeyV1
+from .domain.kafka import LtdUrlIngestV2, UrlIngestKeyV1
 from .services.algoliaaudit import AlgoliaAuditService
 from .services.algoliadocindex import AlgoliaDocIndexService
 from .services.classification import ClassificationService
@@ -67,7 +67,7 @@ class ProcessContext:
             registry_url=config.registry_url,
             models=[
                 UrlIngestKeyV1,
-                LtdUrlIngestV1,
+                LtdUrlIngestV2,
             ],
             suffix=config.subject_suffix,
             compatibility=config.subject_compatibility,

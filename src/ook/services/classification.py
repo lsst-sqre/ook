@@ -16,7 +16,7 @@ from ook.domain.algoliarecord import DocumentSourceType
 from ook.domain.kafka import (
     LtdEditionV1,
     LtdProjectV1,
-    LtdUrlIngestV1,
+    LtdUrlIngestV2,
     UrlIngestKeyV1,
 )
 from ook.services.kafkaproducer import PydanticKafkaProducer
@@ -116,7 +116,7 @@ class ClassificationService:
 
         try:
             kafka_key = UrlIngestKeyV1(url=published_url)
-            kafka_value = LtdUrlIngestV1(
+            kafka_value = LtdUrlIngestV2(
                 url=published_url,
                 content_type=content_type,
                 request_timestamp=datetime.now(tz=UTC),
