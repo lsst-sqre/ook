@@ -17,6 +17,9 @@ __all__ = ["DocumentRecord", "MinimalDocumentModel", "DocumentSourceType"]
 class DocumentSourceType(str, Enum):
     """Types of content that can be classified by Ook."""
 
+    LTD_TECHNOTE = "ltd_technote"
+    """A technote (technote.lsst.io) that is hosted on LSST the Docs."""
+
     LTD_LANDER_JSONLD = "ltd_lander_jsonld"
     """A lander-based site for PDF-based content that includes a
     ``metadata.jsonld`` file and is hosted on LSST the Docs.
@@ -205,6 +208,11 @@ class DocumentRecord(BaseModel):
     def export_for_algolia(self) -> dict[str, Any]:
         """Export into a dict that can be uploaded to Algolia."""
         return self.dict(by_alias=True, exclude_none=True)
+
+    @property
+    def headers(self) -> list[str | None]:
+        """The headers of the document."""
+        return [self.h1, self.h2, self.h3, self.h4, self.h5, self.h6]
 
 
 def generate_surrogate_key() -> str:

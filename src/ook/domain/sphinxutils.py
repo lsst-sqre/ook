@@ -142,7 +142,9 @@ def iter_sphinx_sections(
             if header_callback:
                 current_header = header_callback(current_header)
             current_headers = [*headers, current_header]
-        elif element.tag == "div" and "section" in element.classes:
+        elif (element.tag == "div" and "section" in element.classes) or (
+            element.tag == "section"
+        ):
             yield from iter_sphinx_sections(
                 root_section=element,
                 base_url=base_url,

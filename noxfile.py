@@ -36,6 +36,8 @@ def _make_env_vars() -> dict[str, str]:
         "OOK_ENABLE_CONSUMER": "false",
         "ALGOLIA_APP_ID": "test",
         "ALGOLIA_API_KEY": "test",
+        "OOK_GITHUB_APP_ID": "1234",
+        "OOK_GITHUB_APP_PRIVATE_KEY": "test",
     }
 
 

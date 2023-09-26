@@ -15,7 +15,7 @@ from structlog.stdlib import BoundLogger
 
 from ook.config import config
 from ook.dependencies.context import context_dependency
-from ook.domain.kafka import LtdUrlIngestV1, UrlIngestKeyV1
+from ook.domain.kafka import LtdUrlIngestV2, UrlIngestKeyV1
 from ook.handlers.kafka.handlers import handle_ltd_document_ingest
 
 
@@ -261,6 +261,6 @@ async def consume_kafka_messages() -> None:
         cast(HandlerProtocol, handle_ltd_document_ingest),
         [config.ingest_kafka_topic],
         [UrlIngestKeyV1],
-        [LtdUrlIngestV1],
+        [LtdUrlIngestV2],
     )
     await consumer.start()

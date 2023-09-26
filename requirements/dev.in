@@ -18,7 +18,8 @@ pydantic
 pytest
 pytest-asyncio
 pytest-cov
+respx
 types-dateparser
 types-PyYAML
-documenteer[guide] >= 1.0.0a5
+documenteer[guide] == 1.0.0a6  # before pydantic 2 migration
 autodoc_pydantic

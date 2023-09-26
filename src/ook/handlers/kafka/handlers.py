@@ -13,7 +13,7 @@ from structlog import get_logger
 from structlog.stdlib import BoundLogger
 
 from ook.domain.algoliarecord import DocumentSourceType
-from ook.domain.kafka import LtdUrlIngestV1, UrlIngestKeyV1
+from ook.domain.kafka import LtdUrlIngestV2, UrlIngestKeyV1
 from ook.factory import Factory
 
 if TYPE_CHECKING:
@@ -46,7 +46,7 @@ async def handle_ltd_document_ingest(
     *,
     message_metadata: MessageMetadata,
     key: UrlIngestKeyV1,
-    value: LtdUrlIngestV1,
+    value: LtdUrlIngestV2,
     **kwargs: Any,
 ) -> None:
     """Handle a message requesting an ingest for an LTD document."""
@@ -66,7 +66,14 @@ async def handle_ltd_document_ingest(
 
     factory = await Factory.create(logger=logger)
 
-    if value.content_type == DocumentSourceType.LTD_SPHINX_TECHNOTE:
+    if value.content_type == DocumentSourceType.LTD_TECHNOTE:
+        technote_service = factory.create_technote_ingest_service()
+        await technote_service.ingest(
+            published_url=value.url,
+            project_url=value.project.url,
+            edition_url=value.edition.url,
+        )
+    elif value.content_type == DocumentSourceType.LTD_SPHINX_TECHNOTE:
         sphinx_technote_service = (
             factory.create_sphinx_technote_ingest_service()
         )

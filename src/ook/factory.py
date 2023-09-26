@@ -17,13 +17,12 @@ from kafkit.fastapi.dependencies.pydanticschemamanager import (
     pydantic_schema_manager_dependency,
 )
 from kafkit.registry.manager import PydanticSchemaManager
-from safir.dependencies.http_client import http_client_dependency
 from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
 
 from .config import config
 from .dependencies.algoliasearch import algolia_client_dependency
-from .domain.kafka import LtdUrlIngestV1, UrlIngestKeyV1
+from .domain.kafka import LtdUrlIngestV2, UrlIngestKeyV1
 from .services.algoliaaudit import AlgoliaAuditService
 from .services.algoliadocindex import AlgoliaDocIndexService
 from .services.classification import ClassificationService
@@ -32,6 +31,7 @@ from .services.kafkaproducer import PydanticKafkaProducer
 from .services.landerjsonldingest import LtdLanderJsonLdIngestService
 from .services.ltdmetadataservice import LtdMetadataService
 from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
+from .services.technoteingest import TechnoteIngestService
 
 
 @dataclass(kw_only=True, frozen=True, slots=True)
@@ -55,7 +55,11 @@ class ProcessContext:
     @classmethod
     async def create(cls) -> ProcessContext:
         """Create a ProcessContext."""
-        http_client = await http_client_dependency()
+        # Not using Safir's http_client_dependency because I found that in
+        # standalone Factory setting the http_client wasn't opened, for some
+        # reason. Ook doesn't use any http_client beyond this one from
+        # ProcessContext.
+        http_client = AsyncClient()
 
         # Initialize the Pydantic Schema Manager and register models
         await pydantic_schema_manager_dependency.initialize(
@@ -63,7 +67,7 @@ class ProcessContext:
             registry_url=config.registry_url,
             models=[
                 UrlIngestKeyV1,
-                LtdUrlIngestV1,
+                LtdUrlIngestV2,
             ],
             suffix=config.subject_suffix,
             compatibility=config.subject_compatibility,
@@ -89,14 +93,9 @@ class ProcessContext:
         Called during shutdown, or before recreating the process context using
         a different configuration.
         """
-        kafka_producer = await kafka_producer_dependency()
-        await kafka_producer.stop()
-
-        algolia_client = await algolia_client_dependency()
-        await algolia_client.close_async()
-
-        http_client = await http_client_dependency()
-        await http_client.aclose()
+        await self.kafka_producer.stop()
+        await self.algolia_client.close_async()
+        await self.http_client.aclose()
 
 
 class Factory:
@@ -226,6 +225,14 @@ class Factory:
             http_client=self.http_client,
             algolia_service=self.create_algolia_doc_index_service(),
             github_service=self.create_github_metadata_service(),
+            logger=self._logger,
+        )
+
+    def create_technote_ingest_service(self) -> TechnoteIngestService:
+        """Create a TechnoteIngestService."""
+        return TechnoteIngestService(
+            http_client=self.http_client,
+            algolia_service=self.create_algolia_doc_index_service(),
             logger=self._logger,
         )
 

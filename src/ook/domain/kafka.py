@@ -13,7 +13,7 @@ __all__ = [
     "UrlIngestKeyV1",
     "LtdEditionV1",
     "LtdProjectV1",
-    "LtdUrlIngestV1",
+    "LtdUrlIngestV2",
 ]
 
 
@@ -61,7 +61,7 @@ class LtdProjectV1(AvroBaseModel):
     slug: str = Field(..., description="The slug of the project.")
 
 
-class LtdUrlIngestV1(AvroBaseModel):
+class LtdUrlIngestV2(AvroBaseModel):
     """Kafka message value model for a request to ingest a URL hosted on
     LSST the Docs.
 
@@ -91,4 +91,4 @@ class LtdUrlIngestV1(AvroBaseModel):
         """Metadata for the model."""
 
         namespace = "lsst.square-events.ook"
-        schema_name = "ltd_url_ingest_v1"
+        schema_name = "ltd_url_ingest_v2"
