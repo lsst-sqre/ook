@@ -42,8 +42,9 @@ class TechnoteIngestService:
         records = technote.make_algolia_records()
         await self._algolia_service.save_document_records(records)
         self._logger.info(
-            "ingested technote",
-            technote=technote,
+            "Finished uploading document records",
+            record_count=len(records),
+            surrogate_keys=records[0].surrogate_key,
         )
 
     async def _download_html(self, url: str) -> str:
