@@ -2,6 +2,13 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.9.0'></a>
+## 0.9.0 (2023-09-26)
+
+### New features
+
+- Added support for ingesting Technotes (as generated with the technote.lsst.io framework). These technotes are generated with Sphinx, but embed metadata in common formats like Highwire Press and OpenGraph. This new technote format replaces the original technote format, although the original technotes are still supported by Ook.
+
 <a id='changelog-0.8.0'></a>
 ## 0.8.0 (2023-09-06)
 
