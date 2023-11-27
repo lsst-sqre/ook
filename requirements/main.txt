@@ -4,14 +4,16 @@
 #
 #    pip-compile --allow-unsafe --output-file=requirements/main.txt requirements/main.in
 #
-aiohttp==3.7.4.post0
-    # via -r requirements/main.in
+aiohttp==3.9.0
+    # via -r main.in
 aiokafka==0.8.1
     # via
-    #   -r requirements/main.in
+    #   -r main.in
     #   kafkit
+aiosignal==1.3.1
+    # via aiohttp
 algoliasearch==3.0.0
-    # via -r requirements/main.in
+    # via -r main.in
 anyio==3.7.1
     # via
     #   fastapi
@@ -20,8 +22,7 @@ anyio==3.7.1
     #   watchfiles
 async-timeout==3.0.1
     # via
-    #   -r requirements/main.in
-    #   aiohttp
+    #   -r main.in
     #   aiokafka
 attrs==23.1.0
     # via aiohttp
@@ -34,15 +35,11 @@ certifi==2023.7.22
     #   requests
 cffi==1.15.1
     # via cryptography
-chardet==4.0.0
-    # via aiohttp
 charset-normalizer==3.2.0
-    # via
-    #   aiohttp
-    #   requests
+    # via requests
 click==8.1.3
     # via
-    #   -r requirements/main.in
+    #   -r main.in
     #   safir
     #   uvicorn
 cryptography==41.0.4
@@ -50,27 +47,31 @@ cryptography==41.0.4
     #   pyjwt
     #   safir
 cssselect==1.2.0
-    # via -r requirements/main.in
+    # via -r main.in
 dacite==1.8.1
     # via dataclasses-avroschema
 dataclasses-avroschema[pydantic]==0.50.2
     # via
-    #   -r requirements/main.in
+    #   -r main.in
     #   kafkit
 dateparser==1.1.8
-    # via -r requirements/main.in
+    # via -r main.in
 dnspython==2.4.2
     # via email-validator
 email-validator==2.0.0.post2
     # via pydantic
 fastapi==0.103.1
     # via
-    #   -r requirements/main.in
+    #   -r main.in
     #   safir
 fastavro==1.8.3
     # via
     #   dataclasses-avroschema
     #   kafkit
+frozenlist==1.4.0
+    # via
+    #   aiohttp
+    #   aiosignal
 gidgethub==5.3.0
     # via safir
 h11==0.14.0
@@ -97,9 +98,11 @@ inflector==3.1.0
 kafka-python==2.0.2
     # via aiokafka
 kafkit[aiokafka,httpx,pydantic]==1.0.0a1
-    # via -r requirements/main.in
+    # via
+    #   -r main.in
+    #   kafkit
 lxml==4.9.3
-    # via -r requirements/main.in
+    # via -r main.in
 multidict==6.0.4
     # via
     #   aiohttp
@@ -110,13 +113,15 @@ pycparser==2.21
     # via cffi
 pydantic[email]==1.10.12
     # via
-    #   -r requirements/main.in
+    #   -r main.in
     #   dataclasses-avroschema
     #   fastapi
     #   kafkit
     #   safir
 pyjwt[crypto]==2.8.0
-    # via gidgethub
+    # via
+    #   gidgethub
+    #   pyjwt
 python-dateutil==2.8.2
     # via dateparser
 python-dotenv==1.0.0
@@ -130,7 +135,7 @@ regex==2023.8.8
 requests==2.31.0
     # via algoliasearch
 safir==4.5.0
-    # via -r requirements/main.in
+    # via -r main.in
 six==1.16.0
     # via python-dateutil
 sniffio==1.3.0
@@ -140,14 +145,13 @@ sniffio==1.3.0
     #   httpx
 starlette==0.27.0
     # via
-    #   -r requirements/main.in
+    #   -r main.in
     #   fastapi
     #   safir
 structlog==23.1.0
     # via safir
 typing-extensions==4.8.0
     # via
-    #   aiohttp
     #   fastapi
     #   pydantic
 tzlocal==5.0.1
@@ -159,7 +163,7 @@ uritemplate==4.1.1
 urllib3==2.0.5
     # via requests
 uvicorn[standard]==0.23.2
-    # via -r requirements/main.in
+    # via -r main.in
 uvloop==0.17.0
     # via uvicorn
 watchfiles==0.20.0
