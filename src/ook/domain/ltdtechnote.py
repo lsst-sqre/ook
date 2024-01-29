@@ -68,11 +68,16 @@ class LtdTechnote:
         """The document's update time."""
         key = "og:article:modified_time"
         try:
-            dt = datetime.fromisoformat(
-                self._html.cssselect(f"meta[property='{key}']")[-1].get(
-                    "content"
-                )
-            )
+            date_text = self._html.cssselect(f"meta[property='{key}']")[
+                -1
+            ].get("content")
+        except Exception:
+            # The modified time may not be available. Fall back "now" on
+            # the assumption the document ingest is triggered by a
+            # documentation update
+            return datetime.now(tz=UTC)
+        try:
+            dt = datetime.fromisoformat(date_text)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=UTC)
         except Exception as e:
