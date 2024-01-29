@@ -2,6 +2,13 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.9.1'></a>
+## 0.9.1 (2024-01-29)
+
+### Bug fixes
+
+- If a technote doesn't have the `og:article:modified_time` then Ook falls back to using the current time of ingest. This fallback is to meet the schema for the www.lsst.io website, and ideally documents should always set modification time metadata.
+
 <a id='changelog-0.9.0'></a>
 ## 0.9.0 (2023-09-26)
 
