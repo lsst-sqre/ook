@@ -4,13 +4,12 @@ import nox
 nox.options.sessions = ["lint", "typing", "test", "docs"]
 
 # Other nox defaults
-nox.options.default_venv_backend = "venv"
+nox.options.default_venv_backend = "uv"
 nox.options.reuse_existing_virtualenvs = True
 
 
 # Pip installable dependencies
 PIP_DEPENDENCIES = [
-    ("--upgrade", "pip", "setuptools", "wheel"),
     ("-r", "requirements/main.txt"),
     ("-r", "requirements/dev.txt"),
     ("-e", "."),
@@ -19,6 +18,7 @@ PIP_DEPENDENCIES = [
 
 def _install(session: nox.Session) -> None:
     """Install the application and all dependencies into the session."""
+    session.install("--upgrade", "uv")
     for deps in PIP_DEPENDENCIES:
         session.install(*deps)
 
@@ -49,10 +49,18 @@ def _install_dev(session: nox.Session, bin_prefix: str = "") -> None:
     precommit = f"{bin_prefix}pre-commit"
 
     # Install dev dependencies
+    session.run(python, "-m", "pip", "install", "uv", external=True)
     for deps in PIP_DEPENDENCIES:
-        session.run(python, "-m", "pip", "install", *deps, external=True)
+        session.run(python, "-m", "uv", "pip", "install", *deps, external=True)
     session.run(
-        python, "-m", "pip", "install", "nox", "pre-commit", external=True
+        python,
+        "-m",
+        "uv",
+        "pip",
+        "install",
+        "nox",
+        "pre-commit",
+        external=True,
     )
     # Install pre-commit hooks
     session.run(precommit, "install", external=True)
@@ -165,15 +173,15 @@ def scriv_collect(session: nox.Session) -> None:
 @nox.session(name="update-deps")
 def update_deps(session: nox.Session) -> None:
     """Update pinned server dependencies and pre-commit hooks."""
-    session.install(
-        "--upgrade", "pip-tools", "pip", "setuptools", "wheel", "pre-commit"
-    )
+    session.install("--upgrade", "uv", "wheel", "pre-commit")
     session.run("pre-commit", "autoupdate")
 
     # Dependencies are unpinned for compatibility with the unpinned client
     # dependency.
     session.run(
-        "pip-compile",
+        "uv",
+        "pip",
+        "compile",
         "--upgrade",
         "--build-isolation",
         "--allow-unsafe",
@@ -184,7 +192,9 @@ def update_deps(session: nox.Session) -> None:
     )
 
     session.run(
-        "pip-compile",
+        "uv",
+        "pip",
+        "compile",
         "--upgrade",
         "--build-isolation",
         "--allow-unsafe",
