@@ -5,6 +5,9 @@
 
 name: Periodic CI
 
+env:
+  PYTHON_VERSION: "3.12"
+
 "on":
   schedule:
     - cron: "0 12 * * 1"
@@ -15,30 +18,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
-    strategy:
-      matrix:
-        python:
-          - "3.11"
-
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      # Use the oldest supported version of Python to update dependencies,
-      # not the matrixed Python version, since this accurately reflects
-      # how dependencies should later be updated.
-      - name: Run neophile
-        uses: lsst-sqre/run-neophile@v1
+      - name: Update dependencies
+        uses: lsst-sqre/run-nox@v1
         with:
-          python-version: "3.11"
-          mode: update
-
-      - name: Install nox
-        run: |
-          pip install --upgrade pip
-          pip install --upgrade nox
+          nox-sessions: "update-deps"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Run nox
-        run: "nox -s typing test docs"
+        uses: lsst-sqre/run-nox@v1
+        with:
+          nox-sessions: "typing test docs"
+          python-version: ${{ env.PYTHON_VERSION }}
+          use-cache: false
 
       - name: Report status
         if: always()
