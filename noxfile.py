@@ -116,6 +116,7 @@ def test(session: nox.Session) -> None:
 def docs(session: nox.Session) -> None:
     """Build the docs."""
     _install(session)
+    session.install("setuptools")  # for sphinxcontrib-redoc (pkg_resources)
     doctree_dir = (session.cache_dir / "doctrees").absolute()
     with session.chdir("docs"):
         session.run(
@@ -138,6 +139,7 @@ def docs(session: nox.Session) -> None:
 def docs_linkcheck(session: nox.Session) -> None:
     """Linkcheck the docs."""
     _install(session)
+    session.install("setuptools")  # for sphinxcontrib-redoc (pkg_resources)
     doctree_dir = (session.cache_dir / "doctrees").absolute()
     with session.chdir("docs"):
         session.run(
@@ -184,8 +186,6 @@ def update_deps(session: nox.Session) -> None:
         "compile",
         "--upgrade",
         "--build-isolation",
-        "--allow-unsafe",
-        "--resolver=backtracking",
         "--output-file",
         "requirements/main.txt",
         "requirements/main.in",
@@ -197,8 +197,6 @@ def update_deps(session: nox.Session) -> None:
         "compile",
         "--upgrade",
         "--build-isolation",
-        "--allow-unsafe",
-        "--resolver=backtracking",
         "--output-file",
         "requirements/dev.txt",
         "requirements/dev.in",
