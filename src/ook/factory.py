@@ -7,27 +7,20 @@ from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from typing import Self
 
-from aiokafka import AIOKafkaProducer
 from algoliasearch.search_client import SearchClient
+from faststream.kafka import KafkaBroker
+from faststream.kafka.asyncapi import Publisher
 from httpx import AsyncClient
-from kafkit.fastapi.dependencies.aiokafkaproducer import (
-    kafka_producer_dependency,
-)
-from kafkit.fastapi.dependencies.pydanticschemamanager import (
-    pydantic_schema_manager_dependency,
-)
-from kafkit.registry.manager import PydanticSchemaManager
 from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
 
 from .config import config
 from .dependencies.algoliasearch import algolia_client_dependency
-from .domain.kafka import LtdUrlIngestV2, UrlIngestKeyV1
+from .kafkarouter import kafka_router
 from .services.algoliaaudit import AlgoliaAuditService
 from .services.algoliadocindex import AlgoliaDocIndexService
 from .services.classification import ClassificationService
 from .services.githubmetadata import GitHubMetadataService
-from .services.kafkaproducer import PydanticKafkaProducer
 from .services.landerjsonldingest import LtdLanderJsonLdIngestService
 from .services.ltdmetadataservice import LtdMetadataService
 from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
@@ -43,11 +36,10 @@ class ProcessContext:
     http_client: AsyncClient
     """Shared HTTP client."""
 
-    kafka_producer: AIOKafkaProducer
-    """The aiokafka producer."""
+    kafka_broker: KafkaBroker
+    """The aiokafka broker provided through the FastStream Kafka router."""
 
-    schema_manager: PydanticSchemaManager
-    """Pydantic schema manager."""
+    kafka_ingest_publisher: Publisher
 
     algolia_client: SearchClient
     """Algolia client."""
@@ -61,29 +53,16 @@ class ProcessContext:
         # ProcessContext.
         http_client = AsyncClient()
 
-        # Initialize the Pydantic Schema Manager and register models
-        await pydantic_schema_manager_dependency.initialize(
-            http_client=http_client,
-            registry_url=str(config.registry_url),
-            models=[
-                UrlIngestKeyV1,
-                LtdUrlIngestV2,
-            ],
-            suffix=config.subject_suffix,
-            compatibility=config.subject_compatibility,
-        )
+        broker = kafka_router.broker
 
-        # Initialize the Kafka producer
-        await kafka_producer_dependency.initialize(config.kafka)  # type: ignore [arg-type]
-
-        kafka_producer = await kafka_producer_dependency()
-        schema_manager = await pydantic_schema_manager_dependency()
         algolia_client = await algolia_client_dependency()
 
         return cls(
             http_client=http_client,
-            kafka_producer=kafka_producer,
-            schema_manager=schema_manager,
+            kafka_broker=broker,
+            kafka_ingest_publisher=broker.publisher(
+                config.ingest_kafka_topic, title="Ook ingest requests"
+            ),
             algolia_client=algolia_client,
         )
 
@@ -93,7 +72,6 @@ class ProcessContext:
         Called during shutdown, or before recreating the process context using
         a different configuration.
         """
-        await self.kafka_producer.stop()
         await self.algolia_client.close_async()
         await self.http_client.aclose()
 
@@ -142,19 +120,6 @@ class Factory:
         self._logger = logger
 
     @property
-    def kafka_producer(self) -> PydanticKafkaProducer:
-        """The PydanticKafkaProducer."""
-        return PydanticKafkaProducer(
-            producer=self._process_context.kafka_producer,
-            schema_manager=self._process_context.schema_manager,
-        )
-
-    @property
-    def schema_manager(self) -> PydanticSchemaManager:
-        """The PydanticSchemaManager."""
-        return self._process_context.schema_manager
-
-    @property
     def http_client(self) -> AsyncClient:
         """The shared HTTP client."""
         return self._process_context.http_client
@@ -200,11 +165,12 @@ class Factory:
 
     def create_classification_service(self) -> ClassificationService:
         """Create a ClassificationService."""
+        publisher = self._process_context.kafka_ingest_publisher
         return ClassificationService(
             http_client=self.http_client,
             github_service=self.create_github_metadata_service(),
             ltd_service=self.create_ltd_metadata_service(),
-            kafka_producer=self.kafka_producer,
+            kafka_ingest_publisher=publisher,
             logger=self._logger,
         )
 

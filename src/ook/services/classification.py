@@ -7,11 +7,11 @@ import re
 from datetime import UTC, datetime, timedelta
 
 import lxml.html
+from faststream.kafka.asyncapi import Publisher
 from httpx import AsyncClient
 from safir.datetime import parse_isodatetime
 from structlog.stdlib import BoundLogger
 
-from ook.config import config
 from ook.domain.algoliarecord import DocumentSourceType
 from ook.domain.kafka import (
     LtdEditionV1,
@@ -19,7 +19,6 @@ from ook.domain.kafka import (
     LtdUrlIngestV2,
     UrlIngestKeyV1,
 )
-from ook.services.kafkaproducer import PydanticKafkaProducer
 from ook.services.ltdmetadataservice import LtdMetadataService
 
 from ..exceptions import LtdSlugClassificationError
@@ -54,13 +53,13 @@ class ClassificationService:
         github_service: GitHubMetadataService,
         ltd_service: LtdMetadataService,
         logger: BoundLogger,
-        kafka_producer: PydanticKafkaProducer,
+        kafka_ingest_publisher: Publisher,
     ) -> None:
         self._http_client = http_client
         self._logger = logger
         self._gh_service = github_service
         self._ltd_service = ltd_service
-        self._kafka_producer = kafka_producer
+        self._kafka_ingest_publisher = kafka_ingest_publisher
 
     async def queue_ingest_for_updated_ltd_projects(
         self, window: timedelta
@@ -142,10 +141,9 @@ class ClassificationService:
             ) from e
 
         try:
-            await self._kafka_producer.send(
-                topic=config.ingest_kafka_topic,
-                key=kafka_key,
-                value=kafka_value,
+            await self._kafka_ingest_publisher.publish(
+                message=kafka_value.model_dump(mode="json"),
+                key=kafka_key.model_dump_json().encode("utf-8"),
             )
         except Exception as e:
             raise LtdSlugClassificationError(

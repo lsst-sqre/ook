@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from dataclasses_avroschema.avrodantic import AvroBaseModel
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from ook.domain.algoliarecord import DocumentSourceType
 
@@ -17,7 +16,7 @@ __all__ = [
 ]
 
 
-class UrlIngestKeyV1(AvroBaseModel):
+class UrlIngestKeyV1(BaseModel):
     """Kafka message key model for Slack messages sent by Squarebot."""
 
     url: str = Field(..., description="The root URL to ingest.")
@@ -29,7 +28,7 @@ class UrlIngestKeyV1(AvroBaseModel):
         schema_name = "url_ingest_key_v1"
 
 
-class LtdEditionV1(AvroBaseModel):
+class LtdEditionV1(BaseModel):
     """Information an LTD edition (a sub-model)."""
 
     url: str = Field(..., description="The API URL of the edition resource.")
@@ -45,7 +44,7 @@ class LtdEditionV1(AvroBaseModel):
     )
 
 
-class LtdProjectV1(AvroBaseModel):
+class LtdProjectV1(BaseModel):
     """Information about an LTD project (a sub-model)."""
 
     url: str = Field(..., description="The API URL of the project resource.")
@@ -61,7 +60,7 @@ class LtdProjectV1(AvroBaseModel):
     slug: str = Field(..., description="The slug of the project.")
 
 
-class LtdUrlIngestV2(AvroBaseModel):
+class LtdUrlIngestV2(BaseModel):
     """Kafka message value model for a request to ingest a URL hosted on
     LSST the Docs.
 

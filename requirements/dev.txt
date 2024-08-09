@@ -148,6 +148,7 @@ linkify-it-py==2.0.3
     # via markdown-it-py
 markdown-it-py==3.0.0
     # via
+    #   -c requirements/main.txt
     #   documenteer
     #   mdit-py-plugins
     #   myst-parser
@@ -160,7 +161,9 @@ matplotlib-inline==0.1.7
 mdit-py-plugins==0.4.1
     # via myst-parser
 mdurl==0.1.2
-    # via markdown-it-py
+    # via
+    #   -c requirements/main.txt
+    #   markdown-it-py
 mypy==1.11.1
     # via -r requirements/dev.in
 mypy-extensions==1.0.0
@@ -236,6 +239,7 @@ pydata-sphinx-theme==0.12.0
     # via documenteer
 pygments==2.18.0
     # via
+    #   -c requirements/main.txt
     #   ipython
     #   pydata-sphinx-theme
     #   sphinx
