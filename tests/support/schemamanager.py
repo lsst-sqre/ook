@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from unittest.mock import patch
 
-from dataclasses_avroschema.avrodantic import AvroBaseModel
+from dataclasses_avroschema.pydantic import AvroBaseModel
 from kafkit.registry.manager._pydantic import CachedSchema
 from kafkit.registry.sansio import MockRegistryApi, RegistryApi
 

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Self
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 __all__ = ["DocumentRecord", "MinimalDocumentModel", "DocumentSourceType"]
 
@@ -87,7 +87,7 @@ class DocumentRecord(BaseModel):
             "The URL of the record. For subsection, this URL can end with an "
             "anchor target."
         ),
-        example="https://sqr-027.lsst.io/#What-is-observability?",
+        examples=["https://sqr-027.lsst.io/#What-is-observability?"],
     )
 
     base_url: HttpUrl = Field(
@@ -170,13 +170,7 @@ class DocumentRecord(BaseModel):
         description="URL of the source repository.",
         alias="githubRepoURL",
     )
-
-    class Config:
-        allow_population_by_field_name = True
-        """Enables use of Python name for constructing the record."""
-
-        extra = "forbid"
-        """Disable attributes that aren't part of the schema."""
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     @staticmethod
     def generate_object_id(
@@ -279,7 +273,7 @@ class MinimalDocumentModel(BaseModel):
         return DocumentRecord(
             object_id=object_id,
             base_url=self.url,
-            url=self.url,
+            url=str(self.url),
             surrogate_key=surrogate_key,
             source_update_time=format_utc_datetime(now),
             source_update_timestamp=format_timestamp(now),

@@ -37,7 +37,7 @@ async def get_index(
     doc_url = request.url.replace(path=f"/{config.path_prefix}/redoc")
     return IndexResponse(
         metadata=metadata,
-        api_docs=AnyHttpUrl(str(doc_url), scheme=request.url.scheme),
+        api_docs=AnyHttpUrl(str(doc_url)),
     )
 
 

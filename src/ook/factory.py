@@ -64,7 +64,7 @@ class ProcessContext:
         # Initialize the Pydantic Schema Manager and register models
         await pydantic_schema_manager_dependency.initialize(
             http_client=http_client,
-            registry_url=config.registry_url,
+            registry_url=str(config.registry_url),
             models=[
                 UrlIngestKeyV1,
                 LtdUrlIngestV2,
@@ -74,7 +74,7 @@ class ProcessContext:
         )
 
         # Initialize the Kafka producer
-        await kafka_producer_dependency.initialize(config.kafka)
+        await kafka_producer_dependency.initialize(config.kafka)  # type: ignore [arg-type]
 
         kafka_producer = await kafka_producer_dependency()
         schema_manager = await pydantic_schema_manager_dependency()

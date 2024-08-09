@@ -5,7 +5,7 @@ from __future__ import annotations
 from asyncio import Future
 
 import aiokafka
-from dataclasses_avroschema.avrodantic import AvroBaseModel
+from dataclasses_avroschema.pydantic import AvroBaseModel
 from kafkit.registry import manager
 
 
