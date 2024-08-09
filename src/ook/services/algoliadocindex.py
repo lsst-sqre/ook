@@ -50,9 +50,9 @@ class AlgoliaDocIndexService:
         """
         # Partition the records by base URL since each URL has a different
         # surrogate key, and thus is old records need to be deleted separately.
-        partitioned_records: defaultdict[
-            HttpUrl, list[DocumentRecord]
-        ] = defaultdict(list)
+        partitioned_records: defaultdict[HttpUrl, list[DocumentRecord]] = (
+            defaultdict(list)
+        )
         for record in records:
             partitioned_records[record.base_url].append(record)
         for base_url, url_records in partitioned_records.items():

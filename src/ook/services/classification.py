@@ -307,6 +307,4 @@ class ClassificationService:
             owner=owner, repo=repo, git_ref=git_ref, path="metadata.yaml"
         )
         response = await self._http_client.get(raw_url)
-        if response.status_code != 200:
-            return False
-        return True
+        return response.status_code == 200

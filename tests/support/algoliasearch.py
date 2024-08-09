@@ -10,8 +10,7 @@ from unittest.mock import patch
 class MockSearchClient:
     """A mock Algolia SearchClient for testing."""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        ...
+    def __init__(self, *args: Any, **kwargs: Any) -> None: ...
 
     @classmethod
     async def create(cls, *args: Any, **kwargs: Any) -> Self:
@@ -29,8 +28,7 @@ class MockSearchClient:
 class MockAlgoliaIndex:
     """A mock Algolia index for testing."""
 
-    def __init__(self, index_name: str) -> None:
-        ...
+    def __init__(self, index_name: str) -> None: ...
 
     async def save_objects_async(self, objects: list[dict[str, Any]]) -> None:
         """Save objects to the index."""
@@ -45,6 +43,5 @@ class MockAlgoliaIndex:
 
 def patch_algoliasearch() -> Iterator[MockSearchClient]:
     """Patch the Algolia API client."""
-    mock = MockSearchClient()
     with patch("algoliasearch.search_client.SearchClient") as mock:
         yield mock.return_value
