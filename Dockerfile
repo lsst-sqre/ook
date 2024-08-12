@@ -65,4 +65,4 @@ USER appuser
 EXPOSE 8080
 
 # Run the application.
-CMD ["uvicorn", "ook.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "--factory", "ook.main:create_app", "--host", "0.0.0.0", "--port", "8080"]

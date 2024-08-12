@@ -2,7 +2,7 @@
 #    uv pip compile --build-isolation --output-file requirements/main.txt requirements/main.in
 aiohappyeyeballs==2.3.5
     # via aiohttp
-aiohttp==3.10.2
+aiohttp==3.10.3
     # via -r requirements/main.in
 aiokafka==0.10.0
     # via faststream
@@ -54,7 +54,7 @@ dataclasses-avroschema==0.62.4
     # via -r requirements/main.in
 dateparser==1.2.0
     # via -r requirements/main.in
-fast-depends==2.4.7
+fast-depends==2.4.8
     # via faststream
 fastapi==0.112.0
     # via
@@ -88,7 +88,7 @@ idna==3.7
     #   yarl
 inflector==3.1.1
     # via dataclasses-avroschema
-lxml==5.2.2
+lxml==5.3.0
     # via -r requirements/main.in
 markdown-it-py==3.0.0
     # via rich
