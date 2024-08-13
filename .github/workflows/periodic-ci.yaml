@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Update dependencies
         uses: lsst-sqre/run-nox@v1
@@ -33,6 +33,7 @@ jobs:
           nox-sessions: "typing test docs"
           python-version: ${{ env.PYTHON_VERSION }}
           use-cache: false
+          nox-package: "nox[uv] testcontainers[kafka]"
 
       - name: Report status
         if: always()

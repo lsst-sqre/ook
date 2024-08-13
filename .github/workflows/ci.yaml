@@ -55,7 +55,8 @@ jobs:
           cache-dependency: "requirements/*.txt"
           cache-key-prefix: test
           nox-sessions: "typing test"
-          python-version: ${{ matrix.python }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          nox-package: "nox[uv] testcontainers[kafka]"
 
   docs:
     runs-on: ubuntu-latest
@@ -84,7 +85,8 @@ jobs:
           cache-dependency: "requirements/*.txt"
           cache-key-prefix: docs
           nox-sessions: "docs"
-          python-version: ${{ matrix.python }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          nox-package: "nox[uv] testcontainers[kafka]"
 
       # Only attempt documentation uploads for long-lived branches, tagged
       # releases, and pull requests from ticket branches.  This avoids version
