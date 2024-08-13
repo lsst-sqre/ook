@@ -61,7 +61,7 @@ class KafkaConnectionSettings(BaseSettings):
             "This should be a list of hostnames or IP addresses, "
             "each optionally followed by a port number, separated by "
             "commas. "
-            "For example: `kafka-1:9092,kafka-2:9092,kafka-3:9092`."
+            "For example: ``kafka-1:9092,kafka-2:9092,kafka-3:9092``."
         ),
     )
 

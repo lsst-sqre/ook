@@ -50,6 +50,7 @@ nitpick_ignore = [
     ["py:class", "starlette.routing.Route"],
     ["py:class", "starlette.routing.BaseRoute"],
     ["py:exc", "starlette.exceptions.HTTPException"],
+    ["py:class", "pydantic_settings.sources.CliSettingsSource"],
 ]
 
 [sphinx.intersphinx.projects]
