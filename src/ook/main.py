@@ -37,14 +37,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator:
     logger.info("Ook is starting up.")
 
     logger.info(
-        "Schema Registry configuration",
-        registry_url=config.registry_url,
-        subject_suffix=config.subject_suffix,
-        subject_compatibility=config.subject_compatibility,
-    )
-    logger.info(
         "Configured Kafka",
         bootstrap_servers=config.kafka.bootstrap_servers,
+        security_protocol=config.kafka.security_protocol.name,
     )
 
     await context_dependency.initialize()
