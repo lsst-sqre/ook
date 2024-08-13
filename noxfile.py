@@ -23,11 +23,11 @@ def _install(session: nox.Session) -> None:
         session.install(*deps)
 
 
-def _make_env_vars() -> dict[str, str]:
+def _make_env_vars(overrides: dict[str, str] | None = None) -> dict[str, str]:
     """Create a environment variable dictionary for test sessions that enables
     the app to start up.
     """
-    return {
+    env_vars = {
         "SAFIR_PROFILE": "development",
         "SAFIR_LOG_LEVEL": "DEBUG",
         "SAFIR_ENVIRONMENT_URL": "http://example.com/",
@@ -39,6 +39,9 @@ def _make_env_vars() -> dict[str, str]:
         "OOK_GITHUB_APP_ID": "1234",
         "OOK_GITHUB_APP_PRIVATE_KEY": "test",
     }
+    if overrides:
+        env_vars.update(overrides)
+    return env_vars
 
 
 def _install_dev(session: nox.Session, bin_prefix: str = "") -> None:
@@ -102,60 +105,77 @@ def typing(session: nox.Session) -> None:
 @nox.session
 def test(session: nox.Session) -> None:
     """Run pytest."""
+    from testcontainers.kafka import KafkaContainer
+
     _install(session)
-    session.run(
-        "pytest",
-        "--cov=ook",
-        "--cov-branch",
-        *session.posargs,
-        env=_make_env_vars(),
-    )
+
+    with KafkaContainer().with_kraft() as kafka:
+        session.run(
+            "pytest",
+            "--cov=ook",
+            "--cov-branch",
+            *session.posargs,
+            env=_make_env_vars(
+                {"KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server()}
+            ),
+        )
 
 
 @nox.session
 def docs(session: nox.Session) -> None:
     """Build the docs."""
+    from testcontainers.kafka import KafkaContainer
+
     _install(session)
     session.install("setuptools")  # for sphinxcontrib-redoc (pkg_resources)
     doctree_dir = (session.cache_dir / "doctrees").absolute()
-    with session.chdir("docs"):
-        session.run(
-            "sphinx-build",
-            "-W",
-            "--keep-going",
-            "-n",
-            "-T",
-            "-b",
-            "html",
-            "-d",
-            str(doctree_dir),
-            ".",
-            "./_build/html",
-            env=_make_env_vars(),
-        )
+
+    with KafkaContainer().with_kraft() as kafka:
+        with session.chdir("docs"):
+            session.run(
+                "sphinx-build",
+                "-W",
+                "--keep-going",
+                "-n",
+                "-T",
+                "-b",
+                "html",
+                "-d",
+                str(doctree_dir),
+                ".",
+                "./_build/html",
+                env=_make_env_vars(
+                    {"KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server()}
+                ),
+            )
 
 
 @nox.session(name="docs-linkcheck")
 def docs_linkcheck(session: nox.Session) -> None:
     """Linkcheck the docs."""
+    from testcontainers.kafka import KafkaContainer
+
     _install(session)
     session.install("setuptools")  # for sphinxcontrib-redoc (pkg_resources)
     doctree_dir = (session.cache_dir / "doctrees").absolute()
-    with session.chdir("docs"):
-        session.run(
-            "sphinx-build",
-            "-W",
-            "--keep-going",
-            "-n",
-            "-T",
-            "-b",
-            "linkcheck",
-            "-d",
-            str(doctree_dir),
-            ".",
-            "./_build/html",
-            env=_make_env_vars(),
-        )
+    with KafkaContainer().with_kraft() as kafka:
+        with session.chdir("docs"):
+            session.run(
+                "sphinx-build",
+                "-W",
+                "--keep-going",
+                "-n",
+                "-T",
+                "-b",
+                "linkcheck",
+                "-d",
+                str(doctree_dir),
+                ".",
+                "./_build/html",
+                env=_make_env_vars(
+                    {"KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server()}
+                ),
+            )
 
 
 @nox.session(name="scriv-create")
@@ -208,11 +228,16 @@ def update_deps(session: nox.Session) -> None:
 @nox.session(name="run")
 def run(session: nox.Session) -> None:
     """Run the application in development mode."""
-    # Note this doesn't work right now because Kafka is needed for the app.
+    from testcontainers.kafka import KafkaContainer
+
     _install(session)
-    session.run(
-        "uvicorn",
-        "ook.main:app",
-        "--reload",
-        env=_make_env_vars(),
-    )
+
+    with KafkaContainer().with_kraft() as kafka:
+        session.run(
+            "uvicorn",
+            "ook.main:app",
+            "--reload",
+            env=_make_env_vars(
+                {"KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server()}
+            ),
+        )
