@@ -1,6 +1,7 @@
 """Handlers for the app's external root endpoints, ``/ook/``."""
 
 import asyncio
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import AnyHttpUrl
@@ -36,7 +37,7 @@ async def get_index(
     doc_url = request.url.replace(path=f"/{config.path_prefix}/redoc")
     return IndexResponse(
         metadata=metadata,
-        api_docs=AnyHttpUrl(str(doc_url), scheme=request.url.scheme),
+        api_docs=AnyHttpUrl(str(doc_url)),
     )
 
 
@@ -47,7 +48,7 @@ async def get_index(
 )
 async def post_ingest_ltd(
     ingest_request: LtdIngestRequest,
-    context: RequestContext = Depends(context_dependency),
+    context: Annotated[RequestContext, Depends(context_dependency)],
 ) -> Response:
     """Trigger an ingest of a project in LSST the Docs."""
     logger = context.logger

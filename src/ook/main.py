@@ -9,7 +9,6 @@ called.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -21,12 +20,15 @@ from safir.logging import configure_logging, configure_uvicorn_logging
 from safir.middleware.x_forwarded import XForwardedMiddleware
 from structlog import get_logger
 
+from ook.dependencies.consumercontext import consumer_context_dependency
 from ook.dependencies.context import context_dependency
 
 from .config import config
 from .handlers.external.paths import external_router
 from .handlers.internal.paths import internal_router
-from .handlers.kafka.router import consume_kafka_messages
+
+# Import kafka router and also load the handler functions.
+from .handlers.kafka import kafka_router  # type: ignore [attr-defined]
 
 __all__ = ["app", "create_openapi"]
 
@@ -38,29 +40,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator:
     logger.info("Ook is starting up.")
 
     logger.info(
-        "Schema Registry configuration",
-        registry_url=config.registry_url,
-        subject_suffix=config.subject_suffix,
-        subject_compatibility=config.subject_compatibility,
+        "Configured Kafka",
+        bootstrap_servers=config.kafka.bootstrap_servers,
+        security_protocol=config.kafka.security_protocol.name,
+        ingest_topic=config.ingest_kafka_topic,
+        consumer_group=config.kafka_consumer_group_id,
     )
 
     await context_dependency.initialize()
+    await consumer_context_dependency.initialize()
 
-    if config.enable_kafka_consumer:
-        kafka_consumer_task = asyncio.create_task(consume_kafka_messages())
-
-    logger.info("Ook start up complete.")
-
-    yield
+    async with kafka_router.lifespan_context(app):
+        logger.info("Ook start up complete.")
+        yield
 
     # Shut down
     logger.info("Ook is shutting down.")
 
-    if config.enable_kafka_consumer:
-        kafka_consumer_task.cancel()
-        await kafka_consumer_task
-
     await context_dependency.aclose()
+    await consumer_context_dependency.aclose()
 
     logger.info("Ook shut down up complete.")
 
@@ -81,11 +79,12 @@ app = FastAPI(
     redoc_url=f"{config.path_prefix}/redoc",
     lifespan=lifespan,
 )
-"""The main FastAPI application for squarebot."""
+"""The main FastAPI application for ook."""
 
 # Attach the routers.
 app.include_router(internal_router)
 app.include_router(external_router, prefix=config.path_prefix)
+app.include_router(kafka_router)
 
 # Set up middleware
 app.add_middleware(XForwardedMiddleware)

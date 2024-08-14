@@ -50,9 +50,9 @@ class AlgoliaDocIndexService:
         """
         # Partition the records by base URL since each URL has a different
         # surrogate key, and thus is old records need to be deleted separately.
-        partitioned_records: defaultdict[
-            HttpUrl, list[DocumentRecord]
-        ] = defaultdict(list)
+        partitioned_records: defaultdict[HttpUrl, list[DocumentRecord]] = (
+            defaultdict(list)
+        )
         for record in records:
             partitioned_records[record.base_url].append(record)
         for base_url, url_records in partitioned_records.items():
@@ -67,7 +67,7 @@ class AlgoliaDocIndexService:
                 record.export_for_algolia() for record in url_records
             ]
             await self._index.save_objects_async(record_objs)
-            await self.delete_old_records(base_url, surrogate_key)
+            await self.delete_old_records(str(base_url), surrogate_key)
 
     async def save_doc_stub(self, doc: MinimalDocumentModel) -> None:
         """Add a manually-generated record to the document index."""

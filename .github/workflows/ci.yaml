@@ -1,5 +1,8 @@
 name: CI
 
+env:
+  PYTHON_VERSION: "3.12"
+
 "on":
   merge_group: {}
   pull_request: {}
@@ -21,25 +24,22 @@ jobs:
   lint:
 
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Run pre-commit
-        uses: pre-commit/action@v3.0.0
+        uses: pre-commit/action@v3.0.1
 
   test:
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        python:
-          - "3.11"
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -47,15 +47,16 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
-
-      - name: Install nox
-        run: |
-          pip install --upgrade pip
-          pip install --upgrade nox
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Run nox
-        run: "nox -s typing test"
+        uses: lsst-sqre/run-nox@v1
+        with:
+          cache-dependency: "requirements/*.txt"
+          cache-key-prefix: test
+          nox-sessions: "typing test"
+          python-version: ${{ env.PYTHON_VERSION }}
+          nox-package: "nox[uv] testcontainers[kafka]"
 
   docs:
     runs-on: ubuntu-latest
@@ -76,15 +77,16 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
-
-      - name: Install nox
-        run: |
-          pip install --upgrade pip
-          pip install --upgrade nox
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Run nox
-        run: "nox -s docs"
+        uses: lsst-sqre/run-nox@v1
+        with:
+          cache-dependency: "requirements/*.txt"
+          cache-key-prefix: docs
+          nox-sessions: "docs"
+          python-version: ${{ env.PYTHON_VERSION }}
+          nox-package: "nox[uv] testcontainers[kafka]"
 
       # Only attempt documentation uploads for long-lived branches, tagged
       # releases, and pull requests from ticket branches.  This avoids version

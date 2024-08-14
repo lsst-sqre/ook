@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
-from unittest.mock import Mock
 
 import pytest
 import pytest_asyncio
@@ -16,29 +15,12 @@ from ook import main
 from ook.factory import Factory
 
 from .support.algoliasearch import MockSearchClient, patch_algoliasearch
-from .support.kafkaproducer import patch_aiokafkaproducer
-from .support.schemamanager import (
-    MockPydanticSchemaManager,
-    patch_schema_manager,
-)
 
 
 @pytest.fixture
 def mock_algoliasearch() -> Iterator[MockSearchClient]:
     """Return a mock Algolia SearchClient for testing."""
     yield from patch_algoliasearch()
-
-
-@pytest.fixture
-def mock_schema_manager() -> Iterator[MockPydanticSchemaManager]:
-    """Return a mock PydanticSchemaManager for testing."""
-    yield from patch_schema_manager()
-
-
-@pytest.fixture
-def mock_kafka_producer() -> Iterator[Mock]:
-    """Return a mock KafkaProducer for testing."""
-    yield from patch_aiokafkaproducer()
 
 
 @pytest_asyncio.fixture
@@ -49,8 +31,6 @@ async def http_client() -> AsyncIterator[AsyncClient]:
 
 @pytest_asyncio.fixture
 async def app(
-    mock_kafka_producer: Mock,
-    mock_schema_manager: MockPydanticSchemaManager,
     mock_algoliasearch: MockSearchClient,
 ) -> AsyncIterator[FastAPI]:
     """Return a configured test application.
@@ -71,11 +51,9 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
 
 @pytest_asyncio.fixture
 async def factory(
-    mock_kafka_producer: Mock,
-    mock_schema_manager: MockPydanticSchemaManager,
     mock_algoliasearch: MockSearchClient,
 ) -> AsyncIterator[Factory]:
-    """Return a configured ``Factory``."""
+    """Return a configured ``Factory`` without setting up a FastAPI app."""
     logger = structlog.get_logger("ook")
     async with Factory.create_standalone(logger=logger) as factory:
         yield factory

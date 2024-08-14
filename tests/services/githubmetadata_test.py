@@ -32,7 +32,7 @@ async def test_parse_repo_url(
     """Test parsing a GitHub repository URL into an owner and name."""
     logger = structlog.get_logger()
     gh_factory = GitHubAppClientFactory(
-        id="12345",
+        id=12345,
         key="secret",
         name="lsst-sqre/ook",
         http_client=http_client,
@@ -51,7 +51,7 @@ async def test_format_raw_url(http_client: AsyncClient) -> None:
     )
     logger = structlog.get_logger()
     gh_factory = GitHubAppClientFactory(
-        id="12345",
+        id=12345,
         key="secret",
         name="lsst-sqre/ook",
         http_client=http_client,

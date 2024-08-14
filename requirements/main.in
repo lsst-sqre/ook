@@ -13,14 +13,13 @@ starlette
 uvicorn[standard]
 
 # Other dependencies.
-aiokafka
-pydantic < 2.0.0
-safir>=4.3.0,<5.0.0
+pydantic >= 2.0.0
+pydantic_settings
+safir
+faststream[kafka]<0.5.0
 algoliasearch>=3.0,<4.0
-# kafkit[pydantic,httpx,aiokafka] @ git+https://github.com/lsst-sqre/kafkit.git@tickets/DM-39646
-kafkit[pydantic,httpx,aiokafka]>=1.0.0a1
-dataclasses-avroschema<0.51.0  # before Pydantic 2 migration
-click<8.1.4  # see https://github.com/pallets/click/issues/2558
+dataclasses-avroschema
+click
 dateparser
 lxml
 cssselect # for lxml

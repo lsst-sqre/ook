@@ -21,5 +21,6 @@ pytest-cov
 respx
 types-dateparser
 types-PyYAML
-documenteer[guide] == 1.0.0a6  # before pydantic 2 migration
+documenteer[guide]
 autodoc_pydantic
+testcontainers[kafka]

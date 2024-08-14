@@ -30,9 +30,12 @@ def test_sqr_075() -> None:
 
     assert records[1].h2 == "Problem statement"
     assert records[1].author_names == ["Jonathan Sick"]
-    assert records[1].base_url == "https://sqr-075.lsst.io/"
+    assert str(records[1].base_url) == "https://sqr-075.lsst.io/"
     assert records[1].url == "https://sqr-075.lsst.io/#problem-statement"
     assert records[1].handle == "SQR-075"
     assert records[1].number == 75
     assert records[1].series == "SQR"
-    assert records[1].github_repo_url == "https://github.com/lsst-sqre/sqr-075"
+    assert (
+        str(records[1].github_repo_url)
+        == "https://github.com/lsst-sqre/sqr-075"
+    )

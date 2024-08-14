@@ -85,8 +85,9 @@ class LtdMetadataService:
                 )
             except RuntimeError:
                 continue
-            date_rebuilt = parse_isodatetime(edition["date_rebuilt"])
-            if date_rebuilt is None:
+            try:
+                date_rebuilt = parse_isodatetime(edition["date_rebuilt"])
+            except ValueError:
                 continue
             if date_rebuilt >= since:
                 yield project_slug
