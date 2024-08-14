@@ -2,6 +2,21 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.10.0'></a>
+## 0.10.0 (2024-08-14)
+
+### New features
+
+- Ook now uses [faststream](https://faststream.airt.ai/latest/) for managing its Kafka consumer and producer. This is also how the Squarebot ecosystem operates. With this change, Ook no longer uses the Confluent Schema Registry. Schemas are instead developed as Pydantic models.
+
+### Other changes
+
+- Use `uv` for installing and compiling dependencies in `noxfile.py`.
+- Update GitHub Actions workflows to use the [lsst-sqre/run-nox](https://github.com/lsst-sqre/run-nox) GitHub Action.
+- Adopt `ruff-shared.toml` for shared Ruff configuration (from https://github.com/lsst/templates)
+- Update Docker base to Python 3.12.5-slim-bookworm.
+- Switch to [testcontainers](https://testcontainers.com) for running Kafka during test sessions. The Kafka brokers is automatically started by the `nox` sessions.
+
 <a id='changelog-0.9.1'></a>
 ## 0.9.1 (2024-01-29)
 
