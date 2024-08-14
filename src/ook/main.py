@@ -20,6 +20,7 @@ from safir.logging import configure_logging, configure_uvicorn_logging
 from safir.middleware.x_forwarded import XForwardedMiddleware
 from structlog import get_logger
 
+from ook.dependencies.consumercontext import consumer_context_dependency
 from ook.dependencies.context import context_dependency
 
 from .config import config
@@ -47,6 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator:
     )
 
     await context_dependency.initialize()
+    await consumer_context_dependency.initialize()
 
     async with kafka_router.lifespan_context(app):
         logger.info("Ook start up complete.")
@@ -56,6 +58,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator:
     logger.info("Ook is shutting down.")
 
     await context_dependency.aclose()
+    await consumer_context_dependency.aclose()
 
     logger.info("Ook shut down up complete.")
 
