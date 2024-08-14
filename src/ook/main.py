@@ -22,10 +22,12 @@ from structlog import get_logger
 
 from ook.dependencies.context import context_dependency
 
-from . import kafkarouter  # delay importing kafka_router for test reconfig
 from .config import config
 from .handlers.external.paths import external_router
 from .handlers.internal.paths import internal_router
+
+# Import kafka router and also load the handler functions.
+from .handlers.kafka import kafka_router  # type: ignore [attr-defined]
 
 __all__ = ["app", "create_openapi"]
 
@@ -46,7 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator:
 
     await context_dependency.initialize()
 
-    async with kafkarouter.kafka_router.lifespan_context(app):
+    async with kafka_router.lifespan_context(app):
         logger.info("Ook start up complete.")
         yield
 
@@ -79,7 +81,7 @@ app = FastAPI(
 # Attach the routers.
 app.include_router(internal_router)
 app.include_router(external_router, prefix=config.path_prefix)
-app.include_router(kafkarouter.kafka_router)
+app.include_router(kafka_router)
 
 # Set up middleware
 app.add_middleware(XForwardedMiddleware)
