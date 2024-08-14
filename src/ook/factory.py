@@ -45,7 +45,9 @@ class ProcessContext:
     """Algolia client."""
 
     @classmethod
-    async def create(cls) -> ProcessContext:
+    async def create(
+        cls, kafka_broker: KafkaBroker | None = None
+    ) -> ProcessContext:
         """Create a ProcessContext."""
         # Not using Safir's http_client_dependency because I found that in
         # standalone Factory setting the http_client wasn't opened, for some
@@ -53,7 +55,8 @@ class ProcessContext:
         # ProcessContext.
         http_client = AsyncClient()
 
-        broker = kafka_router.broker
+        # Use the provided broker (typically for CLI contexts)
+        broker = kafka_broker if kafka_broker else kafka_router.broker
 
         algolia_client = await algolia_client_dependency()
 
@@ -89,9 +92,11 @@ class Factory:
         self._logger = logger
 
     @classmethod
-    async def create(cls, *, logger: BoundLogger) -> Self:
+    async def create(
+        cls, *, logger: BoundLogger, kafka_broker: KafkaBroker | None = None
+    ) -> Self:
         """Create a Factory (for use outside a request context)."""
-        context = await ProcessContext.create()
+        context = await ProcessContext.create(kafka_broker=kafka_broker)
         return cls(
             logger=logger,
             process_context=context,
@@ -100,15 +105,18 @@ class Factory:
     @classmethod
     @asynccontextmanager
     async def create_standalone(
-        cls, *, logger: BoundLogger
+        cls, *, logger: BoundLogger, kafka_broker: KafkaBroker | None = None
     ) -> AsyncIterator[Self]:
         """Create a standalone factory, outside the FastAPI process, as a
         context manager.
 
         Use this for creating a factory in CLI commands.
         """
-        factory = await cls.create(logger=logger)
+        factory = await cls.create(logger=logger, kafka_broker=kafka_broker)
         async with aclosing(factory):
+            # Manually connect the broker after the publishers are created
+            # so that the producer can be added to each publisher.
+            await factory._process_context.kafka_broker.connect()  # noqa: SLF001
             yield factory
 
     async def aclose(self) -> None:
