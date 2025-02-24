@@ -7,7 +7,7 @@ import re
 from datetime import UTC, datetime, timedelta
 
 import lxml.html
-from faststream.kafka.asyncapi import Publisher
+from faststream.kafka.publisher.asyncapi import AsyncAPIDefaultPublisher
 from httpx import AsyncClient
 from safir.datetime import parse_isodatetime
 from structlog.stdlib import BoundLogger
@@ -53,7 +53,7 @@ class ClassificationService:
         github_service: GitHubMetadataService,
         ltd_service: LtdMetadataService,
         logger: BoundLogger,
-        kafka_ingest_publisher: Publisher,
+        kafka_ingest_publisher: AsyncAPIDefaultPublisher,
     ) -> None:
         self._http_client = http_client
         self._logger = logger

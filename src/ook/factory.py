@@ -9,7 +9,7 @@ from typing import Self
 
 from algoliasearch.search_client import SearchClient
 from faststream.kafka import KafkaBroker
-from faststream.kafka.asyncapi import Publisher
+from faststream.kafka.publisher.asyncapi import AsyncAPIDefaultPublisher
 from httpx import AsyncClient
 from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
@@ -39,7 +39,7 @@ class ProcessContext:
     kafka_broker: KafkaBroker
     """The aiokafka broker provided through the FastStream Kafka router."""
 
-    kafka_ingest_publisher: Publisher
+    kafka_ingest_publisher: AsyncAPIDefaultPublisher
 
     algolia_client: SearchClient
     """Algolia client."""

@@ -90,7 +90,7 @@ httpcore==1.0.7
     # via
     #   -c requirements/main.txt
     #   httpx
-httpx==0.28.1
+httpx==0.27.2
     # via
     #   -c requirements/main.txt
     #   -r requirements/dev.in
@@ -128,10 +128,13 @@ jinja2==3.1.5
     #   sphinxcontrib-redoc
 jsonschema==4.23.0
     # via
+    #   -c requirements/main.txt
     #   nbformat
     #   sphinxcontrib-redoc
 jsonschema-specifications==2024.10.1
-    # via jsonschema
+    # via
+    #   -c requirements/main.txt
+    #   jsonschema
 jupyter-cache==1.0.1
     # via myst-nb
 jupyter-client==8.6.3
@@ -150,7 +153,6 @@ linkify-it-py==2.0.3
     # via markdown-it-py
 markdown-it-py==3.0.0
     # via
-    #   -c requirements/main.txt
     #   documenteer
     #   mdit-py-plugins
     #   myst-parser
@@ -163,9 +165,7 @@ matplotlib-inline==0.1.7
 mdit-py-plugins==0.4.2
     # via myst-parser
 mdurl==0.1.2
-    # via
-    #   -c requirements/main.txt
-    #   markdown-it-py
+    # via markdown-it-py
 mypy==1.15.0
     # via -r requirements/dev.in
 mypy-extensions==1.0.0
@@ -241,7 +241,6 @@ pydata-sphinx-theme==0.12.0
     # via documenteer
 pygments==2.19.1
     # via
-    #   -c requirements/main.txt
     #   ipython
     #   pydata-sphinx-theme
     #   sphinx
@@ -283,6 +282,7 @@ pyzmq==26.2.1
     #   jupyter-client
 referencing==0.36.2
     # via
+    #   -c requirements/main.txt
     #   jsonschema
     #   jsonschema-specifications
 requests==2.32.3
@@ -296,6 +296,7 @@ respx==0.22.0
     # via -r requirements/dev.in
 rpds-py==0.23.1
     # via
+    #   -c requirements/main.txt
     #   jsonschema
     #   referencing
 setuptools==75.8.0
@@ -315,6 +316,7 @@ sniffio==1.3.1
     #   -c requirements/main.txt
     #   anyio
     #   asgi-lifespan
+    #   httpx
 snowballstemmer==2.2.0
     # via sphinx
 soupsieve==2.6

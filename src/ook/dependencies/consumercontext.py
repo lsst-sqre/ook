@@ -55,7 +55,10 @@ class ConsumerContextDependency:
         """Create a per-request context."""
         # Get the message from the FastStream context
         message: KafkaMessage = context.get_local("message")
-        record = message.raw_message
+        if isinstance(message.raw_message, tuple):
+            record = message.raw_message[0]
+        else:
+            record = message.raw_message
 
         # Add the Kafka context to the logger
         logger = get_logger(__name__)  # eventually use a logger dependency
