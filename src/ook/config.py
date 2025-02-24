@@ -19,11 +19,11 @@ from safir.logging import LogLevel, Profile
 
 __all__ = [
     "Configuration",
-    "config",
     "KafkaConnectionSettings",
-    "KafkaSecurityProtocol",
+    "KafkaConnectionSettings",
     "KafkaSaslMechanism",
-    "KafkaConnectionSettings",
+    "KafkaSecurityProtocol",
+    "config",
 ]
 
 

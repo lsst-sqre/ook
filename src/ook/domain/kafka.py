@@ -9,10 +9,10 @@ from pydantic import BaseModel, Field
 from ook.domain.algoliarecord import DocumentSourceType
 
 __all__ = [
-    "UrlIngestKeyV1",
     "LtdEditionV1",
     "LtdProjectV1",
     "LtdUrlIngestV2",
+    "UrlIngestKeyV1",
 ]
 
 

@@ -11,7 +11,7 @@ from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
-__all__ = ["DocumentRecord", "MinimalDocumentModel", "DocumentSourceType"]
+__all__ = ["DocumentRecord", "DocumentSourceType", "MinimalDocumentModel"]
 
 
 class DocumentSourceType(str, Enum):

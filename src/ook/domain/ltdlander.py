@@ -13,7 +13,7 @@ from structlog.stdlib import BoundLogger
 from .algoliarecord import DocumentSourceType
 from .utils import Handle, normalize_root_url
 
-__all__ = ["ReducedLtdLanderDocument", "ContentChunk"]
+__all__ = ["ContentChunk", "ReducedLtdLanderDocument"]
 
 
 class ReducedLtdLanderDocument:

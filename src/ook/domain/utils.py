@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Self
 from urllib.parse import urlparse
 
-__all__ = ["normalize_root_url", "HANDLE_PATTERN", "Handle"]
+__all__ = ["HANDLE_PATTERN", "Handle", "normalize_root_url"]
 
 
 def normalize_root_url(url: str) -> str:
@@ -25,8 +25,7 @@ def normalize_root_url(url: str) -> str:
         A URL.
     """
     clip_string = "index.html"
-    if url.endswith(clip_string):
-        url = url[: -len(clip_string)]
+    url = url.removesuffix(clip_string)
     if not url.endswith("/"):
         url = f"{url}/"
     return url

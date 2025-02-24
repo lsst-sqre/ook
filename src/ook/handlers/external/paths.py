@@ -20,7 +20,6 @@ external_router = APIRouter()
 
 @external_router.get(
     "/",
-    response_model=IndexResponse,
     response_model_exclude_none=True,
     summary="Application metadata",
 )

@@ -8,10 +8,10 @@ from dataclasses import dataclass
 import lxml.html
 
 __all__ = [
-    "get_section_title",
-    "clean_title_text",
     "ANCHOR_CHARACTERS",
     "SphinxSection",
+    "clean_title_text",
+    "get_section_title",
     "iter_sphinx_sections",
 ]
 
