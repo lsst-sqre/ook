@@ -45,9 +45,7 @@ class ProcessContext:
     """Algolia client."""
 
     @classmethod
-    async def create(
-        cls, kafka_broker: KafkaBroker | None = None
-    ) -> ProcessContext:
+    async def create(cls, kafka_broker: KafkaBroker | None = None) -> Self:
         """Create a ProcessContext."""
         # Not using Safir's http_client_dependency because I found that in
         # standalone Factory setting the http_client wasn't opened, for some
