@@ -9,7 +9,7 @@ import pytest_asyncio
 import structlog
 from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 from ook import main
 from ook.factory import Factory
@@ -45,7 +45,9 @@ async def app(
 @pytest_asyncio.fixture
 async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     """Return an ``httpx.AsyncClient`` configured to talk to the test app."""
-    async with AsyncClient(app=app, base_url="https://example.com/") as client:
+    async with AsyncClient(
+        base_url="https://example.com/", transport=ASGITransport(app=app)
+    ) as client:
         yield client
 
 

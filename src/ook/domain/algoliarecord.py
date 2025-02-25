@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from base64 import b64encode
 from datetime import UTC, datetime
@@ -11,7 +10,7 @@ from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
-__all__ = ["DocumentRecord", "MinimalDocumentModel", "DocumentSourceType"]
+__all__ = ["DocumentRecord", "DocumentSourceType", "MinimalDocumentModel"]
 
 
 class DocumentSourceType(str, Enum):
@@ -260,7 +259,7 @@ class MinimalDocumentModel(BaseModel):
     @classmethod
     def from_json(cls, data: str) -> Self:
         """Create a MinimalDocumentModel from JSON."""
-        return cls.parse_obj(json.loads(data))
+        return cls.model_validate_json(data)
 
     def make_algolia_record(self) -> DocumentRecord:
         object_id = DocumentRecord.generate_object_id(

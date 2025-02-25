@@ -18,7 +18,7 @@ from ook.domain.algoliarecord import MinimalDocumentModel
 from ook.factory import Factory
 from ook.services.algoliadocindex import AlgoliaDocIndexService
 
-__all__ = ["main", "help", "upload_doc_stub"]
+__all__ = ["help", "main", "upload_doc_stub"]
 
 # Add -h as a help shortcut option
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
@@ -27,7 +27,7 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 @click.group(context_settings=CONTEXT_SETTINGS)
 @click.version_option(message="%(version)s")
 def main() -> None:
-    """ook.
+    """Ook.
 
     Administrative command-line interface for ook.
     """
