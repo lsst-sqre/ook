@@ -12,6 +12,8 @@ aiokafka==0.12.0
     #   safir
 aiosignal==1.3.2
     # via aiohttp
+alembic==1.15.1
+    # via lsst-felis
 algoliasearch==3.0.0
     # via -r requirements/main.in
 annotated-types==0.7.0
@@ -23,6 +25,12 @@ anyio==4.8.0
     #   httpx
     #   starlette
     #   watchfiles
+astropy==7.0.1
+    # via
+    #   lsst-felis
+    #   lsst-utils
+astropy-iers-data==0.2025.3.10.0.29.26
+    # via astropy
 async-timeout==3.0.1
     # via
     #   -r requirements/main.in
@@ -47,6 +55,7 @@ charset-normalizer==3.4.1
 click==8.1.8
     # via
     #   -r requirements/main.in
+    #   lsst-felis
     #   safir
     #   uvicorn
 cryptography==44.0.2
@@ -63,6 +72,10 @@ dataclasses-avroschema==0.65.10
     #   safir
 dateparser==1.2.1
     # via -r requirements/main.in
+deepdiff==8.3.0
+    # via lsst-felis
+deprecated==1.2.18
+    # via lsst-utils
 fast-depends==2.4.12
     # via faststream
 fastapi==0.115.11
@@ -107,18 +120,52 @@ jsonschema==4.23.0
     # via python-schema-registry-client
 jsonschema-specifications==2024.10.1
     # via jsonschema
+linkify-it-py==2.0.3
+    # via markdown-it-py
+lsst-felis==29.2025.1000
+    # via -r requirements/main.in
+lsst-resources==28.2025.900
+    # via lsst-felis
+lsst-utils==28.2025.900
+    # via
+    #   lsst-felis
+    #   lsst-resources
 lxml==5.3.1
     # via -r requirements/main.in
+mako==1.3.9
+    # via alembic
+markdown-it-py==3.0.0
+    # via
+    #   -r requirements/main.in
+    #   mdit-py-plugins
+markupsafe==3.0.2
+    # via mako
+mdit-py-plugins==0.4.2
+    # via markdown-it-py
+mdurl==0.1.2
+    # via markdown-it-py
 multidict==6.1.0
     # via
     #   aiohttp
     #   yarl
+numpy==2.2.3
+    # via
+    #   astropy
+    #   lsst-felis
+    #   lsst-utils
+    #   pyerfa
+orderly-set==5.3.0
+    # via deepdiff
 packaging==24.2
-    # via aiokafka
+    # via
+    #   aiokafka
+    #   astropy
 propcache==0.3.0
     # via
     #   aiohttp
     #   yarl
+psutil==7.0.0
+    # via lsst-utils
 pycparser==2.22
     # via cffi
 pydantic==2.10.6
@@ -126,6 +173,7 @@ pydantic==2.10.6
     #   -r requirements/main.in
     #   fast-depends
     #   fastapi
+    #   lsst-felis
     #   pydantic-settings
     #   safir
 pydantic-core==2.27.2
@@ -136,6 +184,8 @@ pydantic-settings==2.8.1
     # via
     #   -r requirements/main.in
     #   safir
+pyerfa==2.0.1.5
+    # via astropy
 pyjwt==2.10.1
     # via gidgethub
 python-dateutil==2.9.0.post0
@@ -151,7 +201,11 @@ python-schema-registry-client==2.6.0
 pytz==2025.1
     # via dateparser
 pyyaml==6.0.2
-    # via uvicorn
+    # via
+    #   astropy
+    #   lsst-felis
+    #   lsst-utils
+    #   uvicorn
 referencing==0.36.2
     # via
     #   jsonschema
@@ -176,6 +230,10 @@ sniffio==1.3.1
     # via
     #   anyio
     #   httpx
+sqlalchemy==2.0.39
+    # via
+    #   alembic
+    #   lsst-felis
 starlette==0.46.1
     # via
     #   -r requirements/main.in
@@ -185,9 +243,12 @@ structlog==25.2.0
     # via
     #   safir
     #   safir-logging
+threadpoolctl==3.5.0
+    # via lsst-utils
 typing-extensions==4.12.2
     # via
     #   aiokafka
+    #   alembic
     #   anyio
     #   dataclasses-avroschema
     #   fastapi
@@ -195,8 +256,11 @@ typing-extensions==4.12.2
     #   pydantic
     #   pydantic-core
     #   referencing
+    #   sqlalchemy
 tzlocal==5.3.1
     # via dateparser
+uc-micro-py==1.0.3
+    # via linkify-it-py
 uritemplate==4.1.1
     # via gidgethub
 urllib3==2.3.0
@@ -211,5 +275,7 @@ watchfiles==1.0.4
     # via uvicorn
 websockets==15.0.1
     # via uvicorn
+wrapt==1.17.2
+    # via deprecated
 yarl==1.18.3
     # via aiohttp
