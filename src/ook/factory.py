@@ -14,6 +14,8 @@ from httpx import AsyncClient
 from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
 
+from ook.services.ingest.sdmschemas import SdmSchemasIngestService
+
 from .config import config
 from .dependencies.algoliasearch import algolia_client_dependency
 from .kafkarouter import kafka_router
@@ -130,6 +132,27 @@ class Factory:
         """The shared HTTP client."""
         return self._process_context.http_client
 
+    def create_github_client_factory(self) -> GitHubAppClientFactory:
+        """Create a GitHub client factory.
+
+        From the client factory, you can create clients for installations
+        in specific repositories.
+        """
+        if (
+            config.github_app_id is None
+            or config.github_app_private_key is None
+        ):
+            raise RuntimeError(
+                "GitHub app ID and private key must be set use the "
+                "GitHub-based services."
+            )
+        return GitHubAppClientFactory(
+            id=config.github_app_id,
+            key=config.github_app_private_key.get_secret_value(),
+            name="lsst-sqre/ook",
+            http_client=self.http_client,
+        )
+
     def create_algolia_doc_index_service(self) -> AlgoliaDocIndexService:
         """Create an Algolia document indexing service."""
         index = self._process_context.algolia_client.init_index(
@@ -143,22 +166,8 @@ class Factory:
 
     def create_github_metadata_service(self) -> GitHubMetadataService:
         """Create a GitHubMetadataService."""
-        if (
-            config.github_app_id is None
-            or config.github_app_private_key is None
-        ):
-            raise RuntimeError(
-                "GitHub app ID and private key must be set use the "
-                "GitHubMetadataService."
-            )
-        gh_factory = GitHubAppClientFactory(
-            id=config.github_app_id,
-            key=config.github_app_private_key.get_secret_value(),
-            name="lsst-sqre/ook",
-            http_client=self.http_client,
-        )
         return GitHubMetadataService(
-            gh_factory=gh_factory,
+            gh_factory=self.create_github_client_factory(),
             logger=self._logger,
         )
 
@@ -215,4 +224,14 @@ class Factory:
             algolia_search_client=self._process_context.algolia_client,
             logger=self._logger,
             classification_service=self.create_classification_service(),
+        )
+
+    async def create_sdm_schemas_ingest_service(
+        self,
+    ) -> SdmSchemasIngestService:
+        """Create an SdmSchemasIngestService."""
+        return await SdmSchemasIngestService.create(
+            logger=self._logger,
+            http_client=self.http_client,
+            gh_factory=self.create_github_client_factory(),
         )

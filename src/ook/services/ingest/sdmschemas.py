@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import Self
 
 import yaml
 from felis.datamodel import Column, Schema, Table
@@ -12,6 +13,7 @@ from httpx import AsyncClient
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 from mdit_py_plugins.front_matter import front_matter_plugin
+from safir.github import GitHubAppClientFactory
 from safir.github.models import GitHubBlobModel
 from structlog.stdlib import BoundLogger
 
@@ -44,6 +46,28 @@ class SdmSchemasIngestService:
         # Shortcut to the source repository for sdm_schemas
         self._sdm_schemas_repo = {"owner": "lsst", "repo": "sdm_schemas"}
         self._md_parser = MarkdownIt("gfm-like").use(front_matter_plugin)
+
+    @classmethod
+    async def create(
+        cls,
+        http_client: AsyncClient,
+        logger: BoundLogger,
+        gh_factory: GitHubAppClientFactory,
+    ) -> Self:
+        """Create a new instance of the service with a GitHubRepoStore
+        authenticated to the sdm_schemas repository.
+        """
+        gh_repo_store = GitHubRepoStore(
+            github_client=await gh_factory.create_installation_client_for_repo(
+                owner="lsst", repo="sdm_schemas"
+            ),
+            logger=logger,
+        )
+        return cls(
+            logger=logger,
+            http_client=http_client,
+            github_repo_store=gh_repo_store,
+        )
 
     async def ingest(self) -> None:
         """Ingest links to sdm-schemas.lsst.io."""
