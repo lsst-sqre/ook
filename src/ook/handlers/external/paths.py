@@ -80,3 +80,18 @@ async def post_ingest_ltd(
                 )
             )
     return Response(status_code=202)
+
+
+@external_router.post(
+    "/ingest/sdm-schemas",
+    summary="Ingest SDM schemas (doc links)",
+)
+async def post_ingest_sdm_schemas(
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> Response:
+    """Trigger an ingest of SDM schemas."""
+    logger = context.logger
+    logger.info("Received request to ingest SDM schemas.")
+    ingest_service = await context.factory.create_sdm_schemas_ingest_service()
+    await ingest_service.ingest()
+    return Response(status_code=200)
