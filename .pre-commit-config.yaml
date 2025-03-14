@@ -11,7 +11,7 @@ repos:
         args: [--autofix, --indent=2, '--top-keys=name,doc,type']
 
   - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: v0.9.10
+    rev: v0.11.0
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]

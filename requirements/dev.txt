@@ -16,7 +16,7 @@ asgi-lifespan==2.1.0
     # via -r requirements/dev.in
 asttokens==3.0.0
     # via stack-data
-attrs==25.2.0
+attrs==25.3.0
     # via
     #   -c requirements/main.txt
     #   jsonschema
@@ -76,7 +76,7 @@ executing==2.2.0
     # via stack-data
 fastjsonschema==2.21.1
     # via nbformat
-filelock==3.17.0
+filelock==3.18.0
     # via virtualenv
 gitdb==4.0.12
     # via gitpython
