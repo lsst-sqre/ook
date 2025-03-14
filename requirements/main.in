@@ -5,7 +5,7 @@
 # with constrained versions.
 #
 # After editing, update requirements/main.txt by running:
-#     make update-deps
+#     nox -s update-deps
 
 # These dependencies are for fastapi including some optional features.
 fastapi
@@ -23,5 +23,7 @@ click
 dateparser
 lxml
 cssselect # for lxml
+lsst-felis # SDM Schemas support
+markdown-it-py[linkify,plugins]
 aiohttp>=2.0,<4.0 # for algoliasearch
 async_timeout>=2.0,<4.0 # for algoliasearch
