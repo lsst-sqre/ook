@@ -53,7 +53,7 @@ async def post_ingest_ltd(
     logger = context.logger
     logger.info(
         "Received request to ingest a project in LSST the Docs.",
-        payload=ingest_request.dict(),
+        payload=ingest_request.model_dump(),
     )
     classifier = context.factory.create_classification_service()
     async with asyncio.TaskGroup() as task_group:
