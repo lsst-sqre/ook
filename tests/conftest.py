@@ -10,8 +10,11 @@ import structlog
 from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from safir.database import create_database_engine, initialize_database
 
 from ook import main
+from ook.config import config
+from ook.dbschema import Base
 from ook.factory import Factory
 
 from .support.algoliasearch import MockSearchClient, patch_algoliasearch
@@ -38,6 +41,12 @@ async def app(
     Wraps the application in a lifespan manager so that startup and shutdown
     events are sent during test execution.
     """
+    logger = structlog.get_logger("ook")
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    await initialize_database(engine, logger, schema=Base.metadata, reset=True)
+    await engine.dispose()
     async with LifespanManager(main.app):
         yield main.app
 
@@ -57,6 +66,13 @@ async def factory(
 ) -> AsyncIterator[Factory]:
     """Return a configured ``Factory`` without setting up a FastAPI app."""
     logger = structlog.get_logger("ook")
-    async with Factory.create_standalone(logger=logger) as factory:
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    await initialize_database(engine, logger, schema=Base.metadata, reset=True)
+    async with Factory.create_standalone(
+        logger=logger, engine=engine
+    ) as factory:
         yield factory
         await factory.aclose()
+    await engine.dispose()

@@ -45,6 +45,8 @@ RUN uv pip install --compile-bytecode --no-cache .
 
 FROM base-image AS runtime-image
 
+COPY scripts/start-service.sh /start-frontend.sh
+
 # Create a non-root user.
 RUN useradd --create-home appuser
 
@@ -61,4 +63,4 @@ USER appuser
 EXPOSE 8080
 
 # Run the application.
-CMD ["uvicorn", "ook.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["/start-frontend.sh"]

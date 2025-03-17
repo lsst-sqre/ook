@@ -1,13 +1,14 @@
 """A dependency for providing context to consumers."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any
 
 from aiokafka import ConsumerRecord
+from fastapi import Depends
 from faststream import context
 from faststream.kafka.fastapi import KafkaMessage
+from safir.dependencies.db_session import db_session_dependency
+from sqlalchemy.ext.asyncio import async_scoped_session
 from structlog import get_logger
 from structlog.stdlib import BoundLogger
 
@@ -44,14 +45,19 @@ class ConsumerContextDependency:
 
     Each message handler class gets a `ConsumerContext`.  To save overhead, the
     portions of the context that are shared by all requests are collected into
-    the single process-global `~unfurlbot.factory.ProcessContext` and reused
+    the single process-global `~ook.factory.ProcessContext` and reused
     with each request.
     """
 
     def __init__(self) -> None:
         self._process_context: ProcessContext | None = None
 
-    async def __call__(self) -> ConsumerContext:
+    async def __call__(
+        self,
+        session: Annotated[
+            async_scoped_session, Depends(db_session_dependency)
+        ],
+    ) -> ConsumerContext:
         """Create a per-request context."""
         # Get the message from the FastStream context
         message: KafkaMessage = context.get_local("message")
@@ -73,6 +79,7 @@ class ConsumerContextDependency:
             logger=logger,
             factory=Factory(
                 logger=logger,
+                session=session,
                 process_context=self.process_context,
             ),
         )
@@ -89,13 +96,6 @@ class ConsumerContextDependency:
         if self._process_context:
             await self._process_context.aclose()
         self._process_context = await ProcessContext.create()
-
-    def create_factory(self, logger: BoundLogger) -> Factory:
-        """Create a factory for use outside a request context."""
-        return Factory(
-            logger=logger,
-            process_context=self.process_context,
-        )
 
     async def aclose(self) -> None:
         """Clean up the per-process configuration."""

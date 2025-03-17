@@ -16,6 +16,7 @@ from importlib.metadata import metadata, version
 
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
+from safir.dependencies.db_session import db_session_dependency
 from safir.logging import configure_logging, configure_uvicorn_logging
 from safir.middleware.x_forwarded import XForwardedMiddleware
 from structlog import get_logger
@@ -49,6 +50,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator:
 
     await context_dependency.initialize()
     await consumer_context_dependency.initialize()
+    await db_session_dependency.initialize(
+        config.database_url, config.database_password
+    )
 
     async with kafka_router.lifespan_context(app):
         logger.info("Ook start up complete.")
@@ -57,6 +61,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator:
     # Shut down
     logger.info("Ook is shutting down.")
 
+    await db_session_dependency.aclose()
     await context_dependency.aclose()
     await consumer_context_dependency.aclose()
 

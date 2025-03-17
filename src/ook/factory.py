@@ -11,10 +11,10 @@ from algoliasearch.search_client import SearchClient
 from faststream.kafka import KafkaBroker
 from faststream.kafka.publisher.asyncapi import AsyncAPIDefaultPublisher
 from httpx import AsyncClient
+from safir.database import create_async_session
 from safir.github import GitHubAppClientFactory
+from sqlalchemy.ext.asyncio import AsyncEngine, async_scoped_session
 from structlog.stdlib import BoundLogger
-
-from ook.services.ingest.sdmschemas import SdmSchemasIngestService
 
 from .config import config
 from .dependencies.algoliasearch import algolia_client_dependency
@@ -23,6 +23,7 @@ from .services.algoliaaudit import AlgoliaAuditService
 from .services.algoliadocindex import AlgoliaDocIndexService
 from .services.classification import ClassificationService
 from .services.githubmetadata import GitHubMetadataService
+from .services.ingest.sdmschemas import SdmSchemasIngestService
 from .services.landerjsonldingest import LtdLanderJsonLdIngestService
 from .services.ltdmetadataservice import LtdMetadataService
 from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
@@ -80,39 +81,62 @@ class ProcessContext:
 
 
 class Factory:
-    """A factory for creating Ook services."""
+    """A factory for creating Ook services.
+
+    Parameters
+    ----------
+    logger
+        A logger for the factory.
+    session
+        A database session.
+    process_context
+    """
 
     def __init__(
         self,
         *,
         logger: BoundLogger,
+        session: async_scoped_session,
         process_context: ProcessContext,
     ) -> None:
         self._process_context = process_context
+        self._session = session
         self._logger = logger
 
     @classmethod
     async def create(
-        cls, *, logger: BoundLogger, kafka_broker: KafkaBroker | None = None
+        cls,
+        *,
+        logger: BoundLogger,
+        kafka_broker: KafkaBroker | None = None,
+        engine: AsyncEngine,
     ) -> Self:
         """Create a Factory (for use outside a request context)."""
         context = await ProcessContext.create(kafka_broker=kafka_broker)
+        session = await create_async_session(engine)
         return cls(
             logger=logger,
+            session=session,
             process_context=context,
         )
 
     @classmethod
     @asynccontextmanager
     async def create_standalone(
-        cls, *, logger: BoundLogger, kafka_broker: KafkaBroker | None = None
+        cls,
+        *,
+        logger: BoundLogger,
+        engine: AsyncEngine,
+        kafka_broker: KafkaBroker | None = None,
     ) -> AsyncIterator[Self]:
         """Create a standalone factory, outside the FastAPI process, as a
         context manager.
 
         Use this for creating a factory in CLI commands.
         """
-        factory = await cls.create(logger=logger, kafka_broker=kafka_broker)
+        factory = await cls.create(
+            logger=logger, engine=engine, kafka_broker=kafka_broker
+        )
         async with aclosing(factory):
             # Manually connect the broker after the publishers are created
             # so that the producer can be added to each publisher.
@@ -121,7 +145,10 @@ class Factory:
 
     async def aclose(self) -> None:
         """Shut down the factory and the internal process context."""
-        await self._process_context.aclose()
+        try:
+            await self._process_context.aclose()
+        finally:
+            await self._session.close()
 
     def set_logger(self, logger: BoundLogger) -> None:
         """Set the logger for the factory."""

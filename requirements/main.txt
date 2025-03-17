@@ -4,7 +4,7 @@ aiofiles==23.2.1
     # via python-schema-registry-client
 aiohappyeyeballs==2.6.1
     # via aiohttp
-aiohttp==3.11.13
+aiohttp==3.11.14
     # via -r requirements/main.in
 aiokafka==0.12.0
     # via
@@ -20,7 +20,7 @@ algoliasearch==3.0.0
     # via -r requirements/main.in
 annotated-types==0.7.0
     # via pydantic
-anyio==4.8.0
+anyio==4.9.0
     # via
     #   fast-depends
     #   faststream
@@ -31,7 +31,7 @@ astropy==7.0.1
     # via
     #   lsst-felis
     #   lsst-utils
-astropy-iers-data==0.2025.3.10.0.29.26
+astropy-iers-data==0.2025.3.17.0.34.53
     # via astropy
 async-timeout==3.0.1
     # via
@@ -76,7 +76,7 @@ dataclasses-avroschema==0.65.10
     #   safir
 dateparser==1.2.1
     # via -r requirements/main.in
-deepdiff==8.3.0
+deepdiff==8.4.1
     # via lsst-felis
 deprecated==1.2.18
     # via lsst-utils
@@ -154,7 +154,7 @@ multidict==6.1.0
     # via
     #   aiohttp
     #   yarl
-numpy==2.2.3
+numpy==2.2.4
     # via
     #   astropy
     #   lsst-felis
@@ -228,7 +228,7 @@ safir==10.0.0
     # via -r requirements/main.in
 safir-logging==10.0.0
     # via safir
-sentry-sdk==2.22.0
+sentry-sdk==2.23.1
     # via safir
 six==1.17.0
     # via python-dateutil

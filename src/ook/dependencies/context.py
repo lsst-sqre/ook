@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from typing import Annotated, Any
 
 from fastapi import Depends, Request
+from safir.dependencies.db_session import db_session_dependency
 from safir.dependencies.logger import logger_dependency
+from sqlalchemy.ext.asyncio import async_scoped_session
 from structlog.stdlib import BoundLogger
 
 from ..factory import Factory, ProcessContext
@@ -38,6 +40,9 @@ class RequestContext:
     logger: BoundLogger
     """The request logger, rebound with discovered context."""
 
+    session: async_scoped_session
+    """The database session."""
+
     factory: Factory
     """The component factory."""
 
@@ -58,7 +63,7 @@ class ContextDependency:
 
     Each request gets a `RequestContext`.  To save overhead, the portions of
     the context that are shared by all requests are collected into the single
-    process-global `~gafaelfawr.factory.ProcessContext` and reused with each
+    process-global `~ook.factory.ProcessContext` and reused with each
     request.
     """
 
@@ -68,14 +73,20 @@ class ContextDependency:
     async def __call__(
         self,
         request: Request,
+        session: Annotated[
+            async_scoped_session, Depends(db_session_dependency)
+        ],
         logger: Annotated[BoundLogger, Depends(logger_dependency)],
     ) -> RequestContext:
         """Create a per-request context and return it."""
         return RequestContext(
             request=request,
             logger=logger,
+            session=session,
             factory=Factory(
-                logger=logger, process_context=self.process_context
+                logger=logger,
+                process_context=self.process_context,
+                session=session,
             ),
         )
 
@@ -97,13 +108,6 @@ class ContextDependency:
         if self._process_context:
             await self._process_context.aclose()
         self._process_context = await ProcessContext.create()
-
-    def create_factory(self, logger: BoundLogger) -> Factory:
-        """Create a factory for use outside a request context."""
-        return Factory(
-            logger=logger,
-            process_context=self.process_context,
-        )
 
     async def aclose(self) -> None:
         """Clean up the per-process configuration."""

@@ -106,76 +106,103 @@ def typing(session: nox.Session) -> None:
 def test(session: nox.Session) -> None:
     """Run pytest."""
     from testcontainers.kafka import KafkaContainer
+    from testcontainers.postgres import PostgresContainer
 
     _install(session)
 
     with KafkaContainer().with_kraft() as kafka:
-        session.run(
-            "pytest",
-            "--cov=ook",
-            "--cov-branch",
-            *session.posargs,
-            env=_make_env_vars(
-                {"KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server()}
-            ),
-        )
+        with PostgresContainer("postgres:16") as postgres:
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                }
+            )
+            session.run(
+                "pytest",
+                "--cov=ook",
+                "--cov-branch",
+                *session.posargs,
+                env=env_vars,
+            )
 
 
 @nox.session
 def docs(session: nox.Session) -> None:
     """Build the docs."""
     from testcontainers.kafka import KafkaContainer
+    from testcontainers.postgres import PostgresContainer
 
     _install(session)
     session.install("setuptools")  # for sphinxcontrib-redoc (pkg_resources)
     doctree_dir = (session.cache_dir / "doctrees").absolute()
 
     with KafkaContainer().with_kraft() as kafka:
-        with session.chdir("docs"):
-            session.run(
-                "sphinx-build",
-                # "-W", # Disable warnings-as-errors for now
-                "--keep-going",
-                "-n",
-                "-T",
-                "-b",
-                "html",
-                "-d",
-                str(doctree_dir),
-                ".",
-                "./_build/html",
-                env=_make_env_vars(
-                    {"KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server()}
-                ),
+        with PostgresContainer("postgres:16") as postgres:
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                }
             )
+            with session.chdir("docs"):
+                session.run(
+                    "sphinx-build",
+                    # "-W", # Disable warnings-as-errors for now
+                    "--keep-going",
+                    "-n",
+                    "-T",
+                    "-b",
+                    "html",
+                    "-d",
+                    str(doctree_dir),
+                    ".",
+                    "./_build/html",
+                    env=env_vars,
+                )
 
 
 @nox.session(name="docs-linkcheck")
 def docs_linkcheck(session: nox.Session) -> None:
     """Linkcheck the docs."""
     from testcontainers.kafka import KafkaContainer
+    from testcontainers.postgres import PostgresContainer
 
     _install(session)
     session.install("setuptools")  # for sphinxcontrib-redoc (pkg_resources)
     doctree_dir = (session.cache_dir / "doctrees").absolute()
     with KafkaContainer().with_kraft() as kafka:
-        with session.chdir("docs"):
-            session.run(
-                "sphinx-build",
-                # "-W",  # Disable warnings-as-errors for now
-                "--keep-going",
-                "-n",
-                "-T",
-                "-b",
-                "linkcheck",
-                "-d",
-                str(doctree_dir),
-                ".",
-                "./_build/html",
-                env=_make_env_vars(
-                    {"KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server()}
-                ),
+        with PostgresContainer("postgres:16") as postgres:
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                }
             )
+            with session.chdir("docs"):
+                session.run(
+                    "sphinx-build",
+                    # "-W",  # Disable warnings-as-errors for now
+                    "--keep-going",
+                    "-n",
+                    "-T",
+                    "-b",
+                    "linkcheck",
+                    "-d",
+                    str(doctree_dir),
+                    ".",
+                    "./_build/html",
+                    env=env_vars,
+                )
 
 
 @nox.session(name="scriv-create")
