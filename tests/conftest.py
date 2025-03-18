@@ -18,12 +18,20 @@ from ook.dbschema import Base
 from ook.factory import Factory
 
 from .support.algoliasearch import MockSearchClient, patch_algoliasearch
+from .support.github import GitHubMocker
 
 
 @pytest.fixture
 def mock_algoliasearch() -> Iterator[MockSearchClient]:
     """Return a mock Algolia SearchClient for testing."""
     yield from patch_algoliasearch()
+
+
+@pytest.fixture
+def mock_github() -> Iterator[GitHubMocker]:
+    github_mocker = GitHubMocker()
+    with github_mocker.router:
+        yield github_mocker
 
 
 @pytest_asyncio.fixture
@@ -35,6 +43,7 @@ async def http_client() -> AsyncIterator[AsyncClient]:
 @pytest_asyncio.fixture
 async def app(
     mock_algoliasearch: MockSearchClient,
+    mock_github: GitHubMocker,
 ) -> AsyncIterator[FastAPI]:
     """Return a configured test application.
 
@@ -63,6 +72,7 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
 @pytest_asyncio.fixture
 async def factory(
     mock_algoliasearch: MockSearchClient,
+    mock_github: GitHubMocker,
 ) -> AsyncIterator[Factory]:
     """Return a configured ``Factory`` without setting up a FastAPI app."""
     logger = structlog.get_logger("ook")
