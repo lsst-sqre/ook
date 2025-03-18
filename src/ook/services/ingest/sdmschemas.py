@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Self
 
@@ -18,10 +16,17 @@ from safir.github.models import GitHubBlobModel
 from structlog.stdlib import BoundLogger
 
 from ook.storage.github import GitHubRepoStore, GitTreeItem
+from ook.storage.sdmschemaslinkstore import (
+    SdmSchemasColumnLink,
+    SdmSchemasLinks,
+    SdmSchemasLinkStore,
+    SdmSchemasSchemaLink,
+    SdmSchemasTableLink,
+)
 
 
 class SdmSchemasIngestService:
-    """A service for ingesting documentatoin links to sdm-schemas.lsst.io.
+    """A service for ingesting documentation links to sdm-schemas.lsst.io.
 
     Parameters
     ----------
@@ -39,10 +44,13 @@ class SdmSchemasIngestService:
         logger: BoundLogger,
         http_client: AsyncClient,
         github_repo_store: GitHubRepoStore,
+        link_store: SdmSchemasLinkStore,
     ) -> None:
         self._logger = logger
         self._http_client = http_client
         self._gh_repo_store = github_repo_store
+        self._link_store = link_store
+
         # Shortcut to the source repository for sdm_schemas
         self._sdm_schemas_repo = {"owner": "lsst", "repo": "sdm_schemas"}
         self._md_parser = MarkdownIt("gfm-like").use(front_matter_plugin)
@@ -52,6 +60,7 @@ class SdmSchemasIngestService:
         cls,
         http_client: AsyncClient,
         logger: BoundLogger,
+        link_store: SdmSchemasLinkStore,
         gh_factory: GitHubAppClientFactory,
     ) -> Self:
         """Create a new instance of the service with a GitHubRepoStore
@@ -67,6 +76,7 @@ class SdmSchemasIngestService:
             logger=logger,
             http_client=http_client,
             github_repo_store=gh_repo_store,
+            link_store=link_store,
         )
 
     async def ingest(self) -> None:
@@ -120,11 +130,11 @@ class SdmSchemasIngestService:
                 docs_url=doc_url,
                 schema_content=schema_content[:50],
             )
-            for _ in self._load_schema(
+            schema_links = self._load_schema(
                 docs_url=doc_url,
                 yaml_content=schema_content,
-            ):
-                continue
+            )
+            await self._link_store.update_schema(schema_links)
 
     async def _get_tree_item_blob(self, item: GitTreeItem) -> GitHubBlobModel:
         """Get the blob for a tree item."""
@@ -185,10 +195,8 @@ class SdmSchemasIngestService:
 
     def _load_schema(
         self, *, docs_url: str, yaml_content: str
-    ) -> Iterator[
-        SdmSchemasSchemaLink | SdmSchemasTableLink | SdmSchemasColumnLink
-    ]:
-        """Load a schema page and ingest it."""
+    ) -> SdmSchemasLinks:
+        """Load a schema page."""
         schema: Schema = Schema.model_validate(yaml.safe_load(yaml_content))
         self._logger.debug(
             "Ingesting schema",
@@ -201,7 +209,9 @@ class SdmSchemasIngestService:
             url=docs_url,
             description=schema.description,
         )
-        yield schema_link
+
+        table_links: list[SdmSchemasTableLink] = []
+        column_links: list[SdmSchemasColumnLink] = []
 
         for table in schema.tables:
             table_docs_url = self._format_table_docs_url(docs_url, table)
@@ -218,7 +228,7 @@ class SdmSchemasIngestService:
                 url=table_docs_url,
                 description=table.description,
             )
-            yield table_link
+            table_links.append(table_link)
 
             for column in table.columns:
                 column_docs_url = self._format_column_docs_url(
@@ -238,7 +248,11 @@ class SdmSchemasIngestService:
                     url=column_docs_url,
                     description=column.description,
                 )
-                yield column_link
+                column_links.append(column_link)
+
+        return SdmSchemasLinks(
+            schema=schema_link, tables=table_links, columns=column_links
+        )
 
     def _format_table_docs_url(self, url_base: str, table: Table) -> str:
         """Format a table's documentation URL in sdm-schemas.lsst.io."""
@@ -249,60 +263,3 @@ class SdmSchemasIngestService:
         """Format a column's documentation URL in sdm-schemas.lsst.io."""
         # The ID starts with a hash, so we need to remove
         return f"{url_base}{column.id}"
-
-
-@dataclass
-class SdmSchemasSchemaLink:
-    """A link to a schema on sdm-schemas.lsst.io."""
-
-    name: str
-    """The name of the database object."""
-
-    id: str
-    """The ID of the database object."""
-
-    url: str
-    """Documentation URL for the schema."""
-
-    description: str | None
-    """A description of the schema."""
-
-
-@dataclass
-class SdmSchemasTableLink:
-    """A link to a table on sdm-schemas.lsst.io."""
-
-    schema: SdmSchemasSchemaLink
-    """The schema to which the table belongs."""
-
-    name: str
-    """The name of the database object."""
-
-    id: str
-    """The ID of the database object."""
-
-    url: str
-    """Documentation URL for the table."""
-
-    description: str | None
-    """A description of the table."""
-
-
-@dataclass
-class SdmSchemasColumnLink:
-    """A link to a column on sdm-schemas.lsst.io."""
-
-    table: SdmSchemasTableLink
-    """The table to which the column belongs."""
-
-    name: str
-    """The name of the database object."""
-
-    id: str
-    """The ID of the database object."""
-
-    url: str
-    """Documentation URL for the column."""
-
-    description: str | None
-    """A description of the column."""

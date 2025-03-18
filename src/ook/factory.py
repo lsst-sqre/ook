@@ -16,6 +16,8 @@ from safir.github import GitHubAppClientFactory
 from sqlalchemy.ext.asyncio import AsyncEngine, async_scoped_session
 from structlog.stdlib import BoundLogger
 
+from ook.storage.sdmschemaslinkstore import SdmSchemasLinkStore
+
 from .config import config
 from .dependencies.algoliasearch import algolia_client_dependency
 from .kafkarouter import kafka_router
@@ -180,6 +182,13 @@ class Factory:
             http_client=self.http_client,
         )
 
+    def create_sdm_schemas_link_store(self) -> SdmSchemasLinkStore:
+        """Create a SdmSchemasLinkStore (SQL store of SDM Schemas links)."""
+        return SdmSchemasLinkStore(
+            session=self._session,
+            logger=self._logger,
+        )
+
     def create_algolia_doc_index_service(self) -> AlgoliaDocIndexService:
         """Create an Algolia document indexing service."""
         index = self._process_context.algolia_client.init_index(
@@ -261,4 +270,5 @@ class Factory:
             logger=self._logger,
             http_client=self.http_client,
             gh_factory=self.create_github_client_factory(),
+            link_store=self.create_sdm_schemas_link_store(),
         )

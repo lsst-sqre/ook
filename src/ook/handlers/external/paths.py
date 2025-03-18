@@ -92,6 +92,10 @@ async def post_ingest_sdm_schemas(
     """Trigger an ingest of SDM schemas."""
     logger = context.logger
     logger.info("Received request to ingest SDM schemas.")
-    ingest_service = await context.factory.create_sdm_schemas_ingest_service()
-    await ingest_service.ingest()
+    async with context.session.begin():
+        ingest_service = (
+            await context.factory.create_sdm_schemas_ingest_service()
+        )
+        await ingest_service.ingest()
+        await context.session.commit()
     return Response(status_code=200)

@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Unicode, UnicodeText
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Unicode,
+    UnicodeText,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -16,6 +23,8 @@ class SqlSdmSchemaLink(Base):
     """A SQLAlchemy model for links to top-level schema documentation."""
 
     __tablename__ = "links_sdm_schemas"
+
+    __table_args__ = (UniqueConstraint("name", name="uq_sdm_schema_name"),)
 
     id: Mapped[int] = mapped_column(
         BigInteger, primary_key=True, autoincrement=True
@@ -41,6 +50,10 @@ class SqlSdmTableLink(Base):
     """A SQLAlchemy model for links to table documentation."""
 
     __tablename__ = "links_sdm_tables"
+
+    __table_args__ = (
+        UniqueConstraint("schema_id", "name", name="uq_sdm_table_schema_name"),
+    )
 
     id: Mapped[int] = mapped_column(
         BigInteger, primary_key=True, autoincrement=True
@@ -79,6 +92,10 @@ class SqlSdmColumnLink(Base):
     """A SQLAlchemy model for links to column documentation."""
 
     __tablename__ = "links_sdm_columns"
+
+    __table_args__ = (
+        UniqueConstraint("table_id", "name", name="uq_sdm_column_table_name"),
+    )
 
     id: Mapped[int] = mapped_column(
         BigInteger, primary_key=True, autoincrement=True
