@@ -236,13 +236,6 @@ class SdmSchemasIngestService:
                 column_docs_url = self._format_column_docs_url(
                     docs_url, column
                 )
-                self._logger.debug(
-                    "Ingesting column",
-                    schema=schema.name,
-                    table=table.name,
-                    column=column.name,
-                    url=column_docs_url,
-                )
                 column_link = SdmSchemasColumnLink(
                     table=table_link,
                     name=column.name,
@@ -251,6 +244,12 @@ class SdmSchemasIngestService:
                     description=column.description,
                 )
                 column_links.append(column_link)
+            self._logger.debug(
+                "Ingested columns",
+                schema=schema.name,
+                table=table.name,
+                column_count=len(table.columns),
+            )
 
         return SdmSchemasLinks(
             schema=schema_link, tables=table_links, columns=column_links
