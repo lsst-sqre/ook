@@ -13,13 +13,11 @@ from safir.metadata import Metadata, get_metadata
 
 from ook.config import config
 
-__all__ = ["get_index", "internal_router"]
-
-internal_router = APIRouter()
+router = APIRouter(include_in_schema=False)
 """FastAPI router for all internal handlers."""
 
 
-@internal_router.get(
+@router.get(
     "/",
     description=(
         "Return metadata about the running application. Can also be used as "

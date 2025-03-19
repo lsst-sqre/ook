@@ -22,15 +22,16 @@ from safir.logging import configure_logging, configure_uvicorn_logging
 from safir.middleware.x_forwarded import XForwardedMiddleware
 from structlog import get_logger
 
-from ook.dependencies.consumercontext import consumer_context_dependency
-from ook.dependencies.context import context_dependency
-
 from .config import config
-from .handlers.external.paths import external_router
-from .handlers.internal.paths import internal_router
+from .dependencies.consumercontext import consumer_context_dependency
+from .dependencies.context import context_dependency
+from .handlers.ingest import ingest_router
+from .handlers.internal import internal_router
 
 # Import kafka router and also load the handler functions.
 from .handlers.kafka import kafka_router  # type: ignore [attr-defined]
+from .handlers.links import links_router
+from .handlers.root import root_router
 
 __all__ = ["app", "create_openapi"]
 
@@ -87,9 +88,11 @@ app = FastAPI(
 )
 """The main FastAPI application for ook."""
 
-# Attach the routers.
+# Attach the routers. Prefixes are set in the routers themselves.
 app.include_router(internal_router)
-app.include_router(external_router, prefix=config.path_prefix)
+app.include_router(root_router)
+app.include_router(ingest_router)
+app.include_router(links_router)
 app.include_router(kafka_router)
 
 # Set up middleware
