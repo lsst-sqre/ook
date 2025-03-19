@@ -37,7 +37,9 @@ class SqlSdmSchemaLink(Base):
     html_url: Mapped[str] = mapped_column(Unicode, nullable=False)
     """The URL to the schema's top-level documentation page."""
 
-    date_updated: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    date_updated: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     """The date this record was last updated."""
 
     tables: Mapped[list[SqlSdmTableLink]] = relationship(
@@ -79,7 +81,9 @@ class SqlSdmTableLink(Base):
     html_url: Mapped[str] = mapped_column(Unicode, nullable=False)
     """The URL to the table's documentation page."""
 
-    date_updated: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    date_updated: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     """The date this record was last updated."""
 
     columns: Mapped[list[SqlSdmColumnLink]] = relationship(
@@ -121,5 +125,7 @@ class SqlSdmColumnLink(Base):
     html_url: Mapped[str] = mapped_column(Unicode, nullable=False)
     """The URL to the column's documentation page."""
 
-    date_updated: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    date_updated: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     """The date this record was last updated."""
