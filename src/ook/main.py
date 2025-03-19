@@ -17,6 +17,7 @@ from importlib.metadata import metadata, version
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from safir.dependencies.db_session import db_session_dependency
+from safir.fastapi import ClientRequestError, client_request_error_handler
 from safir.logging import configure_logging, configure_uvicorn_logging
 from safir.middleware.x_forwarded import XForwardedMiddleware
 from structlog import get_logger
@@ -93,6 +94,9 @@ app.include_router(kafka_router)
 
 # Set up middleware
 app.add_middleware(XForwardedMiddleware)
+
+# Set up error handling
+app.exception_handler(ClientRequestError)(client_request_error_handler)
 
 
 def create_openapi() -> str:

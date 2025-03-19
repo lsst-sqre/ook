@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-__all__ = ["LtdSlugClassificationError"]
+from fastapi import status
+from safir.fastapi import ClientRequestError
+
+__all__ = [
+    "DocumentParsingError",
+    "LtdSlugClassificationError",
+    "NotFoundError",
+]
 
 
 class LtdSlugClassificationError(Exception):
@@ -42,3 +49,10 @@ class LtdSlugClassificationError(Exception):
 
 class DocumentParsingError(Exception):
     """Raised when there is a document parsing error."""
+
+
+class NotFoundError(ClientRequestError):
+    """Raised when a resource is not found."""
+
+    error = "not_found"
+    status_code = status.HTTP_404_NOT_FOUND
