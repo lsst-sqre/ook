@@ -6,11 +6,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import AnyHttpUrl
 from safir.metadata import get_metadata
+from safir.models import ErrorModel
 
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
+from ook.exceptions import NotFoundError
 
-from .models import IndexResponse, LtdIngestRequest
+from .models import IndexResponse, Link, LinksResponse, LtdIngestRequest
 
 __all__ = ["external_router", "get_index"]
 
@@ -99,3 +101,27 @@ async def post_ingest_sdm_schemas(
         await ingest_service.ingest()
         await context.session.commit()
     return Response(status_code=200)
+
+
+@external_router.get(
+    "/links/domains/sdm-schemas/schemas/{schema_name}",
+    summary="Get documentation links for a SDM schema",
+    responses={404: {"description": "Not found", "model": ErrorModel}},
+)
+async def get_sdm_schema_links(
+    schema_name: str,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> LinksResponse:
+    """Get documentation links for a SDM schema."""
+    logger = context.logger
+    logger.info(
+        "Received request to get documentation links for a SDM schema."
+    )
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        link = await link_service.get_links_for_sdm_schema(schema_name)
+        if link is None:
+            raise NotFoundError(
+                f"No links found for SDM schema {schema_name}."
+            )
+        return LinksResponse(links=[Link.from_domain(link)])

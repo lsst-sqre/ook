@@ -31,3 +31,14 @@ async def test_post_ingest_sdm_schemas(
     mock_github.mock_sdm_schema_release_ingest()
     response = await client.post("/ook/ingest/sdm-schemas")
     assert response.status_code == 200
+
+    response = await client.get(
+        "/ook/links/domains/sdm-schemas/schemas/dp02_dc2_catalogs"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["links"][0] == {
+        "url": "https://sdm-schemas.lsst.io/dp02.html",
+        "kind": "schema browser",
+        "source_title": "Science Data Model Schemas",
+    }

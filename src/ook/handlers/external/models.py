@@ -8,6 +8,8 @@ from typing import Self
 from pydantic import AnyHttpUrl, BaseModel, Field, model_validator
 from safir.metadata import Metadata as SafirMetadata
 
+from ook.domain.links import SdmSchemaLink
+
 __all__ = [
     "IndexResponse",
     "LtdIngestRequest",
@@ -55,3 +57,28 @@ class LtdIngestRequest(BaseModel):
                 ) from exc
 
         return self
+
+
+class Link(BaseModel):
+    """A documentation link."""
+
+    url: AnyHttpUrl = Field(..., title="Documentation URL")
+
+    kind: str = Field(..., title="Kind of the documentation")
+
+    source_title: str = Field(..., title="Title of the documentation source")
+
+    @classmethod
+    def from_domain(cls, domain: SdmSchemaLink) -> Self:
+        """Create a `Link` from a `SdmSchemaLink` domain model."""
+        return cls(
+            url=AnyHttpUrl(domain.html_url),
+            kind=domain.kind,
+            source_title=domain.source_title,
+        )
+
+
+class LinksResponse(BaseModel):
+    """Schema for a link to an SDM schema."""
+
+    links: list[Link] = Field(..., title="Name of the schema")
