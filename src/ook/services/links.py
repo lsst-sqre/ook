@@ -30,3 +30,14 @@ class LinksService:
         # we'll just return the one link to sdm-schemas.lsst.io because
         # the SdmSchemasLinkStore only returns one link.
         return [sdm_links]
+
+    async def list_sdm_schemas(self) -> list[tuple[str, list[SdmSchemaLink]]]:
+        """List SDM schemas and their links."""
+        schemas = await self._sdm_schemas_link_store.list_schemas()
+        # Adding the list layer here because the SdmSchemasLinkStore only
+        # returns one link per schema, but we want to be able to have
+        # multiple links per entity in the future.
+        return [
+            (schema_name, [schema_link])
+            for schema_name, schema_link in schemas
+        ]

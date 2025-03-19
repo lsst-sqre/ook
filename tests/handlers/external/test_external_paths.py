@@ -46,3 +46,10 @@ async def test_post_ingest_sdm_schemas(
     assert data["self_url"].endswith(
         "/ook/links/domains/sdm-schemas/schemas/dp02_dc2_catalogs"
     )
+
+    response = await client.get("/ook/links/domains/sdm-schemas/schemas")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 2
+    assert data[0]["name"] == "dp02_dc2_catalogs"
+    assert data[1]["name"] == "dp03_catalogs_10yr"

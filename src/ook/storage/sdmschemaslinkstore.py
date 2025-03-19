@@ -144,6 +144,16 @@ class SdmSchemasLinkStore:
             html_url=row.html_url,
         )
 
+    async def list_schemas(self) -> list[tuple[str, SdmSchemaLink]]:
+        """List all schema links."""
+        result = await self._session.execute(
+            SqlSdmSchemaLink.__table__.select().order_by(SqlSdmSchemaLink.name)
+        )
+        return [
+            (row.name, SdmSchemaLink(name=row.name, html_url=row.html_url))
+            for row in result.fetchall()
+        ]
+
 
 @dataclass
 class SdmSchemasLinks:

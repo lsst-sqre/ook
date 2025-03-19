@@ -104,6 +104,36 @@ async def post_ingest_sdm_schemas(
 
 
 @external_router.get(
+    "/links/domains/sdm-schemas/schemas",
+    summary="List schemas and their documentation links",
+    responses={404: {"description": "Not found", "model": ErrorModel}},
+)
+async def get_sdm_schema_links_list(
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[EntityLinks]:
+    """List schemas and their documentation links."""
+    logger = context.logger
+    logger.info(
+        "Received request to list schemas and their documentation links."
+    )
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        links = await link_service.list_sdm_schemas()
+        return [
+            EntityLinks.from_domain_models(
+                subject_name=schema_name,
+                domain=schema_links,
+                self_url=str(
+                    context.request.url_for(
+                        "get_sdm_schema_links", schema_name=schema_name
+                    )
+                ),
+            )
+            for schema_name, schema_links in links
+        ]
+
+
+@external_router.get(
     "/links/domains/sdm-schemas/schemas/{schema_name}",
     summary="Get documentation links for a SDM schema",
     responses={404: {"description": "Not found", "model": ErrorModel}},
