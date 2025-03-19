@@ -163,6 +163,8 @@ class SdmSchemasIngestService:
         """
         urls: dict[str, str] = {}
         for item in browser_markdown_items:
+            if item.path == "browser/index.md":
+                continue
             md_blob = await self._get_tree_item_blob(item)
             md_content = md_blob.decode()
             yaml_data = self._get_md_frontmatter(
