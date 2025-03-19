@@ -15,6 +15,7 @@ from ook.dbschema.sdmschemaslinks import (
     SqlSdmSchemaLink,
     SqlSdmTableLink,
 )
+from ook.domain.links import SdmSchemaLink
 
 __all__ = [
     "SdmSchemasColumnLink",
@@ -126,6 +127,21 @@ class SdmSchemasLinkStore:
                 SqlSdmSchemaLink.name == schema_links.schema.name,
                 SqlSdmSchemaLink.date_updated < now,
             )
+        )
+
+    async def get_schema(self, schema_name: str) -> SdmSchemaLink | None:
+        """Get a schema link by name."""
+        result = await self._session.execute(
+            SqlSdmSchemaLink.__table__.select().where(
+                SqlSdmSchemaLink.name == schema_name
+            )
+        )
+        row = result.fetchone()
+        if row is None:
+            return None
+        return SdmSchemaLink(
+            name=row.name,
+            html_url=row.html_url,
         )
 
 

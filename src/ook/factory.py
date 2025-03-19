@@ -27,6 +27,7 @@ from .services.classification import ClassificationService
 from .services.githubmetadata import GitHubMetadataService
 from .services.ingest.sdmschemas import SdmSchemasIngestService
 from .services.landerjsonldingest import LtdLanderJsonLdIngestService
+from .services.links import LinksService
 from .services.ltdmetadataservice import LtdMetadataService
 from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
 from .services.technoteingest import TechnoteIngestService
@@ -271,4 +272,11 @@ class Factory:
             http_client=self.http_client,
             gh_factory=self.create_github_client_factory(),
             link_store=self.create_sdm_schemas_link_store(),
+        )
+
+    def create_links_service(self) -> LinksService:
+        """Create a LinksService."""
+        return LinksService(
+            logger=self._logger,
+            sdm_schemas_link_store=self.create_sdm_schemas_link_store(),
         )
