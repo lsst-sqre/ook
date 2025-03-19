@@ -69,7 +69,7 @@ class Link(BaseModel):
     source_title: str = Field(..., title="Title of the documentation source")
 
     @classmethod
-    def from_domain(cls, domain: SdmSchemaLink) -> Self:
+    def from_domain_model(cls, domain: SdmSchemaLink) -> Self:
         """Create a `Link` from a `SdmSchemaLink` domain model."""
         return cls(
             url=AnyHttpUrl(domain.html_url),
@@ -78,7 +78,22 @@ class Link(BaseModel):
         )
 
 
-class LinksResponse(BaseModel):
-    """Schema for a link to an SDM schema."""
+class EntityLinks(BaseModel):
+    """A collection of links to a entity."""
 
-    links: list[Link] = Field(..., title="Name of the schema")
+    name: str = Field(..., title="Name of the entity")
+
+    links: list[Link] = Field(..., title="Links to the entity")
+
+    self_url: AnyHttpUrl = Field(..., title="URL to this resource")
+
+    @classmethod
+    def from_domain_models(
+        cls, subject_name: str, domain: list[SdmSchemaLink], self_url: str
+    ) -> Self:
+        """Create a `SubjectLinks` from a `SdmSchemaLink` domain model."""
+        return cls(
+            name=subject_name,
+            links=[Link.from_domain_model(d) for d in domain],
+            self_url=AnyHttpUrl(self_url),
+        )

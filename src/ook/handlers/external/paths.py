@@ -12,7 +12,7 @@ from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 from ook.exceptions import NotFoundError
 
-from .models import IndexResponse, Link, LinksResponse, LtdIngestRequest
+from .models import EntityLinks, IndexResponse, LtdIngestRequest
 
 __all__ = ["external_router", "get_index"]
 
@@ -111,7 +111,7 @@ async def post_ingest_sdm_schemas(
 async def get_sdm_schema_links(
     schema_name: str,
     context: Annotated[RequestContext, Depends(context_dependency)],
-) -> LinksResponse:
+) -> EntityLinks:
     """Get documentation links for a SDM schema."""
     logger = context.logger
     logger.info(
@@ -119,9 +119,17 @@ async def get_sdm_schema_links(
     )
     async with context.session.begin():
         link_service = context.factory.create_links_service()
-        link = await link_service.get_links_for_sdm_schema(schema_name)
-        if link is None:
+        links = await link_service.get_links_for_sdm_schema(schema_name)
+        if links is None:
             raise NotFoundError(
                 f"No links found for SDM schema {schema_name}."
             )
-        return LinksResponse(links=[Link.from_domain(link)])
+        return EntityLinks.from_domain_models(
+            subject_name=schema_name,
+            domain=links,
+            self_url=str(
+                context.request.url_for(
+                    "get_sdm_schema_links", schema_name=schema_name
+                )
+            ),
+        )

@@ -42,3 +42,7 @@ async def test_post_ingest_sdm_schemas(
         "kind": "schema browser",
         "source_title": "Science Data Model Schemas",
     }
+    assert data["name"] == "dp02_dc2_catalogs"
+    assert data["self_url"].endswith(
+        "/ook/links/domains/sdm-schemas/schemas/dp02_dc2_catalogs"
+    )
