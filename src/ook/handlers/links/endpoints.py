@@ -9,55 +9,26 @@ from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 from ook.exceptions import NotFoundError
 
-from .models import EntityLinks
+from .models import Link
 
 router = APIRouter(prefix=f"{config.path_prefix}/links", tags=["links"])
 """FastAPI router for the links API."""
 
 
 @router.get(
-    "/domains/sdm-schemas/schemas",
-    summary="List schemas and their documentation links",
-    responses={404: {"description": "Not found", "model": ErrorModel}},
-)
-async def get_sdm_schema_links_list(
-    context: Annotated[RequestContext, Depends(context_dependency)],
-) -> list[EntityLinks]:
-    """List schemas and their documentation links."""
-    logger = context.logger
-    logger.info(
-        "Received request to list schemas and their documentation links."
-    )
-    async with context.session.begin():
-        link_service = context.factory.create_links_service()
-        links = await link_service.list_sdm_schemas()
-        return [
-            EntityLinks.from_domain_models(
-                subject_name=schema_name,
-                domain=schema_links,
-                self_url=str(
-                    context.request.url_for(
-                        "get_sdm_schema_links", schema_name=schema_name
-                    )
-                ),
-            )
-            for schema_name, schema_links in links
-        ]
-
-
-@router.get(
     "/domains/sdm-schemas/schemas/{schema_name}",
-    summary="Get documentation links for a SDM schema",
+    summary="Documentation links for a SDM schema",
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_schema_links(
     schema_name: str,
     context: Annotated[RequestContext, Depends(context_dependency)],
-) -> EntityLinks:
-    """Get documentation links for a SDM schema."""
+) -> list[Link]:
+    """Get documentation links for an SDM schema."""
     logger = context.logger
-    logger.info(
-        "Received request to get documentation links for a SDM schema."
+    logger.debug(
+        "Received request to get documentation links for an SDM schema.",
+        schema_name=schema_name,
     )
     async with context.session.begin():
         link_service = context.factory.create_links_service()
@@ -66,12 +37,66 @@ async def get_sdm_schema_links(
             raise NotFoundError(
                 f"No links found for SDM schema {schema_name}."
             )
-        return EntityLinks.from_domain_models(
-            subject_name=schema_name,
-            domain=links,
-            self_url=str(
-                context.request.url_for(
-                    "get_sdm_schema_links", schema_name=schema_name
-                )
-            ),
+        return [Link.from_domain_link(link) for link in links]
+
+
+@router.get(
+    "/domains/sdm-schemas/schemas/{schema_name}/tables/{table_name}",
+    summary="Documentation links for an SDM table",
+    responses={404: {"description": "Not found", "model": ErrorModel}},
+)
+async def get_sdm_schema_table_links(
+    schema_name: str,
+    table_name: str,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[Link]:
+    logger = context.logger
+    logger.debug(
+        "Received request to get documentation links for an SDM table.",
+        schema_name=schema_name,
+        table_name=table_name,
+    )
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        links = await link_service.get_links_for_sdm_table(
+            schema_name=schema_name, table_name=table_name
         )
+        if links is None:
+            raise NotFoundError(
+                f"No links found for SDM table {table_name} in "
+                f"schema {schema_name}."
+            )
+        return [Link.from_domain_link(link) for link in links]
+
+
+@router.get(
+    "/domains/sdm-schemas/schemas/{schema_name}/tables/{table_name}/columns/{column_name}",
+    summary="Documentation links for an SDM table",
+    responses={404: {"description": "Not found", "model": ErrorModel}},
+)
+async def get_sdm_schema_column_links(
+    schema_name: str,
+    table_name: str,
+    column_name: str,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[Link]:
+    logger = context.logger
+    logger.debug(
+        "Received request to get documentation links for an SDM column.",
+        schema_name=schema_name,
+        table_name=table_name,
+        column_name=column_name,
+    )
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        links = await link_service.get_links_for_sdm_column(
+            schema_name=schema_name,
+            table_name=table_name,
+            column_name=column_name,
+        )
+        if links is None:
+            raise NotFoundError(
+                f"No links found for SDM column {column_name} in table "
+                f"{table_name} in schema {schema_name}."
+            )
+        return [Link.from_domain_link(link) for link in links]

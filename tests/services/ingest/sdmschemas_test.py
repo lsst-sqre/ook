@@ -21,13 +21,16 @@ async def test_load_schema(factory: Factory) -> None:
         / "sdm_schemas"
         / "dp02_dc.yaml"
     ).read_text()
-    schema_links = ingest_service._load_schema(
-        docs_url="https://sdm-schemas.lsst.io/dp02.html",
+    schema = ingest_service._load_schema(
         yaml_content=schema_yaml,
+        github_owner="lsst",
+        github_repo="sdm_schemas",
+        github_ref="w.2025.04",
+        github_path="python/lsst/sdm/schemas/dp02_dc.yaml",
     )
-    assert schema_links.schema.name == "dp02_dc2_catalogs"
-    assert len(schema_links.tables) > 0
-    assert len(schema_links.columns) > 0
+    assert schema.name == "dp02_dc2_catalogs"
+    assert schema.tables is not None
+    assert len(schema.tables) > 0
 
 
 @pytest.mark.asyncio

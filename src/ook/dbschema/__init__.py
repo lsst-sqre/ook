@@ -1,10 +1,16 @@
 """SQLAlchemy database schema."""
 
 from .base import Base
-from .sdmschemaslinks import (
-    SqlSdmColumnLink,
-    SqlSdmSchemaLink,
-    SqlSdmTableLink,
-)
+from .links import SqlLink, SqlSdmColumnLink, SqlSdmSchemaLink, SqlSdmTableLink
+from .sdmschemas import SqlSdmColumn, SqlSdmSchema, SqlSdmTable
 
-__all__ = ["Base", "SqlSdmColumnLink", "SqlSdmSchemaLink", "SqlSdmTableLink"]
+__all__ = [
+    "Base",
+    "SqlLink",
+    "SqlSdmColumn",
+    "SqlSdmColumnLink",
+    "SqlSdmSchema",
+    "SqlSdmSchemaLink",
+    "SqlSdmTable",
+    "SqlSdmTableLink",
+]

@@ -16,8 +16,6 @@ from safir.github import GitHubAppClientFactory
 from sqlalchemy.ext.asyncio import AsyncEngine, async_scoped_session
 from structlog.stdlib import BoundLogger
 
-from ook.storage.sdmschemaslinkstore import SdmSchemasLinkStore
-
 from .config import config
 from .dependencies.algoliasearch import algolia_client_dependency
 from .kafkarouter import kafka_router
@@ -31,6 +29,8 @@ from .services.links import LinksService
 from .services.ltdmetadataservice import LtdMetadataService
 from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
 from .services.technoteingest import TechnoteIngestService
+from .storage.linkstore import LinkStore
+from .storage.sdmschemastore import SdmSchemasStore
 
 
 @dataclass(kw_only=True, frozen=True, slots=True)
@@ -183,9 +183,16 @@ class Factory:
             http_client=self.http_client,
         )
 
-    def create_sdm_schemas_link_store(self) -> SdmSchemasLinkStore:
-        """Create a SdmSchemasLinkStore (SQL store of SDM Schemas links)."""
-        return SdmSchemasLinkStore(
+    def create_link_store(self) -> LinkStore:
+        """Create a LinkStore (SQL store of documentation links)."""
+        return LinkStore(
+            session=self._session,
+            logger=self._logger,
+        )
+
+    def create_sdm_schemas_store(self) -> SdmSchemasStore:
+        """Create a SdmSchemasStore."""
+        return SdmSchemasStore(
             session=self._session,
             logger=self._logger,
         )
@@ -271,12 +278,13 @@ class Factory:
             logger=self._logger,
             http_client=self.http_client,
             gh_factory=self.create_github_client_factory(),
-            link_store=self.create_sdm_schemas_link_store(),
+            link_store=self.create_link_store(),
+            sdm_schemas_store=self.create_sdm_schemas_store(),
         )
 
     def create_links_service(self) -> LinksService:
         """Create a LinksService."""
         return LinksService(
             logger=self._logger,
-            sdm_schemas_link_store=self.create_sdm_schemas_link_store(),
+            link_store=self.create_link_store(),
         )

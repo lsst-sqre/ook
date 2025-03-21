@@ -76,6 +76,68 @@ class GitHubMocker:
             json=json.loads(blob_data),
         )
 
+        # Mock getting the blob for apdb_blob.json
+        blob_data = (sdm_data_dir / "apdb_blob.json").read_text()
+        self.router.get(
+            url="/repos/lsst/sdm_schemas/git/blobs/5e8b93c689bc95f4d548f76537377ef5e9a4d350"
+        ).respond(
+            json=json.loads(blob_data),
+        )
+
+        # Mock getting the blob for cdblatiss_blob.json
+        blob_data = (sdm_data_dir / "cdb_latiss_blob.json").read_text()
+        self.router.get(
+            url="/repos/lsst/sdm_schemas/git/blobs/c5e6c6d7756761d74a9aa33c6de79cfed506eb2c"
+        ).respond(
+            json=json.loads(blob_data),
+        )
+
+        # Mock getting the blob for cdb_lsstcomcam_blob.json
+        blob_data = (sdm_data_dir / "cdb_lsstcomcam_blob.json").read_text()
+        self.router.get(
+            url="/repos/lsst/sdm_schemas/git/blobs/e40b9e2155f25d61f66288fa2f1c5f3819729d0b"
+        ).respond(
+            json=json.loads(blob_data),
+        )
+
+        # Mock getting the blob for cdb_lsstcomcam_blob.json
+        blob_data = (sdm_data_dir / "cdb_lsstcomcamsim_blob.json").read_text()
+        self.router.get(
+            url="/repos/lsst/sdm_schemas/git/blobs/5e6042de0885c9059ad7f365b71bc78dc5a79611"
+        ).respond(
+            json=json.loads(blob_data),
+        )
+
+        # Mock getting the blob for cdb_startrackerfast_blob.json
+        blob_data = (
+            sdm_data_dir / "cdb_startrackerfast_blob.json"
+        ).read_text()
+        self.router.get(
+            url="/repos/lsst/sdm_schemas/git/blobs/5d263ae227e9b8c7e334872f2eb7cc10ec9803de"
+        ).respond(
+            json=json.loads(blob_data),
+        )
+
+        # Mock getting the blob for cdb_startrackernarrow_blob.json
+        blob_data = (
+            sdm_data_dir / "cdb_startrackernarrow_blob.json"
+        ).read_text()
+        self.router.get(
+            url="/repos/lsst/sdm_schemas/git/blobs/7c6eec3924b8e2f072b414b2b4e3a67b3c6e8ead"
+        ).respond(
+            json=json.loads(blob_data),
+        )
+
+        # Mock getting the blob for cdb_startrackerwise_blob.json
+        blob_data = (
+            sdm_data_dir / "cdb_startrackerwide_blob.json"
+        ).read_text()
+        self.router.get(
+            url="/repos/lsst/sdm_schemas/git/blobs/647727555e51da224ac81142c170843d6487b0a2"
+        ).respond(
+            json=json.loads(blob_data),
+        )
+
         # Mock getting the blob for dp02_dc2_blob.json
         blob_data = (sdm_data_dir / "dp02_dc2_blob.json").read_text()
         self.router.get(
@@ -104,6 +166,38 @@ class GitHubMocker:
         blob_data = (sdm_data_dir / "dp03_1yr_blob.json").read_text()
         self.router.get(
             url="/repos/lsst/sdm_schemas/git/blobs/e8d4603384bfecbb41b4a6958211385d8de7412b"
+        ).respond(
+            json=json.loads(blob_data),
+        )
+
+        # Mock getting the blob for hsc_blob.json
+        blob_data = (sdm_data_dir / "hsc_blob.json").read_text()
+        self.router.get(
+            url="/repos/lsst/sdm_schemas/git/blobs/e22ceff6006074c9ed5e4f74e6b174c3d0ca5c69"
+        ).respond(
+            json=json.loads(blob_data),
+        )
+
+        # Mock getting the blob for imsim_blob.json
+        blob_data = (sdm_data_dir / "imsim_blob.json").read_text()
+        self.router.get(
+            url="/repos/lsst/sdm_schemas/git/blobs/a698e6a8d242787971be456df1fd79b2bba21aca"
+        ).respond(
+            json=json.loads(blob_data),
+        )
+
+        # Mock getting the blob for obsloctap_blob.json
+        blob_data = (sdm_data_dir / "obsloctap_blob.json").read_text()
+        self.router.get(
+            url="/repos/lsst/sdm_schemas/git/blobs/4662004c391af1b28bde441371f570cf88608a49"
+        ).respond(
+            json=json.loads(blob_data),
+        )
+
+        # Mock getting the blob for oga_live_obscore.json
+        blob_data = (sdm_data_dir / "oga_live_obscore_blob.json").read_text()
+        self.router.get(
+            url="/repos/lsst/sdm_schemas/git/blobs/a0cd8939f59757eaf177a49dfa0ffda0450154e7"
         ).respond(
             json=json.loads(blob_data),
         )

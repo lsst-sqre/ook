@@ -4,20 +4,54 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-__all__ = ["SdmSchemaLink"]
+__all__ = ["Link", "SdmColumnLink", "SdmSchemaLink", "SdmTableLink"]
 
 
-@dataclass(slots=True)
-class SdmSchemaLink:
-    """A link to top-level SDM schema documentation."""
+@dataclass(slots=True, kw_only=True)
+class Link:
+    """A link to documentation."""
+
+    html_url: str
+    """The URL to the documentation page."""
+
+    title: str
+    """The title of the documentation."""
+
+    type: str
+    """The type of documentation."""
+
+    collection_title: str | None = None
+    """The title of the collection of documentation this link refers to."""
+
+
+@dataclass(slots=True, kw_only=True)
+class SdmSchemaLink(Link):
+    """A link to an SDM schema's documentation."""
 
     name: str
     """The name of the schema."""
 
-    html_url: str
-    """The URL to the schema's top-level documentation page."""
 
-    kind: str = "schema browser"
-    """The kind of documentation link."""
+@dataclass(slots=True, kw_only=True)
+class SdmTableLink(Link):
+    """A link to an SDM table's documentation."""
 
-    source_title: str = "Science Data Model Schemas"
+    schema_name: str
+    """The name of the schema."""
+
+    name: str
+    """The name of the table."""
+
+
+@dataclass(slots=True, kw_only=True)
+class SdmColumnLink(Link):
+    """A link to an SDM column's documentation."""
+
+    schema_name: str
+    """The name of the schema."""
+
+    table_name: str
+    """The name of the table."""
+
+    name: str
+    """The name of the column."""

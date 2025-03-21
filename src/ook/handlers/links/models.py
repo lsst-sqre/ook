@@ -6,9 +6,9 @@ from typing import Self
 
 from pydantic import AnyHttpUrl, BaseModel, Field
 
-from ook.domain.links import SdmSchemaLink
+from ook.domain.links import Link as DomainLink
 
-__all__ = ["EntityLinks", "Link"]
+__all__ = ["Link"]
 
 
 class Link(BaseModel):
@@ -16,36 +16,31 @@ class Link(BaseModel):
 
     url: AnyHttpUrl = Field(..., title="Documentation URL")
 
-    kind: str = Field(..., title="Kind of the documentation")
+    title: str = Field(
+        ...,
+        title="Title of the resource",
+        description=(
+            "The title of the page or section that this link references."
+        ),
+    )
 
-    source_title: str = Field(..., title="Title of the documentation source")
+    type: str = Field(..., title="Type of documentation")
+
+    collection_title: str | None = Field(
+        None,
+        title="Title of the documentation collection",
+        description=(
+            "For a link into a user guide, this would be the title of "
+            "the user guide itself."
+        ),
+    )
 
     @classmethod
-    def from_domain_model(cls, domain: SdmSchemaLink) -> Self:
+    def from_domain_link(cls, link: DomainLink) -> Self:
         """Create a `Link` from a `SdmSchemaLink` domain model."""
         return cls(
-            url=AnyHttpUrl(domain.html_url),
-            kind=domain.kind,
-            source_title=domain.source_title,
-        )
-
-
-class EntityLinks(BaseModel):
-    """A collection of links to a entity."""
-
-    name: str = Field(..., title="Name of the entity")
-
-    links: list[Link] = Field(..., title="Links to the entity")
-
-    self_url: AnyHttpUrl = Field(..., title="URL to this resource")
-
-    @classmethod
-    def from_domain_models(
-        cls, subject_name: str, domain: list[SdmSchemaLink], self_url: str
-    ) -> Self:
-        """Create a `SubjectLinks` from a `SdmSchemaLink` domain model."""
-        return cls(
-            name=subject_name,
-            links=[Link.from_domain_model(d) for d in domain],
-            self_url=AnyHttpUrl(self_url),
+            url=AnyHttpUrl(link.html_url),
+            title=link.title,
+            type=link.type,
+            collection_title=link.collection_title,
         )
