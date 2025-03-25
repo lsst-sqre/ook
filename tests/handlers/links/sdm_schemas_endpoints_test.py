@@ -12,7 +12,7 @@ from tests.support.github import GitHubMocker
 async def test_sdm_schemas_links(
     client: AsyncClient, mock_github: GitHubMocker
 ) -> None:
-    """Test ``/ook/links/domains/sdm-schemas`` endpoints."""
+    """Test ``/ook/links/domains/sdm`` endpoints."""
     mock_github.mock_sdm_schema_release_ingest()
 
     # Ingest the SDM schemas
@@ -23,7 +23,7 @@ async def test_sdm_schemas_links(
 
     # Get links to column docs for the dp02_dc2_catalogs schema's Visit table
     response = await client.get(
-        "/ook/links/domains/sdm-schemas/schemas/dp02_dc2_catalogs/tables/Visit/columns"
+        "/ook/links/domains/sdm/schemas/dp02_dc2_catalogs/tables/Visit/columns"
     )
     assert response.status_code == 200
     data = response.json()

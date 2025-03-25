@@ -28,8 +28,8 @@ column_name_path = Annotated[
 
 
 @router.get(
-    "/domains/sdm-schemas/schemas/{schema_name}",
-    summary="Documentation links for a SDM schema",
+    "/domains/sdm/schemas/{schema_name}",
+    summary="Documentation links for an SDM (Science Data Model) schema.",
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_schema_links(
@@ -53,8 +53,8 @@ async def get_sdm_schema_links(
 
 
 @router.get(
-    "/domains/sdm-schemas/schemas/{schema_name}/tables/{table_name}",
-    summary="Documentation links for an SDM table",
+    "/domains/sdm/schemas/{schema_name}/tables/{table_name}",
+    summary="Documentation links for an SDM (Science Data Model) table.",
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_schema_table_links(
@@ -82,8 +82,10 @@ async def get_sdm_schema_table_links(
 
 
 @router.get(
-    "/domains/sdm-schemas/schemas/{schema_name}/tables/{table_name}/columns",
-    summary="Documentation links to columns in an SDM table",
+    "/domains/sdm/schemas/{schema_name}/tables/{table_name}/columns",
+    summary=(
+        "Documentation links for columns in an SDM (Science Data Model) table."
+    ),
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_schema_column_links_for_table(
@@ -107,8 +109,8 @@ async def get_sdm_schema_column_links_for_table(
 
 
 @router.get(
-    "/domains/sdm-schemas/schemas/{schema_name}/tables/{table_name}/columns/{column_name}",
-    summary="Documentation links for an SDM table",
+    "/domains/sdm/schemas/{schema_name}/tables/{table_name}/columns/{column_name}",
+    summary="Documentation links for an SDM (Science Data Model) column.",
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_schema_column_links(

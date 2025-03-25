@@ -23,7 +23,7 @@ async def test_post_ingest_sdm_schemas(
 
     # Check links for a schema
     response = await client.get(
-        "/ook/links/domains/sdm-schemas/schemas/dp02_dc2_catalogs"
+        "/ook/links/domains/sdm/schemas/dp02_dc2_catalogs"
     )
     assert response.status_code == 200
     data = response.json()
@@ -36,7 +36,7 @@ async def test_post_ingest_sdm_schemas(
 
     # Check links for a table
     response = await client.get(
-        "/ook/links/domains/sdm-schemas/schemas/dp02_dc2_catalogs/tables/Object"
+        "/ook/links/domains/sdm/schemas/dp02_dc2_catalogs/tables/Object"
     )
     assert response.status_code == 200
     data = response.json()
@@ -49,7 +49,7 @@ async def test_post_ingest_sdm_schemas(
 
     # Check links for a column
     response = await client.get(
-        "/ook/links/domains/sdm-schemas/schemas/dp02_dc2_catalogs/tables/Visit/columns/ra"
+        "/ook/links/domains/sdm/schemas/dp02_dc2_catalogs/tables/Visit/columns/ra"
     )
     assert response.status_code == 200
     data = response.json()
