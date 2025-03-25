@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Path
 from safir.models import ErrorModel
 
 from ook.config import config
@@ -14,6 +14,18 @@ from .models import Link, SdmColumnLinks
 router = APIRouter(prefix=f"{config.path_prefix}/links", tags=["links"])
 """FastAPI router for the links API."""
 
+# Common path parameters
+
+schema_name_path = Annotated[
+    str, Path(title="Schema name", examples=["dp02_dc2_catalogs"])
+]
+
+table_name_path = Annotated[str, Path(title="Table name", examples=["Object"])]
+
+column_name_path = Annotated[
+    str, Path(title="Column name", examples=["detect_isPrimary"])
+]
+
 
 @router.get(
     "/domains/sdm-schemas/schemas/{schema_name}",
@@ -21,7 +33,7 @@ router = APIRouter(prefix=f"{config.path_prefix}/links", tags=["links"])
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_schema_links(
-    schema_name: str,
+    schema_name: schema_name_path,
     context: Annotated[RequestContext, Depends(context_dependency)],
 ) -> list[Link]:
     """Get documentation links for an SDM schema."""
@@ -46,8 +58,8 @@ async def get_sdm_schema_links(
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_schema_table_links(
-    schema_name: str,
-    table_name: str,
+    schema_name: schema_name_path,
+    table_name: table_name_path,
     context: Annotated[RequestContext, Depends(context_dependency)],
 ) -> list[Link]:
     logger = context.logger
@@ -75,8 +87,8 @@ async def get_sdm_schema_table_links(
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_schema_column_links_for_table(
-    schema_name: str,
-    table_name: str,
+    schema_name: schema_name_path,
+    table_name: table_name_path,
     context: Annotated[RequestContext, Depends(context_dependency)],
 ) -> list[SdmColumnLinks]:
     async with context.session.begin():
@@ -100,9 +112,9 @@ async def get_sdm_schema_column_links_for_table(
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_schema_column_links(
-    schema_name: str,
-    table_name: str,
-    column_name: str,
+    schema_name: schema_name_path,
+    table_name: table_name_path,
+    column_name: column_name_path,
     context: Annotated[RequestContext, Depends(context_dependency)],
 ) -> list[Link]:
     logger = context.logger
