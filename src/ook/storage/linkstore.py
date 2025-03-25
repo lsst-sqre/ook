@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 from safir.datetime import current_datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_scoped_session
@@ -15,7 +17,12 @@ from ook.dbschema.links import (
     SqlSdmTableLink,
 )
 from ook.dbschema.sdmschemas import SqlSdmColumn, SqlSdmSchema, SqlSdmTable
-from ook.domain.links import SdmColumnLink, SdmSchemaLink, SdmTableLink
+from ook.domain.links import (
+    SdmColumnLink,
+    SdmColumnLinksCollection,
+    SdmSchemaLink,
+    SdmTableLink,
+)
 
 __all__ = ["LinkStore", "SdmSchemaBulkLinks"]
 
@@ -112,6 +119,67 @@ class LinkStore:
                 collection_title=result.SqlLink.source_collection_title,
             )
             for result in results
+        ]
+
+    async def get_column_links_for_sdm_table(
+        self, schema_name: str, table_name: str
+    ) -> list[SdmColumnLinksCollection]:
+        """Get links for all columns in an SDM table."""
+        # Links for all columns in a table
+        results = (
+            await self._session.execute(
+                select(SqlSdmColumnLink, SqlLink, SqlSdmColumn)
+                .join(
+                    SqlSdmColumn,
+                    SqlSdmColumn.id == SqlSdmColumnLink.column_id,
+                )
+                .join(SqlSdmTable, SqlSdmTable.id == SqlSdmColumn.table_id)
+                .join(SqlSdmSchema, SqlSdmSchema.id == SqlSdmTable.schema_id)
+                .where(
+                    SqlSdmSchema.name == schema_name,
+                    SqlSdmTable.name == table_name,
+                )
+            )
+        ).fetchall()
+
+        # Columns in a table
+        columns = (
+            await self._session.execute(
+                select(SqlSdmColumn.name)
+                .join(SqlSdmTable)
+                .join(SqlSdmSchema)
+                .where(
+                    SqlSdmSchema.name == schema_name,
+                    SqlSdmTable.name == table_name,
+                )
+                .order_by(SqlSdmColumn.tap_column_index, SqlSdmColumn.name)
+            )
+        ).fetchall()
+
+        # Group links by column
+        links_by_column: dict[str, list[SdmColumnLink]] = defaultdict(list)
+        for result in results:
+            column_name = result.SqlSdmColumn.name
+            link = SdmColumnLink(
+                name=column_name,
+                table_name=table_name,
+                schema_name=schema_name,
+                html_url=result.SqlLink.html_url,
+                type=result.SqlLink.source_type,
+                title=result.SqlLink.source_title,
+                collection_title=result.SqlLink.source_collection_title,
+            )
+            links_by_column[column_name].append(link)
+
+        # Create collections for all columns, even those without links
+        return [
+            SdmColumnLinksCollection(
+                schema_name=schema_name,
+                table_name=table_name,
+                column_name=column.name,
+                links=links_by_column.get(column.name, []),
+            )
+            for column in columns
         ]
 
     async def update_sdm_schema_links(

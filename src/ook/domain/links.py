@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-__all__ = ["Link", "SdmColumnLink", "SdmSchemaLink", "SdmTableLink"]
+__all__ = [
+    "Link",
+    "SdmColumnLink",
+    "SdmColumnLinksCollection",
+    "SdmSchemaLink",
+    "SdmTableLink",
+]
 
 
 @dataclass(slots=True, kw_only=True)
@@ -55,3 +61,20 @@ class SdmColumnLink(Link):
 
     name: str
     """The name of the column."""
+
+
+@dataclass(slots=True, kw_only=True)
+class SdmColumnLinksCollection:
+    """A collection of links to SDM columns."""
+
+    schema_name: str
+    """The name of the schema."""
+
+    table_name: str
+    """The name of the table."""
+
+    column_name: str
+    """The name of the column."""
+
+    links: list[SdmColumnLink]
+    """The documentation links for the column."""

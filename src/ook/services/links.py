@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from structlog.stdlib import BoundLogger
 
-from ook.domain.links import SdmColumnLink, SdmSchemaLink, SdmTableLink
+from ook.domain.links import (
+    SdmColumnLink,
+    SdmColumnLinksCollection,
+    SdmSchemaLink,
+    SdmTableLink,
+)
 from ook.storage.linkstore import LinkStore
 
 __all__ = ["LinksService"]
@@ -49,3 +54,16 @@ class LinksService:
         if len(links) == 0:
             return None
         return links
+
+    async def get_column_links_for_sdm_table(
+        self, *, schema_name: str, table_name: str
+    ) -> list[SdmColumnLinksCollection] | None:
+        """Get links for all columns in an SDM table."""
+        link_collection = (
+            await self._link_store.get_column_links_for_sdm_table(
+                schema_name=schema_name, table_name=table_name
+            )
+        )
+        if len(link_collection) == 0:
+            return None
+        return link_collection

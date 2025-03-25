@@ -9,7 +9,7 @@ from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 from ook.exceptions import NotFoundError
 
-from .models import Link
+from .models import Link, SdmColumnLinks
 
 router = APIRouter(prefix=f"{config.path_prefix}/links", tags=["links"])
 """FastAPI router for the links API."""
@@ -67,6 +67,31 @@ async def get_sdm_schema_table_links(
                 f"schema {schema_name}."
             )
         return [Link.from_domain_link(link) for link in links]
+
+
+@router.get(
+    "/domains/sdm-schemas/schemas/{schema_name}/tables/{table_name}/columns",
+    summary="Documentation links to columns in an SDM table",
+    responses={404: {"description": "Not found", "model": ErrorModel}},
+)
+async def get_sdm_schema_column_links_for_table(
+    schema_name: str,
+    table_name: str,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[SdmColumnLinks]:
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        link_collection = await link_service.get_column_links_for_sdm_table(
+            schema_name=schema_name, table_name=table_name
+        )
+        if link_collection is None:
+            raise NotFoundError(
+                f"No links found for SDM columns in table "
+                f"{table_name} in schema {schema_name}."
+            )
+        return SdmColumnLinks.from_domain(
+            domain_collection=link_collection, request=context.request
+        )
 
 
 @router.get(
