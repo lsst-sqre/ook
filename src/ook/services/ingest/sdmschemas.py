@@ -105,8 +105,19 @@ class SdmSchemasIngestService:
             github_release = await self._gh_repo_store.get_latest_release(
                 **self._sdm_schemas_repo
             )
+        self._logger.info(
+            "Ingesting SDM schemas",
+            release_tag=github_release.tag_name,
+            github_owner=self._sdm_schemas_repo["owner"],
+            github_repo=self._sdm_schemas_repo["repo"],
+        )
         repo_tree = await self._gh_repo_store.get_recursive_git_tree(
             **self._sdm_schemas_repo, ref=github_release.tag_name
+        )
+        self._logger.info(
+            "Got SDM schemas tree",
+            is_truncated=repo_tree.truncated,
+            url=repo_tree.url,
         )
 
         # Ingest the SDM schemas into the SdmSchemasStore
@@ -119,9 +130,13 @@ class SdmSchemasIngestService:
         self, release: GitHubReleaseModel, repo_tree: RecursiveGitTreeModel
     ) -> None:
         """Ingest all schemas from a GitHub release."""
-        for schema_tree_item in repo_tree.glob(
-            "python/lsst/sdm/schemas/*.yaml"
-        ):
+        schema_items = repo_tree.glob("python/lsst/sdm/schemas/*.yaml")
+        self._logger.info(
+            "Found SDM schemas in release",
+            schema_count=len(schema_items),
+            schema_paths=[item.path for item in schema_items],
+        )
+        for schema_tree_item in schema_items:
             schema_blob = await self._get_tree_item_blob(schema_tree_item)
             schema_content = schema_blob.decode()
             self._logger.debug(
