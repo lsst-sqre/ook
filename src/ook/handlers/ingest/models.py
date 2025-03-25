@@ -71,5 +71,5 @@ class SdmSchemasIngestRequest(BaseModel):
             "The GitHub release tag to ingest. If not provided, "
             "the latest release will be ingested."
         ),
-        examples=["w.2025.04"],
+        examples=["w.2025.10"],
     )
