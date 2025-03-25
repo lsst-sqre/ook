@@ -161,6 +161,33 @@ def test(session: nox.Session) -> None:
             )
 
 
+@nox.session(name="run")
+def run(session: nox.Session) -> None:
+    """Run the application in development mode."""
+    from testcontainers.kafka import KafkaContainer
+    from testcontainers.postgres import PostgresContainer
+
+    _install(session)
+
+    with KafkaContainer().with_kraft() as kafka:
+        with PostgresContainer("postgres:16") as postgres:
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                }
+            )
+            session.run(
+                "uvicorn",
+                "ook.main:app",
+                "--reload",
+                env=env_vars,
+            )
+
+
 @nox.session
 def docs(session: nox.Session) -> None:
     """Build the docs."""
@@ -281,21 +308,3 @@ def update_deps(session: nox.Session) -> None:
     )
 
     print("\nTo refresh the development venv, run:\n\n\tnox -s init\n")
-
-
-@nox.session(name="run")
-def run(session: nox.Session) -> None:
-    """Run the application in development mode."""
-    from testcontainers.kafka import KafkaContainer
-
-    _install(session)
-
-    with KafkaContainer().with_kraft() as kafka:
-        session.run(
-            "uvicorn",
-            "ook.main:app",
-            "--reload",
-            env=_make_env_vars(
-                {"KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server()}
-            ),
-        )
