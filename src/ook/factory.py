@@ -271,7 +271,7 @@ class Factory:
         )
 
     async def create_sdm_schemas_ingest_service(
-        self,
+        self, github_owner: str, github_repo: str
     ) -> SdmSchemasIngestService:
         """Create an SdmSchemasIngestService."""
         return await SdmSchemasIngestService.create(
@@ -280,6 +280,8 @@ class Factory:
             gh_factory=self.create_github_client_factory(),
             link_store=self.create_link_store(),
             sdm_schemas_store=self.create_sdm_schemas_store(),
+            github_owner=github_owner,
+            github_repo=github_repo,
         )
 
     def create_links_service(self) -> LinksService:

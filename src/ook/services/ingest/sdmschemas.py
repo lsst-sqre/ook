@@ -52,6 +52,8 @@ class SdmSchemasIngestService:
         github_repo_store: GitHubRepoStore,
         sdm_schemas_store: SdmSchemasStore,
         link_store: LinkStore,
+        github_owner: str,
+        github_repo: str,
     ) -> None:
         self._logger = logger
         self._http_client = http_client
@@ -60,7 +62,7 @@ class SdmSchemasIngestService:
         self._sdm_schemas_store = sdm_schemas_store
 
         # Shortcut to the source repository for sdm_schemas
-        self._sdm_schemas_repo = {"owner": "lsst", "repo": "sdm_schemas"}
+        self._sdm_schemas_repo = {"owner": github_owner, "repo": github_repo}
         self._md_parser = MarkdownIt("gfm-like").use(front_matter_plugin)
 
     @classmethod
@@ -71,13 +73,15 @@ class SdmSchemasIngestService:
         link_store: LinkStore,
         sdm_schemas_store: SdmSchemasStore,
         gh_factory: GitHubAppClientFactory,
+        github_owner: str,
+        github_repo: str,
     ) -> Self:
         """Create a new instance of the service with a GitHubRepoStore
         authenticated to the sdm_schemas repository.
         """
         gh_repo_store = GitHubRepoStore(
             github_client=await gh_factory.create_installation_client_for_repo(
-                owner="lsst", repo="sdm_schemas"
+                owner=github_owner, repo=github_repo
             ),
             logger=logger,
         )
@@ -87,19 +91,26 @@ class SdmSchemasIngestService:
             github_repo_store=gh_repo_store,
             link_store=link_store,
             sdm_schemas_store=sdm_schemas_store,
+            github_owner=github_owner,
+            github_repo=github_repo,
         )
 
-    async def ingest(self) -> None:
+    async def ingest(self, release_tag: str | None = None) -> None:
         """Ingest schemas and links to sdm-schemas.lsst.io."""
-        latest_release = await self._gh_repo_store.get_latest_release(
-            **self._sdm_schemas_repo
-        )
+        if release_tag is not None:
+            github_release = await self._gh_repo_store.get_release_by_tag(
+                **self._sdm_schemas_repo, tag=release_tag
+            )
+        else:
+            github_release = await self._gh_repo_store.get_latest_release(
+                **self._sdm_schemas_repo
+            )
         repo_tree = await self._gh_repo_store.get_recursive_git_tree(
-            **self._sdm_schemas_repo, ref=latest_release.tag_name
+            **self._sdm_schemas_repo, ref=github_release.tag_name
         )
 
         # Ingest the SDM schemas into the SdmSchemasStore
-        await self._ingest_all_schemas(latest_release, repo_tree)
+        await self._ingest_all_schemas(github_release, repo_tree)
 
         # Ingest the schema browser links into the LinkStore
         await self._ingest_schema_browser_links(repo_tree)

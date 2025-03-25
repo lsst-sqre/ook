@@ -12,7 +12,10 @@ from ook.factory import Factory
 
 @pytest.mark.asyncio
 async def test_load_schema(factory: Factory) -> None:
-    ingest_service = await factory.create_sdm_schemas_ingest_service()
+    ingest_service = await factory.create_sdm_schemas_ingest_service(
+        github_owner="lsst",
+        github_repo="sdm_schemas",
+    )
 
     schema_yaml = (
         Path(__file__).parent.parent.parent
@@ -35,7 +38,10 @@ async def test_load_schema(factory: Factory) -> None:
 
 @pytest.mark.asyncio
 async def test_list_deployed_schemas(factory: Factory) -> None:
-    ingest_service = await factory.create_sdm_schemas_ingest_service()
+    ingest_service = await factory.create_sdm_schemas_ingest_service(
+        github_owner="lsst",
+        github_repo="sdm_schemas",
+    )
 
     deployed_schemas_blob = GitHubBlobModel.model_validate_json(
         (

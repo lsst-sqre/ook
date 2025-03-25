@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Response
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 
-from .models import LtdIngestRequest
+from .models import LtdIngestRequest, SdmSchemasIngestRequest
 
 router = APIRouter(prefix=f"{config.path_prefix}/ingest", tags=["ingest"])
 """FastAPI router for all ingest handlers."""
@@ -61,6 +61,7 @@ async def post_ingest_ltd(
     summary="Ingest SDM schemas (doc links)",
 )
 async def post_ingest_sdm_schemas(
+    ingest_request: SdmSchemasIngestRequest,
     context: Annotated[RequestContext, Depends(context_dependency)],
 ) -> Response:
     """Trigger an ingest of SDM schemas."""
@@ -68,8 +69,11 @@ async def post_ingest_sdm_schemas(
     logger.info("Received request to ingest SDM schemas.")
     async with context.session.begin():
         ingest_service = (
-            await context.factory.create_sdm_schemas_ingest_service()
+            await context.factory.create_sdm_schemas_ingest_service(
+                github_owner=ingest_request.github_owner,
+                github_repo=ingest_request.github_repo,
+            )
         )
-        await ingest_service.ingest()
+        await ingest_service.ingest(ingest_request.github_release_tag)
         await context.session.commit()
     return Response(status_code=200)

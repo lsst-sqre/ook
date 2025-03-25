@@ -74,6 +74,18 @@ class GitHubRepoStore:
         )
         return GitHubReleaseModel.model_validate(response)
 
+    async def get_release_by_tag(
+        self, *, owner: str, repo: str, tag: str
+    ) -> GitHubReleaseModel:
+        """Get a release by its tag name.
+
+        https://docs.github.com/en/rest/releases/releases?apiVersion=2022-11-28#get-a-release-by-tag-name
+        """
+        response = await self._gh.getitem(
+            f"/repos/{owner}/{repo}/releases/tags/{tag}"
+        )
+        return GitHubReleaseModel.model_validate(response)
+
     async def get_recursive_git_tree(
         self, *, owner: str, repo: str, ref: str
     ) -> RecursiveGitTreeModel:

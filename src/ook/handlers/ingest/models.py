@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, model_validator
 
 __all__ = [
     "LtdIngestRequest",
+    "SdmSchemasIngestRequest",
 ]
 
 
@@ -45,3 +46,30 @@ class LtdIngestRequest(BaseModel):
                 ) from exc
 
         return self
+
+
+class SdmSchemasIngestRequest(BaseModel):
+    """Schema for `post_ingest_sdm_schemas`."""
+
+    github_owner: str = Field(
+        "lsst",
+        description=(
+            "The GitHub owner of the SDM schemas repository to ingest."
+        ),
+        examples=["lsst"],
+    )
+
+    github_repo: str = Field(
+        "sdm_schemas",
+        description="The GitHub repository of the SDM schemas to ingest.",
+        examples=["sdm_schemas"],
+    )
+
+    github_release_tag: str | None = Field(
+        None,
+        description=(
+            "The GitHub release tag to ingest. If not provided, "
+            "the latest release will be ingested."
+        ),
+        examples=["w.2025.04"],
+    )

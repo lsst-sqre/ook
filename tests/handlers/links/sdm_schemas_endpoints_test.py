@@ -16,7 +16,9 @@ async def test_sdm_schemas_links(
     mock_github.mock_sdm_schema_release_ingest()
 
     # Ingest the SDM schemas
-    response = await client.post("/ook/ingest/sdm-schemas")
+    response = await client.post(
+        "/ook/ingest/sdm-schemas", json={"github_release_tag": None}
+    )
     assert response.status_code == 200
 
     # Get links to column docs for the dp02_dc2_catalogs schema's Visit table

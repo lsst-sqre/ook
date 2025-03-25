@@ -16,7 +16,9 @@ async def test_post_ingest_sdm_schemas(
     mock_github.mock_sdm_schema_release_ingest()
 
     # Ingest the SDM schemas
-    response = await client.post("/ook/ingest/sdm-schemas")
+    response = await client.post(
+        "/ook/ingest/sdm-schemas", json={"github_release_tag": None}
+    )
     assert response.status_code == 200
 
     # Check links for a schema
