@@ -12,4 +12,7 @@ from .config import config
 __all__ = ["kafka_router"]
 
 
-kafka_router = KafkaRouter(**config.kafka.to_faststream_params())
+kafka_router = KafkaRouter(
+    schema_url=f"{config.path_prefix}/asyncapi",
+    **config.kafka.to_faststream_params(),
+)
