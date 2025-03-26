@@ -16,6 +16,7 @@ uvicorn[standard]
 pydantic >= 2.0.0
 pydantic_settings
 safir[db]
+alembic[tz]
 faststream[kafka]
 algoliasearch>=3.0,<4.0
 dataclasses-avroschema
