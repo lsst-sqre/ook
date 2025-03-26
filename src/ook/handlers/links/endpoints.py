@@ -29,14 +29,14 @@ column_name_path = Annotated[
 
 @router.get(
     "/domains/sdm/schemas/{schema_name}",
-    summary="Documentation links for an SDM (Science Data Model) schema.",
+    summary="Get an SDM schemas's doc links",
+    response_description="List of doc links for an SDM schema",
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_schema_links(
     schema_name: schema_name_path,
     context: Annotated[RequestContext, Depends(context_dependency)],
 ) -> list[Link]:
-    """Get documentation links for an SDM schema."""
     logger = context.logger
     logger.debug(
         "Received request to get documentation links for an SDM schema.",
@@ -54,7 +54,8 @@ async def get_sdm_schema_links(
 
 @router.get(
     "/domains/sdm/schemas/{schema_name}/tables/{table_name}",
-    summary="Documentation links for an SDM (Science Data Model) table.",
+    summary="Get an SDM table's doc links",
+    response_description="List of doc links for an SDM table",
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_schema_table_links(
@@ -83,9 +84,8 @@ async def get_sdm_schema_table_links(
 
 @router.get(
     "/domains/sdm/schemas/{schema_name}/tables/{table_name}/columns",
-    summary=(
-        "Documentation links for columns in an SDM (Science Data Model) table."
-    ),
+    summary="List SDM columns' doc links",
+    response_description="List of SDM columns and their doc links",
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_schema_column_links_for_table(
@@ -110,7 +110,8 @@ async def get_sdm_schema_column_links_for_table(
 
 @router.get(
     "/domains/sdm/schemas/{schema_name}/tables/{table_name}/columns/{column_name}",
-    summary="Documentation links for an SDM (Science Data Model) column.",
+    summary="Get an SDM column's doc links",
+    response_description="List of doc links for an SDM column",
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_schema_column_links(
