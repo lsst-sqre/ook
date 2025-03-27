@@ -10,7 +10,11 @@ import structlog
 from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from safir.database import create_database_engine, initialize_database
+from safir.database import (
+    create_database_engine,
+    initialize_database,
+    stamp_database_async,
+)
 
 from ook import main
 from ook.config import config
@@ -55,6 +59,7 @@ async def app(
         config.database_url, config.database_password
     )
     await initialize_database(engine, logger, schema=Base.metadata, reset=True)
+    await stamp_database_async(engine)
     await engine.dispose()
     async with LifespanManager(main.app):
         yield main.app

@@ -47,6 +47,13 @@ FROM base-image AS runtime-image
 
 COPY scripts/start-service.sh /start-frontend.sh
 
+# Copy the Alembic configuration and migrations, and set that path as the
+# working directory so that Alembic can be run with a simple entry command
+# and no extra configuration.
+COPY --from=install-image /workdir/alembic.ini /app/alembic.ini
+COPY --from=install-image /workdir/alembic /app/alembic
+WORKDIR /app
+
 # Create a non-root user.
 RUN useradd --create-home appuser
 
@@ -55,6 +62,10 @@ COPY --from=install-image /opt/venv /opt/venv
 
 # Make sure we use the virtualenv.
 ENV PATH="/opt/venv/bin:$PATH"
+
+# Set environment variable for Alembic config; other variables are set
+# via Kubernetes.
+ENV OOK_ALEMBIC_CONFIG_PATH="/app/alembic.ini"
 
 # Switch to the non-root user.
 USER appuser

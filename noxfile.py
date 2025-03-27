@@ -1,3 +1,6 @@
+import subprocess
+from pathlib import Path
+
 import nox
 
 # Default sessions
@@ -159,6 +162,90 @@ def test(session: nox.Session) -> None:
                 *session.posargs,
                 env=env_vars,
             )
+
+
+@nox.session(name="dump-db-schema")
+def dump_db_schema(session: nox.Session) -> None:
+    """Initialize then dump the database schema."""
+    from testcontainers.kafka import KafkaContainer
+    from testcontainers.postgres import PostgresContainer
+
+    _install(session)
+
+    with KafkaContainer().with_kraft() as kafka:
+        with PostgresContainer("postgres:16") as postgres:
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                }
+            )
+
+            session.run(
+                "ook",
+                "init",
+                "--alembic-config-path",
+                "alembic.ini",
+                env=env_vars,
+            )
+
+            # Use docker exec to run pg_dump inside the container
+            # We're not using the -s flag to dump schema only because we want
+            # to include the data for the alembic version table.
+            dump_command = [
+                "docker",
+                "exec",
+                postgres._container.id,  # noqa: SLF001
+                "pg_dump",
+                "-U",
+                postgres.username,
+                postgres.dbname,
+            ]
+
+            with (
+                Path(__file__)
+                .parent.joinpath("alembic/schema_dump.sql")
+                .open("wb") as f
+            ):
+                subprocess.run(dump_command, stdout=f, check=True)
+
+            session.log("Database schema dumped to alembic/schema_dump.sql")
+
+
+@nox.session(name="alembic")
+def alembic(session: nox.Session) -> None:
+    """Run alembic commands."""
+    from testcontainers.kafka import KafkaContainer
+    from testcontainers.postgres import PostgresContainer
+
+    if not Path(__file__).parent.joinpath("alembic/schema_dump.sql").exists():
+        session.error(
+            "Database schema dump not found at alembic/schema_dump.sql. Run "
+            "nox -s dump-db-schema with the earlier version of the "
+            "application first."
+        )
+
+    _install(session)
+
+    with KafkaContainer().with_kraft() as kafka:
+        with PostgresContainer("postgres:16") as postgres:
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                }
+            )
+            postgres.with_volume_mapping(
+                Path(__file__).parent / "alembic/schema_dump.sql",
+                "/docker-entrypoint-initdb.d/schema.sql",
+            )
+            session.run("alembic", *session.posargs, env=env_vars)
 
 
 @nox.session(name="run")
