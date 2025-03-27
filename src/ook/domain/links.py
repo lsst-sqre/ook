@@ -6,10 +6,13 @@ from dataclasses import dataclass
 
 __all__ = [
     "Link",
+    "LinksCollection",
     "SdmColumnLink",
     "SdmColumnLinksCollection",
     "SdmSchemaLink",
+    "SdmSchemaLinksCollection",
     "SdmTableLink",
+    "SdmTableLinksCollection",
 ]
 
 
@@ -64,7 +67,34 @@ class SdmColumnLink(Link):
 
 
 @dataclass(slots=True, kw_only=True)
-class SdmColumnLinksCollection:
+class LinksCollection[T: Link]:
+    """A collection of links to documentation of a specific entity."""
+
+    links: list[T]
+    """The documentation links."""
+
+
+@dataclass(slots=True, kw_only=True)
+class SdmSchemaLinksCollection(LinksCollection[SdmSchemaLink]):
+    """A collection of links to an SDM schema."""
+
+    schema_name: str
+    """The name of the schema."""
+
+
+@dataclass(slots=True, kw_only=True)
+class SdmTableLinksCollection(LinksCollection[SdmTableLink]):
+    """A collection of links to an SDM table."""
+
+    schema_name: str
+    """The name of the schema."""
+
+    table_name: str
+    """The name of the table."""
+
+
+@dataclass(slots=True, kw_only=True)
+class SdmColumnLinksCollection(LinksCollection[SdmColumnLink]):
     """A collection of links to SDM columns."""
 
     schema_name: str
@@ -75,6 +105,3 @@ class SdmColumnLinksCollection:
 
     column_name: str
     """The name of the column."""
-
-    links: list[SdmColumnLink]
-    """The documentation links for the column."""

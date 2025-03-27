@@ -30,6 +30,12 @@ async def test_sdm_schemas_links(
     # Should be 15 columns in the Visit table
     assert len(data) == 15
     # Check that the columns are ordered by tap index
-    assert data[0]["column_name"] == "visit"
+    assert data[0]["entity"]["column_name"] == "visit"
+    assert data[0]["entity"]["table_name"] == "Visit"
+    assert data[0]["entity"]["schema_name"] == "dp02_dc2_catalogs"
+    assert data[0]["entity"]["domain"] == "sdm"
+    assert data[0]["entity"]["domain_type"] == "column"
+    assert data[0]["entity"]["self_url"].endswith(
+        "/tables/Visit/columns/visit"
+    )
     assert data[0]["links"][0]["url"].endswith("#Visit.visit")
-    assert data[0]["self_url"].endswith("/tables/Visit/columns/visit")
