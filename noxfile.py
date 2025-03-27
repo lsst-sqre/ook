@@ -221,7 +221,9 @@ def alembic(session: nox.Session) -> None:
     from testcontainers.kafka import KafkaContainer
     from testcontainers.postgres import PostgresContainer
 
-    if not Path(__file__).parent.joinpath("alembic/schema_dump.sql").exists():
+    sql_dump_path = Path(__file__).parent.joinpath("alembic/schema_dump.sql")
+
+    if not sql_dump_path.exists():
         session.error(
             "Database schema dump not found at alembic/schema_dump.sql. Run "
             "nox -s dump-db-schema with the earlier version of the "
@@ -242,7 +244,7 @@ def alembic(session: nox.Session) -> None:
                 }
             )
             postgres.with_volume_mapping(
-                Path(__file__).parent / "alembic/schema_dump.sql",
+                sql_dump_path,
                 "/docker-entrypoint-initdb.d/schema.sql",
             )
             session.run("alembic", *session.posargs, env=env_vars)
