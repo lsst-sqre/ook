@@ -268,6 +268,13 @@ def run(session: nox.Session) -> None:
                 }
             )
             session.run(
+                "ook",
+                "init",
+                "--alembic-config-path",
+                "alembic.ini",
+                env=env_vars,
+            )
+            session.run(
                 "uvicorn",
                 "ook.main:app",
                 "--reload",
