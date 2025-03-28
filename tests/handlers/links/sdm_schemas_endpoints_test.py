@@ -29,7 +29,8 @@ async def test_sdm_schemas_links(
     data = response.json()
     # Should be 15 columns in the Visit table
     assert len(data) == 15
-    # Check that the columns are ordered by tap index
+    # Look at shape of the first column, which should be the visit column
+    # as ordered by tap index
     assert data[0]["entity"]["column_name"] == "visit"
     assert data[0]["entity"]["table_name"] == "Visit"
     assert data[0]["entity"]["schema_name"] == "dp02_dc2_catalogs"
@@ -39,3 +40,27 @@ async def test_sdm_schemas_links(
         "/tables/Visit/columns/visit"
     )
     assert data[0]["links"][0]["url"].endswith("#Visit.visit")
+
+    # Get links_to tables' docs for the dp02_dc2_catalogs schema
+    response = await client.get(
+        "/ook/links/domains/sdm/schemas/dp02_dc2_catalogs/tables"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    # Should be 11 tables in the dp02_dc2_catalogs schema
+    assert len(data) == 11
+    # Check that the tables are ordered by tap index (first should be Object)
+    # TODO(jonathansick): This is not the case, but it should be
+    assert data[0]["entity"]["table_name"] == "CcdVisit"
+    # Check that all entities are tables
+    assert all(entity["entity"]["domain_type"] == "table" for entity in data)
+
+    # Get links to tables' and columns' docs for the dp02_dc2_catalogs schema
+    response = await client.get(
+        "/ook/links/domains/sdm/schemas/dp02_dc2_catalogs/tables?include_columns=true"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    # Check that there are both tables and columns
+    assert any(entity["entity"]["domain_type"] == "table" for entity in data)
+    assert any(entity["entity"]["domain_type"] == "column" for entity in data)

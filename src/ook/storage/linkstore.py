@@ -22,6 +22,7 @@ from ook.domain.links import (
     SdmColumnLinksCollection,
     SdmSchemaLink,
     SdmTableLink,
+    SdmTableLinksCollection,
 )
 
 __all__ = ["LinkStore", "SdmSchemaBulkLinks"]
@@ -181,6 +182,60 @@ class LinkStore:
             )
             for column in columns
         ]
+
+    async def get_sdm_links_scoped_to_schema(
+        self, *, schema_name: str, include_columns: bool
+    ) -> list[SdmTableLinksCollection | SdmColumnLinksCollection]:
+        """Get links to entities scoped to an SDM schema."""
+        # Get table links
+        statement = (
+            select(SqlSdmTableLink, SqlLink, SqlSdmTable)
+            .join(SqlSdmTable, SqlSdmTable.id == SqlSdmTableLink.table_id)
+            .join(SqlSdmSchema, SqlSdmSchema.id == SqlSdmTable.schema_id)
+            .where(SqlSdmSchema.name == schema_name)
+            .order_by(SqlSdmTable.tap_table_index, SqlSdmTable.name)
+        )
+        results = (await self._session.execute(statement)).fetchall()
+        if not results:
+            return []
+
+        # Group links by table
+        links_by_table: dict[str, list[SdmTableLink]] = defaultdict(list)
+        table_names = set()
+        for result in results:
+            table_name = result.SqlSdmTable.name
+            table_names.add(table_name)
+            link = SdmTableLink(
+                name=table_name,
+                schema_name=schema_name,
+                html_url=result.SqlLink.html_url,
+                type=result.SqlLink.source_type,
+                title=result.SqlLink.source_title,
+                collection_title=result.SqlLink.source_collection_title,
+            )
+            links_by_table[table_name].append(link)
+
+        # Create collections for all tables
+        result_collections: list[
+            SdmTableLinksCollection | SdmColumnLinksCollection
+        ] = [
+            SdmTableLinksCollection(
+                schema_name=schema_name,
+                table_name=table_name,
+                links=links_by_table.get(table_name, []),
+            )
+            for table_name in sorted(links_by_table.keys())
+        ]
+
+        # If include_columns is True, fetch column links for all tables
+        if include_columns:
+            for table_name in sorted(table_names):
+                column_collections = await self.get_column_links_for_sdm_table(
+                    schema_name=schema_name, table_name=table_name
+                )
+                result_collections.extend(column_collections)
+
+        return result_collections
 
     async def update_sdm_schema_links(
         self, schema_links: SdmSchemaBulkLinks

@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Depends, Path, Query
 from safir.models import ErrorModel
 
 from ook.config import config
@@ -50,6 +50,37 @@ async def get_sdm_schema_links(
                 f"No links found for SDM schema {schema_name}."
             )
         return [Link.from_domain_link(link) for link in links]
+
+
+@router.get(
+    "/domains/sdm/schemas/{schema_name}/tables",
+    summary="List SDM tables' doc links scoped to a schema",
+    response_description="List of SDM tables and columns and their doc links",
+    responses={404: {"description": "Not found", "model": ErrorModel}},
+)
+async def get_sdm_links_scoped_to_schema(
+    schema_name: schema_name_path,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+    *,
+    include_columns: Annotated[
+        bool,
+        Query(title="Include columns"),
+    ] = False,
+) -> list[SdmLinks]:
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        entities_collection = (
+            await link_service.get_table_links_for_sdm_schema(
+                schema_name=schema_name, include_columns=include_columns
+            )
+        )
+        if entities_collection is None:
+            raise NotFoundError(
+                f"No links found for SDM tables in schema {schema_name!r}."
+            )
+        return SdmLinks.from_domain(
+            domain_collection=entities_collection, request=context.request
+        )
 
 
 @router.get(
