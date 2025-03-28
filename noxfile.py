@@ -1,3 +1,5 @@
+import base64
+import os
 import subprocess
 from pathlib import Path
 
@@ -57,7 +59,9 @@ xN+SqGqDTKDC22j00S7jcvCaa1qadn1qbdfukZ4NXv7E2d/LO0Y2Kkc=
 """
 
 
-def _make_env_vars(overrides: dict[str, str] | None = None) -> dict[str, str]:
+def _make_env_vars(
+    overrides: dict[str, str] | None = None, *, use_local_secrets: bool = False
+) -> dict[str, str]:
     """Create a environment variable dictionary for test sessions that enables
     the app to start up.
     """
@@ -75,6 +79,21 @@ def _make_env_vars(overrides: dict[str, str] | None = None) -> dict[str, str]:
     }
     if overrides:
         env_vars.update(overrides)
+
+    # Load available environment variables - typically from a .env file and
+    # the 1Password CLI. See `square.env` for more details.
+    if use_local_secrets:
+        if github_app_id := os.getenv("OOK_GITHUB_APP_ID"):
+            env_vars["OOK_GITHUB_APP_ID"] = github_app_id
+        if github_app_private_key := os.getenv("OOK_GITHUB_APP_PRIVATE_KEY"):
+            decoded_key = base64.b64decode(github_app_private_key).decode(
+                "utf-8"
+            )
+            env_vars["OOK_GITHUB_APP_PRIVATE_KEY"] = decoded_key
+        if algolia_app_id := os.getenv("ALGOLIA_APP_ID"):
+            env_vars["ALGOLIA_APP_ID"] = algolia_app_id
+        if algolia_api_key := os.getenv("ALGOLIA_API_KEY"):
+            env_vars["ALGOLIA_API_KEY"] = algolia_api_key
     return env_vars
 
 
@@ -267,7 +286,8 @@ def run(session: nox.Session) -> None:
                         driver="asyncpg"
                     ),
                     "OOK_DATABASE_PASSWORD": postgres.password,
-                }
+                },
+                use_local_secrets=True,
             )
             session.run(
                 "ook",
