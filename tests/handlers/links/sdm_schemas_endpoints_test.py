@@ -64,3 +64,12 @@ async def test_sdm_schemas_links(
     # Check that there are both tables and columns
     assert any(entity["entity"]["domain_type"] == "table" for entity in data)
     assert any(entity["entity"]["domain_type"] == "column" for entity in data)
+
+    # Get links to all schemas
+    response = await client.get("/ook/links/domains/sdm/schemas")
+    assert response.status_code == 200
+    data = response.json()
+    # should be 2 schemas with links
+    assert len(data) == 2
+    # Check that all entities are schemas
+    assert all(entity["entity"]["domain_type"] == "schema" for entity in data)

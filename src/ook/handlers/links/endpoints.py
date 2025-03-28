@@ -28,6 +28,42 @@ column_name_path = Annotated[
 
 
 @router.get(
+    "/domains/sdm/schemas",
+    summary="List SDM schemas' doc links",
+    response_description="List of SDM schemas and their doc links",
+    responses={404: {"description": "Not found", "model": ErrorModel}},
+)
+async def get_sdm_links(
+    context: Annotated[RequestContext, Depends(context_dependency)],
+    *,
+    include_tables: Annotated[
+        bool,
+        Query(
+            title="Include tables",
+            description="Whether to include tables in the response",
+        ),
+    ] = False,
+    include_columns: Annotated[
+        bool,
+        Query(
+            title="Include columns",
+            description="Whether to include columns in the response",
+        ),
+    ] = False,
+) -> list[SdmLinks]:
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        entities_collection = await link_service.get_sdm_links(
+            include_tables=include_tables, include_columns=include_columns
+        )
+        if entities_collection is None:
+            raise NotFoundError("No links found for SDM schemas.")
+        return SdmLinks.from_domain(
+            domain_collection=entities_collection, request=context.request
+        )
+
+
+@router.get(
     "/domains/sdm/schemas/{schema_name}",
     summary="Get an SDM schemas's doc links",
     response_description="List of doc links for an SDM schema",

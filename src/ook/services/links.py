@@ -8,6 +8,7 @@ from ook.domain.links import (
     SdmColumnLink,
     SdmColumnLinksCollection,
     SdmSchemaLink,
+    SdmSchemaLinksCollection,
     SdmTableLink,
     SdmTableLinksCollection,
 )
@@ -78,6 +79,25 @@ class LinksService:
                 schema_name=schema_name,
                 include_columns=include_columns,
             )
+        )
+        if len(sdm_entities_link_collection) == 0:
+            return None
+        return sdm_entities_link_collection
+
+    async def get_sdm_links(
+        self, *, include_tables: bool, include_columns: bool
+    ) -> (
+        list[
+            SdmSchemaLinksCollection
+            | SdmTableLinksCollection
+            | SdmColumnLinksCollection
+        ]
+        | None
+    ):
+        """Get links for all SDM schemas."""
+        sdm_entities_link_collection = await self._link_store.get_sdm_links(
+            include_tables=include_tables,
+            include_columns=include_columns,
         )
         if len(sdm_entities_link_collection) == 0:
             return None
