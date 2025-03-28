@@ -90,6 +90,16 @@ app = FastAPI(
     description=metadata("ook")["Summary"],
     version=version("ook"),
     openapi_url=f"{config.path_prefix}/openapi.json",
+    openapi_tags=[
+        {
+            "name": "links",
+            "description": "Documentation links for different domains.",
+        },
+        {
+            "name": "ingest",
+            "description": "Ingest endpoints for Ook.",
+        },
+    ],
     docs_url=f"{config.path_prefix}/docs",
     redoc_url=f"{config.path_prefix}/redoc",
     lifespan=lifespan,
@@ -116,6 +126,7 @@ def create_openapi() -> str:
         title=app.title,
         version=app.version,
         description=app.description,
+        tags=app.openapi_tags,
         routes=app.routes,
     )
     return json.dumps(spec)
