@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Literal, Self
 
-from fastapi import Request
+from fastapi import FastAPI, Request
 from pydantic import AnyHttpUrl, BaseModel, Field
+from starlette.routing import Route
 
 from ook.domain.links import Link as DomainLink
 from ook.domain.links import (
@@ -23,6 +24,80 @@ __all__ = [
     "SdmSchemaLinkedEntityInfo",
     "SdmTableLinkedEntityInfo",
 ]
+
+
+def get_path_template(app: FastAPI, name: str) -> str | None:
+    """Get the URI template for a FastAPI path operation by name.
+
+    Parameters
+    ----------
+    app
+        The FastAPI application
+    name
+        The name of the path operation
+
+    Returns
+    -------
+    str | None
+        The URI template as a string, or None if not found
+    """
+    for route in app.routes:
+        if isinstance(route, Route) and route.name == name:
+            return route.path
+    return None
+
+
+def get_all_path_templates(app: FastAPI) -> dict[str, str]:
+    """Get all URI templates for a FastAPI application.
+
+    Parameters
+    ----------
+    app
+        The FastAPI application
+
+    Returns
+    -------
+    dict
+        A dict mapping route names to URI templates
+    """
+    templates = {}
+    for route in app.routes:
+        if isinstance(route, Route) and route.name:
+            templates[route.name] = route.path
+    return templates
+
+
+class SdmDomainInfo(BaseModel):
+    """Links for the SDM domain APIs."""
+
+    entities: dict[str, str] = Field(
+        ...,
+        title="Entities in the SDM domain",
+    )
+
+    collections: dict[str, str] = Field(
+        ..., title="Collections in the SDM domain"
+    )
+
+    @classmethod
+    def create(cls, request: Request) -> Self:
+        """Create a `SdmDomainInfo` object."""
+        base_url = str(request.base_url)
+        base_url = base_url.removesuffix("/")
+        paths = get_all_path_templates(request.app)
+        return cls(
+            entities={
+                "schema": base_url + paths["get_sdm_schema_links"],
+                "table": base_url + paths["get_sdm_schema_table_links"],
+                "column": base_url + paths["get_sdm_schema_column_links"],
+            },
+            collections={
+                "schemas": base_url + paths["get_sdm_links"],
+                "tables": base_url + paths["get_sdm_links_scoped_to_schema"],
+                "columns": base_url
+                + paths["get_sdm_schema_column_links_for_table"],
+            },
+        )
 
 
 class Link(BaseModel):

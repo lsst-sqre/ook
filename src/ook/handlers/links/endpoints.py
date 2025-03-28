@@ -9,7 +9,7 @@ from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 from ook.exceptions import NotFoundError
 
-from .models import Link, SdmLinks
+from .models import Link, SdmDomainInfo, SdmLinks
 
 router = APIRouter(prefix=f"{config.path_prefix}/links", tags=["links"])
 """FastAPI router for the links API."""
@@ -25,6 +25,18 @@ table_name_path = Annotated[str, Path(title="Table name", examples=["Object"])]
 column_name_path = Annotated[
     str, Path(title="Column name", examples=["detect_isPrimary"])
 ]
+
+
+@router.get(
+    "/domains/sdm",
+    summary="Information about the SDM domain",
+    response_description="Information about the SDM domain",
+)
+async def get_sdm_domain_info(
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> SdmDomainInfo:
+    """Get information about the SDM domain."""
+    return SdmDomainInfo.create(request=context.request)
 
 
 @router.get(

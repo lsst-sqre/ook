@@ -9,6 +9,19 @@ from tests.support.github import GitHubMocker
 
 
 @pytest.mark.asyncio
+async def test_sdm_domain_info(
+    client: AsyncClient, mock_github: GitHubMocker
+) -> None:
+    """Test ``/ook/links/domains/sdm`` info endpoint."""
+    # Get info about the SDM domain
+    response = await client.get("/ook/links/domains/sdm")
+    assert response.status_code == 200
+    data = response.json()
+    assert "entities" in data
+    assert "collections" in data
+
+
+@pytest.mark.asyncio
 async def test_sdm_schemas_links(
     client: AsyncClient, mock_github: GitHubMocker
 ) -> None:
