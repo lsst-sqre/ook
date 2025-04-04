@@ -4,34 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import httpx
 import pytest
-import structlog
-from gidgethub.httpx import GitHubAPI
 from safir.github.models import GitHubBlobModel
 
-from ook.services.ingest.sdmschemas import SdmSchemasIngestService
-from ook.storage.github import GitHubRepoStore
-
-
-@pytest.fixture
-def github_repo_store(http_client: httpx.AsyncClient) -> GitHubRepoStore:
-    logger = structlog.get_logger("ook")
-    return GitHubRepoStore(
-        github_client=GitHubAPI(http_client, "lsst-sqre"),
-        logger=logger,
-    )
+from ook.factory import Factory
 
 
 @pytest.mark.asyncio
-async def test_load_schema(
-    http_client: httpx.AsyncClient, github_repo_store: GitHubRepoStore
-) -> None:
-    logger = structlog.get_logger("ook")
-    ingest_service = SdmSchemasIngestService(
-        logger=logger,
-        http_client=http_client,
-        github_repo_store=github_repo_store,
+async def test_load_schema(factory: Factory) -> None:
+    ingest_service = await factory.create_sdm_schemas_ingest_service(
+        github_owner="lsst",
+        github_repo="sdm_schemas",
     )
 
     schema_yaml = (
@@ -41,25 +24,25 @@ async def test_load_schema(
         / "sdm_schemas"
         / "dp02_dc.yaml"
     ).read_text()
-    schemas = list(
-        ingest_service._load_schema(
-            docs_url="https://sdm-schemas.lsst.io/dp02.html",
-            yaml_content=schema_yaml,
-        )
+    schema = ingest_service._load_schema(
+        yaml_content=schema_yaml,
+        github_owner="lsst",
+        github_repo="sdm_schemas",
+        github_ref="w.2025.04",
+        github_path="python/lsst/sdm/schemas/dp02_dc.yaml",
     )
-    assert len(schemas) > 0
+    assert schema.name == "dp02_dc2_catalogs"
+    assert schema.tables is not None
+    assert len(schema.tables) > 0
 
 
 @pytest.mark.asyncio
-async def test_list_deployed_schemas(
-    http_client: httpx.AsyncClient, github_repo_store: GitHubRepoStore
-) -> None:
-    logger = structlog.get_logger("ook")
-    ingest_service = SdmSchemasIngestService(
-        logger=logger,
-        http_client=http_client,
-        github_repo_store=github_repo_store,
+async def test_list_deployed_schemas(factory: Factory) -> None:
+    ingest_service = await factory.create_sdm_schemas_ingest_service(
+        github_owner="lsst",
+        github_repo="sdm_schemas",
     )
+
     deployed_schemas_blob = GitHubBlobModel.model_validate_json(
         (
             Path(__file__).parent.parent.parent

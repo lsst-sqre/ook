@@ -6,6 +6,7 @@ from pydantic import AnyHttpUrl, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings
 from safir.kafka import KafkaConnectionSettings
 from safir.logging import LogLevel, Profile
+from safir.pydantic import EnvAsyncPostgresDsn
 
 __all__ = [
     "Configuration",
@@ -53,6 +54,18 @@ class Configuration(BaseSettings):
         description=(
             "The base URL of the environment where the application is hosted."
         ),
+    )
+
+    database_url: EnvAsyncPostgresDsn = Field(
+        ...,
+        validation_alias="OOK_DATABASE_URL",
+        description="Database URL.",
+    )
+
+    database_password: SecretStr = Field(
+        ...,
+        validation_alias="OOK_DATABASE_PASSWORD",
+        description="Database password.",
     )
 
     kafka: KafkaConnectionSettings = Field(

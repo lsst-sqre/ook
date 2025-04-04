@@ -11,7 +11,6 @@ from ook.dependencies.consumercontext import (
 )
 from ook.domain.algoliarecord import DocumentSourceType
 from ook.domain.kafka import LtdUrlIngestV2
-from ook.factory import Factory
 from ook.kafkarouter import kafka_router
 
 __all__ = ["handle_ltd_document_ingest"]
@@ -34,7 +33,7 @@ async def handle_ltd_document_ingest(
         "Starting processing of LTD document ingest request.",
     )
 
-    factory = await Factory.create(logger=logger)
+    factory = context.factory
 
     content_type = message.content_type
 

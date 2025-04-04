@@ -1,25 +1,16 @@
-"""Models for the external handler."""
+"""Models for the ingest API."""
 
 from __future__ import annotations
 
 import re
 from typing import Self
 
-from pydantic import AnyHttpUrl, BaseModel, Field, model_validator
-from safir.metadata import Metadata as SafirMetadata
+from pydantic import BaseModel, Field, model_validator
 
 __all__ = [
-    "IndexResponse",
     "LtdIngestRequest",
+    "SdmSchemasIngestRequest",
 ]
-
-
-class IndexResponse(BaseModel):
-    """Metadata returned by the external root URL of the application."""
-
-    metadata: SafirMetadata = Field(..., title="Package metadata")
-
-    api_docs: AnyHttpUrl = Field(..., title="API documentation URL")
 
 
 class LtdIngestRequest(BaseModel):
@@ -55,3 +46,30 @@ class LtdIngestRequest(BaseModel):
                 ) from exc
 
         return self
+
+
+class SdmSchemasIngestRequest(BaseModel):
+    """Schema for `post_ingest_sdm_schemas`."""
+
+    github_owner: str = Field(
+        "lsst",
+        description=(
+            "The GitHub owner of the SDM schemas repository to ingest."
+        ),
+        examples=["lsst"],
+    )
+
+    github_repo: str = Field(
+        "sdm_schemas",
+        description="The GitHub repository of the SDM schemas to ingest.",
+        examples=["sdm_schemas"],
+    )
+
+    github_release_tag: str | None = Field(
+        None,
+        description=(
+            "The GitHub release tag to ingest. If not provided, "
+            "the latest release will be ingested."
+        ),
+        examples=["w.2025.10"],
+    )

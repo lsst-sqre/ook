@@ -298,14 +298,6 @@
       "url": "https://api.github.com/repos/lsst/sdm_schemas/git/blobs/3006764abf6a17ef353fd36cb988277518ef446c"
     },
     {
-      "type": "blob",
-      "mode": "100644",
-      "path": "browser/apdb.md",
-      "sha": "66f2ee97fb56bb6cd99fa6c20906dd6390a43b89",
-      "size": 242,
-      "url": "https://api.github.com/repos/lsst/sdm_schemas/git/blobs/66f2ee97fb56bb6cd99fa6c20906dd6390a43b89"
-    },
-    {
       "type": "tree",
       "mode": "040000",
       "path": "browser/assets",
@@ -345,54 +337,6 @@
     {
       "type": "blob",
       "mode": "100644",
-      "path": "browser/cdb_latiss.md",
-      "sha": "53288a77789ad7b63dec7f272911aefaa149ee39",
-      "size": 239,
-      "url": "https://api.github.com/repos/lsst/sdm_schemas/git/blobs/53288a77789ad7b63dec7f272911aefaa149ee39"
-    },
-    {
-      "type": "blob",
-      "mode": "100644",
-      "path": "browser/cdb_lsstcomcam.md",
-      "sha": "807cf0338650f94071a7a4114a71b43ef83aa8d6",
-      "size": 129,
-      "url": "https://api.github.com/repos/lsst/sdm_schemas/git/blobs/807cf0338650f94071a7a4114a71b43ef83aa8d6"
-    },
-    {
-      "type": "blob",
-      "mode": "100644",
-      "path": "browser/cdb_lsstcomcamsim.md",
-      "sha": "09793ba67b89e2cd4b1228eefab0ab519c2bef8f",
-      "size": 268,
-      "url": "https://api.github.com/repos/lsst/sdm_schemas/git/blobs/09793ba67b89e2cd4b1228eefab0ab519c2bef8f"
-    },
-    {
-      "type": "blob",
-      "mode": "100644",
-      "path": "browser/cdb_startrackerfast.md",
-      "sha": "8290daf4f39455e03ddaf29aefbf9590016bad5c",
-      "size": 139,
-      "url": "https://api.github.com/repos/lsst/sdm_schemas/git/blobs/8290daf4f39455e03ddaf29aefbf9590016bad5c"
-    },
-    {
-      "type": "blob",
-      "mode": "100644",
-      "path": "browser/cdb_startrackernarrow.md",
-      "sha": "304a6e060e9aac48ce4821f50d9c450fbb0fc276",
-      "size": 143,
-      "url": "https://api.github.com/repos/lsst/sdm_schemas/git/blobs/304a6e060e9aac48ce4821f50d9c450fbb0fc276"
-    },
-    {
-      "type": "blob",
-      "mode": "100644",
-      "path": "browser/cdb_startrackerwide.md",
-      "sha": "274c713104d181785a5e889272cfe2fc32b4ff91",
-      "size": 139,
-      "url": "https://api.github.com/repos/lsst/sdm_schemas/git/blobs/274c713104d181785a5e889272cfe2fc32b4ff91"
-    },
-    {
-      "type": "blob",
-      "mode": "100644",
       "path": "browser/dp02.md",
       "sha": "6f7ae30cf2e14075a479164d2d23fc0a046a78bd",
       "size": 235,
@@ -413,22 +357,6 @@
       "sha": "b76aa02653d95e62704d920c2d725e54e3e2a8c0",
       "size": 696,
       "url": "https://api.github.com/repos/lsst/sdm_schemas/git/blobs/b76aa02653d95e62704d920c2d725e54e3e2a8c0"
-    },
-    {
-      "type": "blob",
-      "mode": "100644",
-      "path": "browser/hsc.md",
-      "sha": "3005b505b5dd8671413cf20ba83a9ae6e96e6325",
-      "size": 318,
-      "url": "https://api.github.com/repos/lsst/sdm_schemas/git/blobs/3005b505b5dd8671413cf20ba83a9ae6e96e6325"
-    },
-    {
-      "type": "blob",
-      "mode": "100644",
-      "path": "browser/imsim.md",
-      "sha": "4957dee5caec707e84354ba28eb0b57776199153",
-      "size": 310,
-      "url": "https://api.github.com/repos/lsst/sdm_schemas/git/blobs/4957dee5caec707e84354ba28eb0b57776199153"
     },
     {
       "type": "blob",

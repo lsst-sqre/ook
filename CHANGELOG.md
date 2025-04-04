@@ -2,7 +2,24 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.11.0'></a>
+
+## 0.11.0 (2025-04-04)
+
+### New features
+
+- New Links API, available at `/ook/links`, that provides documentation links to Observatory and survey entities across different domains. This Links API is described in [SQR-086](https://sqr-086.lsst.io). Initially the Links API supports links to documentation about the Science Domain Model (SDM) schemas, tables, and columns.
+- A new endpoint, `/ook/ingest/sdm-schemas` triggers an ingest of links for schema, table, and column entities in the https://github.com/lsst/sdm_schemas repository to targets in https://sdm-schemas.lsst.io. This endpoint is being developed towards the creation of a links API service, see [SQR-086](https://sqr-086.lsst.io).
+
+### Other changes
+
+- Adopt Faststream 0.5, dropping an earlier pin on Faststream 0.4.
+- Adopt UV in the Docker build.
+- Ook now uses a Postgres database to maintain datasets. Initially Postgres tables are used to store the SDM schemas as well as links for the Links API. The Postgres database is managed by Alembic, and the database schema is maintained with SQLAlchemy. The `OOK_DATABASE_URL` and `OOK_DATABASE_PASSWORD` environment variables configure the connection to this database.
+- The nox `run` session can now run with roundtable-dev credentials from 1Password for testing the application locally. See `square.env` for details.
+
 <a id='changelog-0.10.0'></a>
+
 ## 0.10.0 (2024-08-14)
 
 ### New features
@@ -18,6 +35,7 @@
 - Switch to [testcontainers](https://testcontainers.com) for running Kafka during test sessions. The Kafka brokers is automatically started by the `nox` sessions.
 
 <a id='changelog-0.9.1'></a>
+
 ## 0.9.1 (2024-01-29)
 
 ### Bug fixes
@@ -25,6 +43,7 @@
 - If a technote doesn't have the `og:article:modified_time` then Ook falls back to using the current time of ingest. This fallback is to meet the schema for the www.lsst.io website, and ideally documents should always set modification time metadata.
 
 <a id='changelog-0.9.0'></a>
+
 ## 0.9.0 (2023-09-26)
 
 ### New features
@@ -32,6 +51,7 @@
 - Added support for ingesting Technotes (as generated with the technote.lsst.io framework). These technotes are generated with Sphinx, but embed metadata in common formats like Highwire Press and OpenGraph. This new technote format replaces the original technote format, although the original technotes are still supported by Ook.
 
 <a id='changelog-0.8.0'></a>
+
 ## 0.8.0 (2023-09-06)
 
 ### New features
@@ -39,6 +59,7 @@
 - Add a new `ook ingest-updated` command to queue ingest tasks for all LTD projects that have updated within a specified time period. This command is intended to be run as a Kubernetes cron job. Once push-based queueing from LTD is available on the roundtable-prod Kubernetes cluster this command can be deprecated.
 
 <a id='changelog-0.7.1'></a>
+
 ## 0.7.1 (2023-09-05)
 
 ### Bug fixes
@@ -48,6 +69,7 @@
 - Fix typo in creating records for Lander content types (`source_update_time` and `source_update_timestamp` fields).
 
 <a id='changelog-0.7.0'></a>
+
 ## 0.7.0 (2023-08-31)
 
 ### New features

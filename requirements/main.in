@@ -15,7 +15,8 @@ uvicorn[standard]
 # Other dependencies.
 pydantic >= 2.0.0
 pydantic_settings
-safir
+safir[db]
+alembic[tz]
 faststream[kafka]
 algoliasearch>=3.0,<4.0
 dataclasses-avroschema

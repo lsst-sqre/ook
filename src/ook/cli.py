@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
+import subprocess
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -11,9 +13,15 @@ import click
 import structlog
 from algoliasearch.search_client import SearchClient
 from safir.asyncio import run_with_asyncio
+from safir.database import (
+    create_database_engine,
+    is_database_current,
+    stamp_database,
+)
 from safir.logging import configure_logging
 
 from ook.config import config
+from ook.database import init_database
 from ook.domain.algoliarecord import MinimalDocumentModel
 from ook.factory import Factory
 from ook.services.algoliadocindex import AlgoliaDocIndexService
@@ -54,6 +62,59 @@ def help(ctx: click.Context, topic: None | str, **kw: Any) -> None:
         if not ctx.parent:
             raise RuntimeError("help called without topic or parent")
         click.echo(ctx.parent.get_help())
+
+
+@main.command()
+@click.option(
+    "--alembic-config-path",
+    envvar="OOK_ALEMBIC_CONFIG_PATH",
+    type=click.Path(path_type=Path),
+    help="Alembic configuration file.",
+)
+@click.option(
+    "--reset", is_flag=True, help="Delete all existing database data."
+)
+def init(*, alembic_config_path: Path, reset: bool) -> None:
+    """Initialize the SQL database storage."""
+    logger = structlog.get_logger("ook")
+    logger.debug("Initializing database")
+    asyncio.run(init_database(config, logger, reset=reset))
+    stamp_database(alembic_config_path)
+    logger.debug("Finished initializing data stores")
+
+
+@main.command()
+@click.option(
+    "--alembic-config-path",
+    envvar="OOK_ALEMBIC_CONFIG_PATH",
+    type=click.Path(path_type=Path),
+    help="Alembic configuration file.",
+)
+def update_db_schema(*, alembic_config_path: Path) -> None:
+    """Update the SQL database schema."""
+    subprocess.run(
+        ["alembic", "upgrade", "head"],
+        check=True,
+        cwd=str(alembic_config_path.parent),
+    )
+
+
+@main.command()
+@click.option(
+    "--alembic-config-path",
+    envvar="OOK_ALEMBIC_CONFIG_PATH",
+    type=click.Path(path_type=Path),
+    help="Alembic configuration file.",
+)
+@run_with_asyncio
+async def validate_db_schema(*, alembic_config_path: Path) -> None:
+    """Validate that the SQL database schema is current."""
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    logger = structlog.get_logger("ook")
+    if not await is_database_current(engine, logger, alembic_config_path):
+        raise click.ClickException("Database schema is not current")
 
 
 @main.command()
@@ -113,11 +174,17 @@ async def audit(*, reingest: bool = False) -> None:
         )
     ):
         raise click.UsageError("Algolia credentials not set in environment.")
-    async with Factory.create_standalone(logger=logger) as factory:
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    async with Factory.create_standalone(
+        logger=logger, engine=engine
+    ) as factory:
         algolia_audit_service = factory.create_algolia_audit_service()
         await algolia_audit_service.audit_missing_documents(
             ingest_missing=reingest
         )
+    await engine.dispose()
 
 
 @main.command(name="ingest-updated")
@@ -130,11 +197,17 @@ async def audit(*, reingest: bool = False) -> None:
 async def ingest_updated(*, window: str) -> None:
     logger = structlog.get_logger("ook")
     window_timedelta = parse_timedelta(window)
-    async with Factory.create_standalone(logger=logger) as factory:
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    async with Factory.create_standalone(
+        logger=logger, engine=engine
+    ) as factory:
         classification_service = factory.create_classification_service()
         await classification_service.queue_ingest_for_updated_ltd_projects(
             window_timedelta
         )
+    await engine.dispose()
 
 
 timespan_pattern = re.compile(

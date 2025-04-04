@@ -1,4 +1,4 @@
-"""Tests for the example.handlers.external module and routes."""
+"""Tests for the /ook/ endpoints."""
 
 from __future__ import annotations
 

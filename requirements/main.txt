@@ -4,7 +4,7 @@ aiofiles==23.2.1
     # via python-schema-registry-client
 aiohappyeyeballs==2.6.1
     # via aiohttp
-aiohttp==3.11.13
+aiohttp==3.11.14
     # via -r requirements/main.in
 aiokafka==0.12.0
     # via
@@ -13,12 +13,15 @@ aiokafka==0.12.0
 aiosignal==1.3.2
     # via aiohttp
 alembic==1.15.1
-    # via lsst-felis
+    # via
+    #   -r requirements/main.in
+    #   lsst-felis
+    #   safir
 algoliasearch==3.0.0
     # via -r requirements/main.in
 annotated-types==0.7.0
     # via pydantic
-anyio==4.8.0
+anyio==4.9.0
     # via
     #   fast-depends
     #   faststream
@@ -29,13 +32,15 @@ astropy==7.0.1
     # via
     #   lsst-felis
     #   lsst-utils
-astropy-iers-data==0.2025.3.10.0.29.26
+astropy-iers-data==0.2025.3.24.0.35.32
     # via astropy
 async-timeout==3.0.1
     # via
     #   -r requirements/main.in
     #   aiokafka
-attrs==25.2.0
+asyncpg==0.30.0
+    # via safir
+attrs==25.3.0
     # via
     #   aiohttp
     #   jsonschema
@@ -72,13 +77,13 @@ dataclasses-avroschema==0.65.10
     #   safir
 dateparser==1.2.1
     # via -r requirements/main.in
-deepdiff==8.3.0
+deepdiff==8.4.2
     # via lsst-felis
 deprecated==1.2.18
     # via lsst-utils
 fast-depends==2.4.12
     # via faststream
-fastapi==0.115.11
+fastapi==0.115.12
     # via
     #   -r requirements/main.in
     #   safir
@@ -86,7 +91,7 @@ fastavro==1.10.0
     # via
     #   dataclasses-avroschema
     #   python-schema-registry-client
-faststream==0.5.35
+faststream==0.5.37
     # via
     #   -r requirements/main.in
     #   safir
@@ -96,6 +101,8 @@ frozenlist==1.5.0
     #   aiosignal
 gidgethub==5.3.0
     # via safir
+greenlet==3.1.1
+    # via sqlalchemy
 h11==0.14.0
     # via
     #   httpcore
@@ -122,11 +129,11 @@ jsonschema-specifications==2024.10.1
     # via jsonschema
 linkify-it-py==2.0.3
     # via markdown-it-py
-lsst-felis==29.2025.1000
+lsst-felis==29.2025.1200
     # via -r requirements/main.in
-lsst-resources==28.2025.900
+lsst-resources==29.2025.1200
     # via lsst-felis
-lsst-utils==28.2025.900
+lsst-utils==29.2025.1200
     # via
     #   lsst-felis
     #   lsst-resources
@@ -144,11 +151,11 @@ mdit-py-plugins==0.4.2
     # via markdown-it-py
 mdurl==0.1.2
     # via markdown-it-py
-multidict==6.1.0
+multidict==6.2.0
     # via
     #   aiohttp
     #   yarl
-numpy==2.2.3
+numpy==2.2.4
     # via
     #   astropy
     #   lsst-felis
@@ -160,7 +167,7 @@ packaging==24.2
     # via
     #   aiokafka
     #   astropy
-propcache==0.3.0
+propcache==0.3.1
     # via
     #   aiohttp
     #   yarl
@@ -192,13 +199,13 @@ python-dateutil==2.9.0.post0
     # via
     #   dataclasses-avroschema
     #   dateparser
-python-dotenv==1.0.1
+python-dotenv==1.1.0
     # via
     #   pydantic-settings
     #   uvicorn
 python-schema-registry-client==2.6.0
     # via safir
-pytz==2025.1
+pytz==2025.2
     # via dateparser
 pyyaml==6.0.2
     # via
@@ -214,7 +221,7 @@ regex==2024.11.6
     # via dateparser
 requests==2.32.3
     # via algoliasearch
-rpds-py==0.23.1
+rpds-py==0.24.0
     # via
     #   jsonschema
     #   referencing
@@ -222,7 +229,7 @@ safir==10.0.0
     # via -r requirements/main.in
 safir-logging==10.0.0
     # via safir
-sentry-sdk==2.22.0
+sentry-sdk==2.24.1
     # via safir
 six==1.17.0
     # via python-dateutil
@@ -234,6 +241,7 @@ sqlalchemy==2.0.39
     # via
     #   alembic
     #   lsst-felis
+    #   safir
 starlette==0.46.1
     # via
     #   -r requirements/main.in
@@ -243,9 +251,9 @@ structlog==25.2.0
     # via
     #   safir
     #   safir-logging
-threadpoolctl==3.5.0
+threadpoolctl==3.6.0
     # via lsst-utils
-typing-extensions==4.12.2
+typing-extensions==4.13.0
     # via
     #   aiokafka
     #   alembic
@@ -257,6 +265,8 @@ typing-extensions==4.12.2
     #   pydantic-core
     #   referencing
     #   sqlalchemy
+tzdata==2025.2
+    # via alembic
 tzlocal==5.3.1
     # via dateparser
 uc-micro-py==1.0.3

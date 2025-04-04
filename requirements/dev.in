@@ -23,4 +23,4 @@ types-dateparser
 types-PyYAML
 documenteer[guide]
 autodoc_pydantic
-testcontainers[kafka]
+testcontainers[kafka,postgres]

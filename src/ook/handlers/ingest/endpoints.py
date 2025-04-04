@@ -1,47 +1,21 @@
-"""Handlers for the app's external root endpoints, ``/ook/``."""
+"""Endpoints for /ook/ingest/ APIs."""
 
 import asyncio
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, Response
-from pydantic import AnyHttpUrl
-from safir.metadata import get_metadata
+from fastapi import APIRouter, Depends, Response
 
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 
-from .models import IndexResponse, LtdIngestRequest
+from .models import LtdIngestRequest, SdmSchemasIngestRequest
 
-__all__ = ["external_router", "get_index"]
-
-external_router = APIRouter()
-"""FastAPI router for all external handlers."""
+router = APIRouter(prefix=f"{config.path_prefix}/ingest", tags=["ingest"])
+"""FastAPI router for all ingest handlers."""
 
 
-@external_router.get(
-    "/",
-    response_model_exclude_none=True,
-    summary="Application metadata",
-)
-async def get_index(
-    request: Request,
-) -> IndexResponse:
-    """GET metadata about the application."""
-    metadata = get_metadata(
-        package_name="ook",
-        application_name=config.name,
-    )
-    # Construct these URLs; this doesn't use request.url_for because the
-    # endpoints are in other FastAPI "apps".
-    doc_url = request.url.replace(path=f"/{config.path_prefix}/redoc")
-    return IndexResponse(
-        metadata=metadata,
-        api_docs=AnyHttpUrl(str(doc_url)),
-    )
-
-
-@external_router.post(
-    "/ingest/ltd",
+@router.post(
+    "/ltd",
     summary="Ingest a project in LSST the Docs",
     response_model=None,
 )
@@ -82,16 +56,24 @@ async def post_ingest_ltd(
     return Response(status_code=202)
 
 
-@external_router.post(
-    "/ingest/sdm-schemas",
+@router.post(
+    "/sdm-schemas",
     summary="Ingest SDM schemas (doc links)",
 )
 async def post_ingest_sdm_schemas(
+    ingest_request: SdmSchemasIngestRequest,
     context: Annotated[RequestContext, Depends(context_dependency)],
 ) -> Response:
     """Trigger an ingest of SDM schemas."""
     logger = context.logger
     logger.info("Received request to ingest SDM schemas.")
-    ingest_service = await context.factory.create_sdm_schemas_ingest_service()
-    await ingest_service.ingest()
+    async with context.session.begin():
+        ingest_service = (
+            await context.factory.create_sdm_schemas_ingest_service(
+                github_owner=ingest_request.github_owner,
+                github_repo=ingest_request.github_repo,
+            )
+        )
+        await ingest_service.ingest(ingest_request.github_release_tag)
+        await context.session.commit()
     return Response(status_code=200)
