@@ -42,21 +42,24 @@ class LinkStore:
         self, schema_name: str
     ) -> list[SdmSchemaLink]:
         """Get links for an SDM Schema."""
-        results = (
-            await self._session.execute(
-                select(SqlSdmSchemaLink, SqlLink)
-                .join(SqlSdmSchema)
-                .where(SqlSdmSchema.name == schema_name)
+        stmt = (
+            select(
+                SqlSdmSchema.name,
+                SqlLink.html_url,
+                SqlLink.source_type.label("type"),
+                SqlLink.source_title.label("title"),
+                SqlLink.source_collection_title.label("collection_title"),
             )
-        ).fetchall()
+            .select_from(SqlSdmSchemaLink)
+            .join(SqlSdmSchema)
+            .where(SqlSdmSchema.name == schema_name)
+        )
+        results = (await self._session.execute(stmt)).fetchall()
 
         return [
-            SdmSchemaLink(
-                name=schema_name,
-                html_url=result.SqlLink.html_url,
-                type=result.SqlLink.source_type,
-                title=result.SqlLink.source_title,
-                collection_title=result.SqlLink.source_collection_title,
+            SdmSchemaLink.model_validate(
+                result,
+                from_attributes=True,
             )
             for result in results
         ]
@@ -65,26 +68,29 @@ class LinkStore:
         self, schema_name: str, table_name: str
     ) -> list[SdmTableLink]:
         """Get links for an SDM Table."""
-        results = (
-            await self._session.execute(
-                select(SqlSdmTableLink, SqlLink)
-                .join(SqlSdmTable, SqlSdmTable.id == SqlSdmTableLink.table_id)
-                .join(SqlSdmSchema, SqlSdmSchema.id == SqlSdmTable.schema_id)
-                .where(
-                    SqlSdmSchema.name == schema_name,
-                    SqlSdmTable.name == table_name,
-                )
+        stmt = (
+            select(
+                SqlSdmTable.name.label("name"),
+                SqlSdmSchema.name.label("schema_name"),
+                SqlLink.html_url,
+                SqlLink.source_type.label("type"),
+                SqlLink.source_title.label("title"),
+                SqlLink.source_collection_title.label("collection_title"),
             )
-        ).fetchall()
+            .select_from(SqlSdmTableLink)
+            .join(SqlSdmTable, SqlSdmTable.id == SqlSdmTableLink.table_id)
+            .join(SqlSdmSchema, SqlSdmSchema.id == SqlSdmTable.schema_id)
+            .where(
+                SqlSdmSchema.name == schema_name,
+                SqlSdmTable.name == table_name,
+            )
+        )
+        results = (await self._session.execute(stmt)).fetchall()
 
         return [
-            SdmTableLink(
-                name=table_name,
-                schema_name=schema_name,
-                html_url=result.SqlLink.html_url,
-                type=result.SqlLink.source_type,
-                title=result.SqlLink.source_title,
-                collection_title=result.SqlLink.source_collection_title,
+            SdmTableLink.model_validate(
+                result,
+                from_attributes=True,
             )
             for result in results
         ]
@@ -93,32 +99,39 @@ class LinkStore:
         self, schema_name: str, table_name: str, column_name: str
     ) -> list[SdmColumnLink]:
         """Get links for an SDM Column."""
+        stmt = (
+            select(
+                SqlSdmColumn.name.label("name"),
+                SqlSdmTable.name.label("table_name"),
+                SqlSdmSchema.name.label("schema_name"),
+                SqlLink.html_url,
+                SqlLink.source_type.label("type"),
+                SqlLink.source_title.label("title"),
+                SqlLink.source_collection_title.label("collection_title"),
+            )
+            .select_from(SqlSdmColumnLink)
+            .join(
+                SqlSdmColumn,
+                SqlSdmColumn.id == SqlSdmColumnLink.column_id,
+            )
+            .join(SqlSdmTable, SqlSdmTable.id == SqlSdmColumn.table_id)
+            .join(SqlSdmSchema, SqlSdmSchema.id == SqlSdmTable.schema_id)
+            .where(
+                SqlSdmSchema.name == schema_name,
+                SqlSdmTable.name == table_name,
+                SqlSdmColumn.name == column_name,
+            )
+        )
         results = (
             await self._session.execute(
-                select(SqlSdmColumnLink, SqlLink)
-                .join(
-                    SqlSdmColumn,
-                    SqlSdmColumn.id == SqlSdmColumnLink.column_id,
-                )
-                .join(SqlSdmTable, SqlSdmTable.id == SqlSdmColumn.table_id)
-                .join(SqlSdmSchema, SqlSdmSchema.id == SqlSdmTable.schema_id)
-                .where(
-                    SqlSdmSchema.name == schema_name,
-                    SqlSdmTable.name == table_name,
-                    SqlSdmColumn.name == column_name,
-                )
+                stmt,
             )
         ).fetchall()
 
         return [
-            SdmColumnLink(
-                name=column_name,
-                table_name=table_name,
-                schema_name=schema_name,
-                html_url=result.SqlLink.html_url,
-                type=result.SqlLink.source_type,
-                title=result.SqlLink.source_title,
-                collection_title=result.SqlLink.source_collection_title,
+            SdmColumnLink.model_validate(
+                result,
+                from_attributes=True,
             )
             for result in results
         ]
