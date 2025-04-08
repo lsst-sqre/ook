@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from safir.datetime import current_datetime
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_scoped_session
 from structlog.stdlib import BoundLogger
 
@@ -140,61 +140,61 @@ class LinkStore:
         self, schema_name: str, table_name: str
     ) -> list[SdmColumnLinksCollection]:
         """Get links for all columns in an SDM table."""
-        # Links for all columns in a table
-        results = (
-            await self._session.execute(
-                select(SqlSdmColumnLink, SqlLink, SqlSdmColumn)
-                .join(
-                    SqlSdmColumn,
-                    SqlSdmColumn.id == SqlSdmColumnLink.column_id,
-                )
-                .join(SqlSdmTable, SqlSdmTable.id == SqlSdmColumn.table_id)
-                .join(SqlSdmSchema, SqlSdmSchema.id == SqlSdmTable.schema_id)
-                .where(
-                    SqlSdmSchema.name == schema_name,
-                    SqlSdmTable.name == table_name,
-                )
+        stmt = (
+            # Shape result to match SdmColumnsLinksCollection model
+            select(
+                SqlSdmColumn.name.label("column_name"),
+                SqlSdmTable.name.label("table_name"),
+                SqlSdmSchema.name.label("schema_name"),
+                func.json_agg(
+                    func.json_build_object(
+                        "name",
+                        SqlSdmColumn.name,
+                        "table_name",
+                        SqlSdmTable.name,
+                        "schema_name",
+                        SqlSdmSchema.name,
+                        "html_url",
+                        SqlLink.html_url,
+                        "type",
+                        SqlLink.source_type,
+                        "title",
+                        SqlLink.source_title,
+                        "collection_title",
+                        SqlLink.source_collection_title,
+                    )
+                ).label("links"),
             )
-        ).fetchall()
-
-        # Columns in a table
-        columns = (
-            await self._session.execute(
-                select(SqlSdmColumn.name)
-                .join(SqlSdmTable)
-                .join(SqlSdmSchema)
-                .where(
-                    SqlSdmSchema.name == schema_name,
-                    SqlSdmTable.name == table_name,
-                )
-                .order_by(SqlSdmColumn.tap_column_index, SqlSdmColumn.name)
+            # Providing a starting point for the query
+            .select_from(SqlSdmColumnLink)
+            .join(
+                SqlSdmColumn,
+                SqlSdmColumn.id == SqlSdmColumnLink.column_id,
             )
-        ).fetchall()
-
-        # Group links by column
-        links_by_column: dict[str, list[SdmColumnLink]] = defaultdict(list)
-        for result in results:
-            column_name = result.SqlSdmColumn.name
-            link = SdmColumnLink(
-                name=column_name,
-                table_name=table_name,
-                schema_name=schema_name,
-                html_url=result.SqlLink.html_url,
-                type=result.SqlLink.source_type,
-                title=result.SqlLink.source_title,
-                collection_title=result.SqlLink.source_collection_title,
+            .join(SqlSdmTable, SqlSdmTable.id == SqlSdmColumn.table_id)
+            .join(SqlSdmSchema, SqlSdmSchema.id == SqlSdmTable.schema_id)
+            .where(
+                SqlSdmSchema.name == schema_name,
+                SqlSdmTable.name == table_name,
             )
-            links_by_column[column_name].append(link)
+            # Explicit grouping to help with the aggregation
+            .group_by(
+                SqlSdmColumn.tap_column_index,
+                SqlSdmColumn.name,
+                SqlSdmTable.name,
+                SqlSdmSchema.name,
+            )
+            .order_by(SqlSdmColumn.tap_column_index, SqlSdmColumn.name)
+        )
+        results = (await self._session.execute(stmt)).fetchall()
+        if not results:
+            return []
 
-        # Create collections for all columns, even those without links
         return [
-            SdmColumnLinksCollection(
-                schema_name=schema_name,
-                table_name=table_name,
-                column_name=column.name,
-                links=links_by_column.get(column.name, []),
+            SdmColumnLinksCollection.model_validate(
+                result, from_attributes=True
             )
-            for column in columns
+            for result in results
         ]
 
     async def get_sdm_links_scoped_to_schema(
