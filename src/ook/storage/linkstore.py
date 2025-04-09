@@ -44,7 +44,7 @@ class LinkStore:
         """Get links for an SDM Schema."""
         stmt = (
             select(
-                SqlSdmSchema.name,
+                SqlSdmSchema.name.label("schema_name"),
                 SqlLink.html_url,
                 SqlLink.source_type.label("type"),
                 SqlLink.source_title.label("title"),
@@ -70,7 +70,7 @@ class LinkStore:
         """Get links for an SDM Table."""
         stmt = (
             select(
-                SqlSdmTable.name.label("name"),
+                SqlSdmTable.name.label("table_name"),
                 SqlSdmSchema.name.label("schema_name"),
                 SqlLink.html_url,
                 SqlLink.source_type.label("type"),
@@ -101,7 +101,7 @@ class LinkStore:
         """Get links for an SDM Column."""
         stmt = (
             select(
-                SqlSdmColumn.name.label("name"),
+                SqlSdmColumn.name.label("column_name"),
                 SqlSdmTable.name.label("table_name"),
                 SqlSdmSchema.name.label("schema_name"),
                 SqlLink.html_url,
@@ -148,7 +148,7 @@ class LinkStore:
                 SqlSdmSchema.name.label("schema_name"),
                 func.json_agg(
                     func.json_build_object(
-                        "name",
+                        "column_name",
                         SqlSdmColumn.name,
                         "table_name",
                         SqlSdmTable.name,
@@ -220,7 +220,7 @@ class LinkStore:
             table_name = result.SqlSdmTable.name
             table_names.add(table_name)
             link = SdmTableLink(
-                name=table_name,
+                table_name=table_name,
                 schema_name=schema_name,
                 html_url=result.SqlLink.html_url,
                 type=result.SqlLink.source_type,
@@ -277,7 +277,7 @@ class LinkStore:
         for result in results:
             schema_name = result.SqlSdmSchema.name
             link = SdmSchemaLink(
-                name=schema_name,
+                schema_name=schema_name,
                 html_url=result.SqlLink.html_url,
                 type=result.SqlLink.source_type,
                 title=result.SqlLink.source_title,
@@ -328,7 +328,7 @@ class LinkStore:
         schema = (
             await self._session.execute(
                 select(SqlSdmSchema).where(
-                    SqlSdmSchema.name == schema_links.schema.name
+                    SqlSdmSchema.name == schema_links.schema.schema_name
                 )
             )
         ).scalar_one()
@@ -367,7 +367,7 @@ class LinkStore:
                 await self._session.execute(
                     select(SqlSdmTable).where(
                         SqlSdmTable.schema_id == schema.id,
-                        SqlSdmTable.name == table_link.name,
+                        SqlSdmTable.name == table_link.table_name,
                     )
                 )
             ).scalar_one()
@@ -404,7 +404,7 @@ class LinkStore:
                     .where(
                         SqlSdmTable.schema_id == schema.id,
                         SqlSdmTable.name == column_link.table_name,
-                        SqlSdmColumn.name == column_link.name,
+                        SqlSdmColumn.name == column_link.column_name,
                     )
                 )
             ).scalar_one()

@@ -40,7 +40,7 @@ class Link(BaseModel):
 class SdmSchemaLink(Link):
     """A link to an SDM schema's documentation."""
 
-    name: str = Field(description="The name of the schema.")
+    schema_name: str = Field(description="The name of the schema.")
 
 
 class SdmTableLink(Link):
@@ -48,7 +48,7 @@ class SdmTableLink(Link):
 
     schema_name: str = Field(description="The name of the schema.")
 
-    name: str = Field(description="The name of the table.")
+    table_name: str = Field(description="The name of the table.")
 
 
 class SdmColumnLink(Link):
@@ -58,7 +58,7 @@ class SdmColumnLink(Link):
 
     table_name: str = Field(description="The name of the table.")
 
-    name: str = Field(description="The name of the column.")
+    column_name: str = Field(description="The name of the column.")
 
 
 class LinksCollection[T: Link](BaseModel):
