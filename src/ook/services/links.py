@@ -7,10 +7,9 @@ from structlog.stdlib import BoundLogger
 from ook.domain.links import (
     SdmColumnLink,
     SdmColumnLinksCollection,
+    SdmLinksCollection,
     SdmSchemaLink,
-    SdmSchemaLinksCollection,
     SdmTableLink,
-    SdmTableLinksCollection,
 )
 from ook.storage.linkstore import LinkStore
 
@@ -72,7 +71,7 @@ class LinksService:
 
     async def get_table_links_for_sdm_schema(
         self, *, schema_name: str, include_columns: bool
-    ) -> list[SdmTableLinksCollection | SdmColumnLinksCollection] | None:
+    ) -> list[SdmLinksCollection] | None:
         """Get links for all tables scoped to an SDM schema."""
         sdm_entities_link_collection = (
             await self._link_store.get_sdm_links_scoped_to_schema(
@@ -86,14 +85,7 @@ class LinksService:
 
     async def get_sdm_links(
         self, *, include_tables: bool, include_columns: bool
-    ) -> (
-        list[
-            SdmSchemaLinksCollection
-            | SdmTableLinksCollection
-            | SdmColumnLinksCollection
-        ]
-        | None
-    ):
+    ) -> list[SdmLinksCollection] | None:
         """Get links for all SDM schemas."""
         sdm_entities_link_collection = await self._link_store.get_sdm_links(
             include_tables=include_tables,

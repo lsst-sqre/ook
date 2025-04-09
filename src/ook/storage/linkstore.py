@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-
 from safir.datetime import current_datetime
-from sqlalchemy import func, select
+from sqlalchemy import (
+    CTE,
+    BigInteger,
+    cast,
+    func,
+    literal,
+    literal_column,
+    select,
+    union_all,
+)
 from sqlalchemy.ext.asyncio import async_scoped_session
+from sqlalchemy.sql import text
 from structlog.stdlib import BoundLogger
 
 from ook.dbschema.base import Base
@@ -20,10 +28,9 @@ from ook.dbschema.sdmschemas import SqlSdmColumn, SqlSdmSchema, SqlSdmTable
 from ook.domain.links import (
     SdmColumnLink,
     SdmColumnLinksCollection,
+    SdmLinksCollection,
     SdmSchemaLink,
-    SdmSchemaLinksCollection,
     SdmTableLink,
-    SdmTableLinksCollection,
 )
 
 __all__ = ["LinkStore", "SdmSchemaBulkLinks"]
@@ -143,6 +150,8 @@ class LinkStore:
         stmt = (
             # Shape result to match SdmColumnsLinksCollection model
             select(
+                literal("sdm").label("domain"),
+                literal("column").label("entity_type"),
                 SqlSdmColumn.name.label("column_name"),
                 SqlSdmTable.name.label("table_name"),
                 SqlSdmSchema.name.label("schema_name"),
@@ -199,121 +208,265 @@ class LinkStore:
 
     async def get_sdm_links_scoped_to_schema(
         self, *, schema_name: str, include_columns: bool
-    ) -> list[SdmTableLinksCollection | SdmColumnLinksCollection]:
+    ) -> list[SdmLinksCollection]:
         """Get links to entities scoped to an SDM schema."""
-        # Get table links
-        statement = (
-            select(SqlSdmTableLink, SqlLink, SqlSdmTable)
-            .join(SqlSdmTable, SqlSdmTable.id == SqlSdmTableLink.table_id)
-            .join(SqlSdmSchema, SqlSdmSchema.id == SqlSdmTable.schema_id)
-            .where(SqlSdmSchema.name == schema_name)
-            .order_by(SqlSdmTable.tap_table_index, SqlSdmTable.name)
+        # This method can potentially return both table and column links
+        # if include_columns is True. To handle this, we will create two
+        # Common Table Expressions (CTEs) for table and column links, and
+        # then combine them using a UNION ALL.
+
+        table_links_cte = self._create_table_links_cte(schema_name=schema_name)
+        column_links_cte = self._create_column_links_cte(
+            schema_name=schema_name
         )
-        results = (await self._session.execute(statement)).fetchall()
+
+        stmt = select(
+            literal_column("combined_links.domain").label("domain"),
+            literal_column("combined_links.entity_type").label("entity_type"),
+            literal_column("combined_links.schema_name").label("schema_name"),
+            literal_column("combined_links.table_name").label("table_name"),
+            literal_column("combined_links.column_name").label("column_name"),
+            func.json_agg(
+                func.json_build_object(
+                    "schema_name",
+                    text("schema_name"),
+                    "table_name",
+                    text("table_name"),
+                    "column_name",
+                    text("column_name"),
+                    "html_url",
+                    text("html_url"),
+                    "type",
+                    text("source_type"),
+                    "title",
+                    text("source_title"),
+                    "collection_title",
+                    text("source_collection_title"),
+                )
+            ).label("links"),
+        )
+        if include_columns:
+            stmt = stmt.select_from(
+                union_all(
+                    select(table_links_cte),
+                    select(column_links_cte),
+                ).alias("combined_links")
+            )
+        else:
+            stmt = stmt.select_from(table_links_cte.alias("combined_links"))
+
+        stmt = stmt.group_by(
+            text("domain"),
+            text("entity_type"),
+            text("schema_name"),
+            text("table_name"),
+            text("column_name"),
+            text("tap_table_index"),
+            text("tap_column_index"),
+        ).order_by(
+            text("domain"),
+            text("entity_type"),
+            text("tap_table_index"),
+            text("tap_column_index"),
+            text("table_name"),
+            text("column_name"),
+        )
+
+        results = (await self._session.execute(stmt)).fetchall()
         if not results:
             return []
 
-        # Group links by table
-        links_by_table: dict[str, list[SdmTableLink]] = defaultdict(list)
-        table_names = set()
-        for result in results:
-            table_name = result.SqlSdmTable.name
-            table_names.add(table_name)
-            link = SdmTableLink(
-                table_name=table_name,
-                schema_name=schema_name,
-                html_url=result.SqlLink.html_url,
-                type=result.SqlLink.source_type,
-                title=result.SqlLink.source_title,
-                collection_title=result.SqlLink.source_collection_title,
-            )
-            links_by_table[table_name].append(link)
-
-        # Create collections for all tables
-        result_collections: list[
-            SdmTableLinksCollection | SdmColumnLinksCollection
-        ] = [
-            SdmTableLinksCollection(
-                schema_name=schema_name,
-                table_name=table_name,
-                links=links_by_table.get(table_name, []),
-            )
-            for table_name in sorted(links_by_table.keys())
+        return [
+            SdmLinksCollection.model_validate(result, from_attributes=True)
+            for result in results
         ]
-
-        # If include_columns is True, fetch column links for all tables
-        if include_columns:
-            for table_name in sorted(table_names):
-                column_collections = await self.get_column_links_for_sdm_table(
-                    schema_name=schema_name, table_name=table_name
-                )
-                result_collections.extend(column_collections)
-
-        return result_collections
 
     async def get_sdm_links(
         self, *, include_tables: bool, include_columns: bool
-    ) -> list[
-        SdmSchemaLinksCollection
-        | SdmTableLinksCollection
-        | SdmColumnLinksCollection
-    ]:
+    ) -> list[SdmLinksCollection]:
         """Get links for SDM schema entities and optionally their members."""
-        # Get schema links
-        results = (
-            await self._session.execute(
-                select(SqlSdmSchemaLink, SqlLink, SqlSdmSchema)
-                .join(
-                    SqlSdmSchema, SqlSdmSchema.id == SqlSdmSchemaLink.schema_id
+        # This method can potentially return schema, table, and column links
+        # if include_tables and include_columns are True.
+
+        table_links_cte = self._create_table_links_cte()
+        column_links_cte = self._create_column_links_cte()
+        schema_links_cte = self._create_schema_links_cte()
+
+        stmt = select(
+            literal_column("combined_links.domain").label("domain"),
+            literal_column("combined_links.entity_type").label("entity_type"),
+            literal_column("combined_links.schema_name").label("schema_name"),
+            literal_column("combined_links.table_name").label("table_name"),
+            literal_column("combined_links.column_name").label("column_name"),
+            func.json_agg(
+                func.json_build_object(
+                    "schema_name",
+                    text("schema_name"),
+                    "table_name",
+                    text("table_name"),
+                    "column_name",
+                    text("column_name"),
+                    "html_url",
+                    text("html_url"),
+                    "type",
+                    text("source_type"),
+                    "title",
+                    text("source_title"),
+                    "collection_title",
+                    text("source_collection_title"),
                 )
-                .order_by(SqlSdmSchema.name)
+            ).label("links"),
+        )
+        if include_columns and include_tables:
+            stmt = stmt.select_from(
+                union_all(
+                    select(schema_links_cte),
+                    select(table_links_cte),
+                    select(column_links_cte),
+                ).alias("combined_links")
             )
-        ).fetchall()
+        elif include_tables is True and include_columns is False:
+            stmt = stmt.select_from(
+                union_all(
+                    select(schema_links_cte),
+                    select(table_links_cte),
+                ).alias("combined_links")
+            )
+        elif include_tables is False and include_columns is True:
+            stmt = stmt.select_from(
+                union_all(
+                    select(schema_links_cte),
+                    select(column_links_cte),
+                ).alias("combined_links")
+            )
+        else:
+            stmt = stmt.select_from(schema_links_cte.alias("combined_links"))
+
+        stmt = stmt.group_by(
+            text("domain"),
+            text("schema_name"),
+            text("entity_type"),
+            text("table_name"),
+            text("column_name"),
+            text("tap_table_index"),
+            text("tap_column_index"),
+        ).order_by(
+            text("domain"),
+            text("schema_name"),
+            text("entity_type"),
+            text("tap_table_index"),
+            text("tap_column_index"),
+            text("table_name"),
+            text("column_name"),
+        )
+
+        results = (await self._session.execute(stmt)).fetchall()
         if not results:
             return []
 
-        # Group links by schema
-        links_by_schema: dict[str, list[SdmSchemaLink]] = defaultdict(list)
-        for result in results:
-            schema_name = result.SqlSdmSchema.name
-            link = SdmSchemaLink(
-                schema_name=schema_name,
-                html_url=result.SqlLink.html_url,
-                type=result.SqlLink.source_type,
-                title=result.SqlLink.source_title,
-                collection_title=result.SqlLink.source_collection_title,
-            )
-            links_by_schema[schema_name].append(link)
-
-        # Create collections for all schemas
-        result_collections: list[
-            SdmSchemaLinksCollection
-            | SdmTableLinksCollection
-            | SdmColumnLinksCollection
-        ] = [
-            SdmSchemaLinksCollection(
-                schema_name=schema_name,
-                links=links_by_schema.get(schema_name, []),
-            )
-            for schema_name in sorted(links_by_schema.keys())
+        return [
+            SdmLinksCollection.model_validate(result, from_attributes=True)
+            for result in results
         ]
 
-        # If include_tables is True, fetch table links for all schemas
-        if include_tables:
-            for schema_name in sorted(links_by_schema.keys()):
-                table_collections = await self.get_sdm_links_scoped_to_schema(
-                    schema_name=schema_name, include_columns=include_columns
-                )
-                result_collections.extend(table_collections)
+    def _create_column_links_cte(self, schema_name: str | None = None) -> CTE:
+        """Create a Common Table Expression (CTE) for column links.
 
-        # If include_columns is True, fetch column links for all tables
-        if include_columns:
-            for schema_name in sorted(links_by_schema.keys()):
-                column_collections = await self.get_column_links_for_sdm_table(
-                    schema_name=schema_name, table_name=schema_name
-                )
-                result_collections.extend(column_collections)
-        return result_collections
+        The CTE is designed to select columns necessary to build a
+        SdmColumnLinksCollection or a SdmLinksCollection generally.
+
+        Parameters
+        ----------
+        schema_name
+            The name of the schema to filter by. If None, the `where` clause
+            for the schema is omitted.
+        """
+        stmt = (
+            select(
+                literal("sdm").label("domain"),
+                literal("column").label("entity_type"),
+                SqlSdmSchema.name.label("schema_name"),
+                SqlSdmTable.name.label("table_name"),
+                SqlSdmColumn.name.label("column_name"),
+                SqlLink.html_url,
+                SqlLink.source_type,
+                SqlLink.source_title,
+                SqlLink.source_collection_title,
+                cast(literal(0), BigInteger).label("tap_table_index"),
+                SqlSdmColumn.tap_column_index,
+            )
+            .select_from(SqlSdmColumnLink)
+            .join(SqlSdmColumn, SqlSdmColumn.id == SqlSdmColumnLink.column_id)
+            .join(SqlSdmTable, SqlSdmTable.id == SqlSdmColumn.table_id)
+            .join(SqlSdmSchema, SqlSdmSchema.id == SqlSdmTable.schema_id)
+        )
+
+        if schema_name:
+            stmt = stmt.where(SqlSdmSchema.name == schema_name)
+
+        return stmt.cte("column_links")
+
+    def _create_table_links_cte(self, schema_name: str | None = None) -> CTE:
+        """Create a Common Table Expression (CTE) for table links.
+
+        The CTE is designed to select columns necessary to build a
+        SdmTableLinksCollection or a SdmLinksCollection generally.
+
+        Parameters
+        ----------
+        schema_name
+            The name of the schema to filter by. If None, the `where` clause
+            for the schema is omitted.
+        """
+        stmt = (
+            select(
+                literal("sdm").label("domain"),
+                literal("table").label("entity_type"),
+                SqlSdmSchema.name.label("schema_name"),
+                SqlSdmTable.name.label("table_name"),
+                literal(None).label("column_name"),
+                SqlLink.html_url,
+                SqlLink.source_type,
+                SqlLink.source_title,
+                SqlLink.source_collection_title,
+                SqlSdmTable.tap_table_index,
+                cast(literal(0), BigInteger).label("tap_column_index"),
+            )
+            .select_from(SqlSdmTableLink)
+            .join(SqlSdmTable, SqlSdmTable.id == SqlSdmTableLink.table_id)
+            .join(SqlSdmSchema, SqlSdmSchema.id == SqlSdmTable.schema_id)
+        )
+
+        if schema_name:
+            stmt = stmt.where(SqlSdmSchema.name == schema_name)
+
+        return stmt.cte("table_links")
+
+    def _create_schema_links_cte(self) -> CTE:
+        """Create a Common Table Expression (CTE) for schema links.
+
+        The CTE is designed to select columns necessary to build a
+        SdmSchemaLinksCollection or a SdmLinksCollection generally.
+        """
+        stmt = (
+            select(
+                literal("sdm").label("domain"),
+                literal("schema").label("entity_type"),
+                SqlSdmSchema.name.label("schema_name"),
+                literal(None).label("table_name"),
+                literal(None).label("column_name"),
+                SqlLink.html_url,
+                SqlLink.source_type,
+                SqlLink.source_title,
+                SqlLink.source_collection_title,
+                cast(literal(0), BigInteger).label("tap_table_index"),
+                cast(literal(0), BigInteger).label("tap_column_index"),
+            )
+            .select_from(SqlSdmSchemaLink)
+            .join(SqlSdmSchema, SqlSdmSchema.id == SqlSdmSchemaLink.schema_id)
+        )
+
+        return stmt.cte("schema_links")
 
     async def update_sdm_schema_links(
         self, schema_links: SdmSchemaBulkLinks

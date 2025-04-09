@@ -70,8 +70,8 @@ async def get_sdm_links(
         )
         if entities_collection is None:
             raise NotFoundError("No links found for SDM schemas.")
-        return SdmLinks.from_domain(
-            domain_collection=entities_collection, request=context.request
+        return SdmLinks.from_sdm_links_collection(
+            sdm_links_collections=entities_collection, request=context.request
         )
 
 
@@ -126,8 +126,8 @@ async def get_sdm_links_scoped_to_schema(
             raise NotFoundError(
                 f"No links found for SDM tables in schema {schema_name!r}."
             )
-        return SdmLinks.from_domain(
-            domain_collection=entities_collection, request=context.request
+        return SdmLinks.from_sdm_links_collection(
+            sdm_links_collections=entities_collection, request=context.request
         )
 
 

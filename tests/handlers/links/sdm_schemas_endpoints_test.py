@@ -63,8 +63,7 @@ async def test_sdm_schemas_links(
     # Should be 11 tables in the dp02_dc2_catalogs schema
     assert len(data) == 11
     # Check that the tables are ordered by tap index (first should be Object)
-    # TODO(jonathansick): This is not the case, but it should be
-    assert data[0]["entity"]["table_name"] == "CcdVisit"
+    assert data[0]["entity"]["table_name"] == "Object"
     # Check that all entities are tables
     assert all(entity["entity"]["domain_type"] == "table" for entity in data)
 

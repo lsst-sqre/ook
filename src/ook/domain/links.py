@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field, RootModel
 
 __all__ = [
     "Link",
     "LinksCollection",
     "SdmColumnLink",
     "SdmColumnLinksCollection",
+    "SdmLinksCollection",
     "SdmSchemaLink",
     "SdmSchemaLinksCollection",
     "SdmTableLink",
@@ -74,11 +77,27 @@ class LinksCollection[T: Link](BaseModel):
 class SdmSchemaLinksCollection(LinksCollection[SdmSchemaLink]):
     """A collection of links to an SDM schema."""
 
+    domain: Literal["sdm"] = Field(
+        description="The links domain of the entity."
+    )
+
+    entity_type: Literal["schema"] = Field(
+        description="The type of the entity in the domain."
+    )
+
     schema_name: str = Field(description="The name of the schema.")
 
 
 class SdmTableLinksCollection(LinksCollection[SdmTableLink]):
     """A collection of links to an SDM table."""
+
+    domain: Literal["sdm"] = Field(
+        description="The links domain of the entity."
+    )
+
+    entity_type: Literal["table"] = Field(
+        description="The type of the entity in the domain."
+    )
 
     schema_name: str = Field(description="The name of the schema.")
 
@@ -88,8 +107,33 @@ class SdmTableLinksCollection(LinksCollection[SdmTableLink]):
 class SdmColumnLinksCollection(LinksCollection[SdmColumnLink]):
     """A collection of links to SDM columns."""
 
+    domain: Literal["sdm"] = Field(
+        description="The links domain of the entity."
+    )
+
+    entity_type: Literal["column"] = Field(
+        description="The type of the entity in the domain."
+    )
+
     schema_name: str = Field(description="The name of the schema.")
 
     table_name: str = Field(description="The name of the table.")
 
     column_name: str = Field(description="The name of the column.")
+
+
+SdmLinksCollection = RootModel[
+    Annotated[
+        SdmSchemaLinksCollection
+        | SdmTableLinksCollection
+        | SdmColumnLinksCollection,
+        Field(discriminator="entity_type"),
+    ]
+]
+"""A generic collection of SDM links for any SDM entity type.
+
+Use this root model to parse SQLAlchemy query results when the domain type
+can be any of the three SDM entity types: schema, table, or column.
+
+Access the underlying collection using the ``root`` attribute.
+"""
