@@ -2,14 +2,28 @@
 
 from __future__ import annotations
 
+import base64
+import json
+from dataclasses import dataclass
+from typing import Self, override
+
+from safir.database import (
+    CountedPaginatedList,
+    CountedPaginatedQueryRunner,
+    InvalidCursorError,
+    PaginationCursor,
+)
 from safir.datetime import current_datetime
 from sqlalchemy import (
     CTE,
     BigInteger,
+    Select,
+    and_,
     cast,
     func,
     literal,
     literal_column,
+    or_,
     select,
     union_all,
 )
@@ -33,7 +47,7 @@ from ook.domain.links import (
     SdmTableLink,
 )
 
-__all__ = ["LinkStore", "SdmSchemaBulkLinks"]
+__all__ = ["LinkStore", "SdmColumnLinksCollectionCursor", "SdmSchemaBulkLinks"]
 
 
 class LinkStore:
@@ -144,17 +158,31 @@ class LinkStore:
         ]
 
     async def get_column_links_for_sdm_table(
-        self, schema_name: str, table_name: str
-    ) -> list[SdmColumnLinksCollection]:
-        """Get links for all columns in an SDM table."""
+        self,
+        schema_name: str,
+        table_name: str,
+        *,
+        limit: int | None = None,
+        cursor: SdmColumnLinksCollectionCursor | None = None,
+    ) -> CountedPaginatedList[
+        SdmColumnLinksCollection, SdmColumnLinksCollectionCursor
+    ]:
+        """Get links for all columns in an SDM table (paginated).
+
+        Optionally bypass pagination by setting ``limit`` to None and omitting
+        the ``cursor``.
+        """
+        # The select matches the shape of the SdmColumnLinksCollection model.
+        # Additionally the pagination cursor extracts the column_name and
+        # tap_column_index.
         stmt = (
-            # Shape result to match SdmColumnsLinksCollection model
             select(
                 literal("sdm").label("domain"),
                 literal("column").label("entity_type"),
                 SqlSdmColumn.name.label("column_name"),
                 SqlSdmTable.name.label("table_name"),
                 SqlSdmSchema.name.label("schema_name"),
+                SqlSdmColumn.tap_column_index,
                 func.json_agg(
                     func.json_build_object(
                         "column_name",
@@ -193,18 +221,18 @@ class LinkStore:
                 SqlSdmTable.name,
                 SqlSdmSchema.name,
             )
-            .order_by(SqlSdmColumn.tap_column_index, SqlSdmColumn.name)
         )
-        results = (await self._session.execute(stmt)).fetchall()
-        if not results:
-            return []
 
-        return [
-            SdmColumnLinksCollection.model_validate(
-                result, from_attributes=True
-            )
-            for result in results
-        ]
+        runner = CountedPaginatedQueryRunner(
+            entry_type=SdmColumnLinksCollection,
+            cursor_type=SdmColumnLinksCollectionCursor,
+        )
+        return await runner.query_row(
+            session=self._session,
+            stmt=stmt,
+            cursor=cursor,
+            limit=limit,
+        )
 
     async def get_sdm_links_scoped_to_schema(
         self, *, schema_name: str, include_columns: bool
@@ -226,6 +254,12 @@ class LinkStore:
             literal_column("combined_links.schema_name").label("schema_name"),
             literal_column("combined_links.table_name").label("table_name"),
             literal_column("combined_links.column_name").label("column_name"),
+            literal_column("combined_links.tap_table_index").label(
+                "tap_table_index"
+            ),
+            literal_column("combined_links.tap_column_index").label(
+                "tap_column_index"
+            ),
             func.json_agg(
                 func.json_build_object(
                     "schema_name",
@@ -298,6 +332,12 @@ class LinkStore:
             literal_column("combined_links.schema_name").label("schema_name"),
             literal_column("combined_links.table_name").label("table_name"),
             literal_column("combined_links.column_name").label("column_name"),
+            literal_column("combined_links.tap_table_index").label(
+                "tap_table_index"
+            ),
+            literal_column("combined_links.tap_column_index").label(
+                "tap_column_index"
+            ),
             func.json_agg(
                 func.json_build_object(
                     "schema_name",
@@ -392,7 +432,7 @@ class LinkStore:
                 SqlLink.source_type,
                 SqlLink.source_title,
                 SqlLink.source_collection_title,
-                cast(literal(0), BigInteger).label("tap_table_index"),
+                cast(literal(None), BigInteger).label("tap_table_index"),
                 SqlSdmColumn.tap_column_index,
             )
             .select_from(SqlSdmColumnLink)
@@ -430,7 +470,7 @@ class LinkStore:
                 SqlLink.source_title,
                 SqlLink.source_collection_title,
                 SqlSdmTable.tap_table_index,
-                cast(literal(0), BigInteger).label("tap_column_index"),
+                cast(literal(None), BigInteger).label("tap_column_index"),
             )
             .select_from(SqlSdmTableLink)
             .join(SqlSdmTable, SqlSdmTable.id == SqlSdmTableLink.table_id)
@@ -459,8 +499,8 @@ class LinkStore:
                 SqlLink.source_type,
                 SqlLink.source_title,
                 SqlLink.source_collection_title,
-                cast(literal(0), BigInteger).label("tap_table_index"),
-                cast(literal(0), BigInteger).label("tap_column_index"),
+                cast(literal(None), BigInteger).label("tap_table_index"),
+                cast(literal(None), BigInteger).label("tap_column_index"),
             )
             .select_from(SqlSdmSchemaLink)
             .join(SqlSdmSchema, SqlSdmSchema.id == SqlSdmSchemaLink.schema_id)
@@ -646,3 +686,154 @@ class SdmSchemaBulkLinks:
         self.schema = schema
         self.tables = tables
         self.columns = columns
+
+
+@dataclass
+class SdmColumnLinksCollectionCursor(
+    PaginationCursor[SdmColumnLinksCollection]
+):
+    """A pagination cursor for SdmColumnLinksCollection results.
+
+    The cursor involves the tap_column_index and column_name of the SDM
+    column. Our compound sorting order of columns is:
+
+    1. tap_column_index in increasing order, treating NULL as infinitely
+       large.
+    2. column_name in increasing alphabetic order for a given tap_column_index.
+    """
+
+    __slots__ = ("column_name", "previous", "tap_column_index")
+
+    tap_column_index: int | None
+
+    column_name: str
+
+    @override
+    @classmethod
+    def from_entry(
+        cls, entry: SdmColumnLinksCollection, *, reverse: bool = False
+    ) -> Self:
+        """Construct a cursor with an entry as the bound."""
+        # The cursor is a tuple of the schema name, table name, and column name
+        # in natural order.
+        return cls(
+            tap_column_index=entry.tap_column_index,
+            column_name=entry.column_name,
+            previous=reverse,
+        )
+
+    @override
+    @classmethod
+    def from_str(cls, cursor: str) -> Self:
+        """Build cursor from the string serialization form."""
+        # decode base64
+        try:
+            decoded = base64.b64decode(cursor).decode("utf-8")
+            data = json.loads(decoded)
+            return cls(
+                tap_column_index=data["tap_column_index"],
+                column_name=data["column_name"],
+                previous=data["previous"],
+            )
+        except Exception as e:
+            raise InvalidCursorError(f"Cannot parse cursor: {e!s}") from e
+
+    @override
+    @classmethod
+    def apply_order(cls, stmt: Select, *, reverse: bool = False) -> Select:
+        """Apply the sort order of the cursor to a select statement."""
+        if reverse:
+            # For reverse order, NULL comes first since it's infinitely large
+            stmt = stmt.order_by(
+                SqlSdmColumn.tap_column_index.desc().nulls_first(),
+                SqlSdmColumn.name.desc(),
+            )
+        else:
+            # For forward order, NULL comes last since it's infinitely large
+            stmt = stmt.order_by(
+                SqlSdmColumn.tap_column_index.asc().nulls_last(),
+                SqlSdmColumn.name,
+            )
+        return stmt
+
+    @override
+    def apply_cursor(self, stmt: Select) -> Select:
+        """Apply the restrictions from the cursor to a select statement."""
+        # Specially handle NULL in tap_column_index because we treat it as
+        # infinitely large for ordering purposes.
+        if self.tap_column_index is None:
+            # Cursor is at a NULL position
+            if self.previous:
+                # When moving backwards from a NULL position, get all non-NULL
+                # rows or rows with NULL tap_column_index but smaller column
+                # name
+                stmt = stmt.where(
+                    or_(
+                        SqlSdmColumn.tap_column_index.is_not(None),
+                        and_(
+                            SqlSdmColumn.tap_column_index.is_(None),
+                            SqlSdmColumn.name < self.column_name,
+                        ),
+                    )
+                )
+            else:
+                # When moving forwards from a NULL position, only get rows with
+                # NULL tap_column_index and larger column name
+                stmt = stmt.where(
+                    and_(
+                        SqlSdmColumn.tap_column_index.is_(None),
+                        SqlSdmColumn.name > self.column_name,
+                    )
+                )
+        # Handle cases where tap_column_index is not NULL
+        elif self.previous:
+            # Going backwards
+            stmt = stmt.where(
+                or_(
+                    # Smaller index values
+                    SqlSdmColumn.tap_column_index < self.tap_column_index,
+                    # Same index value, smaller column name
+                    and_(
+                        SqlSdmColumn.tap_column_index == self.tap_column_index,
+                        SqlSdmColumn.name < self.column_name,
+                    ),
+                )
+            )
+        else:
+            # Going forwards
+            stmt = stmt.where(
+                or_(
+                    # NULL values (they're largest)
+                    SqlSdmColumn.tap_column_index.is_(None),
+                    # Larger index values
+                    SqlSdmColumn.tap_column_index > self.tap_column_index,
+                    # Same index value, larger column name
+                    and_(
+                        SqlSdmColumn.tap_column_index == self.tap_column_index,
+                        SqlSdmColumn.name > self.column_name,
+                    ),
+                )
+            )
+        return stmt
+
+    @override
+    def invert(self) -> Self:
+        return type(self)(
+            tap_column_index=self.tap_column_index,
+            column_name=self.column_name,
+            previous=not self.previous,
+        )
+
+    def __str__(self) -> str:
+        """Serialize to string.
+
+        This is the reverse of from_str.
+        """
+        data = {
+            "tap_column_index": self.tap_column_index,
+            "column_name": self.column_name,
+            "previous": self.previous,
+        }
+        # encode base64
+        encoded = base64.b64encode(json.dumps(data).encode("utf-8"))
+        return encoded.decode("utf-8")

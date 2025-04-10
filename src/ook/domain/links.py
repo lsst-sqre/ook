@@ -103,6 +103,10 @@ class SdmTableLinksCollection(LinksCollection[SdmTableLink]):
 
     table_name: str = Field(description="The name of the table.")
 
+    tap_table_index: int | None = Field(
+        description="The sorting index of the table in the TAP schema."
+    )
+
 
 class SdmColumnLinksCollection(LinksCollection[SdmColumnLink]):
     """A collection of links to SDM columns."""
@@ -120,6 +124,10 @@ class SdmColumnLinksCollection(LinksCollection[SdmColumnLink]):
     table_name: str = Field(description="The name of the table.")
 
     column_name: str = Field(description="The name of the column.")
+
+    tap_column_index: int | None = Field(
+        description="The sorting index of the column in the TAP schema."
+    )
 
 
 SdmLinksCollection = RootModel[

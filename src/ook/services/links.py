@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from safir.database import CountedPaginatedList
 from structlog.stdlib import BoundLogger
 
 from ook.domain.links import (
@@ -11,7 +12,7 @@ from ook.domain.links import (
     SdmSchemaLink,
     SdmTableLink,
 )
-from ook.storage.linkstore import LinkStore
+from ook.storage.linkstore import LinkStore, SdmColumnLinksCollectionCursor
 
 __all__ = ["LinksService"]
 
@@ -57,17 +58,22 @@ class LinksService:
         return links
 
     async def get_column_links_for_sdm_table(
-        self, *, schema_name: str, table_name: str
-    ) -> list[SdmColumnLinksCollection] | None:
+        self,
+        *,
+        schema_name: str,
+        table_name: str,
+        limit: int | None = None,
+        cursor: SdmColumnLinksCollectionCursor | None = None,
+    ) -> CountedPaginatedList[
+        SdmColumnLinksCollection, SdmColumnLinksCollectionCursor
+    ]:
         """Get links for all columns scoped to an SDM table."""
-        link_collection = (
-            await self._link_store.get_column_links_for_sdm_table(
-                schema_name=schema_name, table_name=table_name
-            )
+        return await self._link_store.get_column_links_for_sdm_table(
+            schema_name=schema_name,
+            table_name=table_name,
+            limit=limit,
+            cursor=cursor,
         )
-        if len(link_collection) == 0:
-            return None
-        return link_collection
 
     async def get_table_links_for_sdm_schema(
         self, *, schema_name: str, include_columns: bool

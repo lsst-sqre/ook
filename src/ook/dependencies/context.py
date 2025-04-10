@@ -9,7 +9,7 @@ including from dependencies.
 from dataclasses import dataclass
 from typing import Annotated, Any
 
-from fastapi import Depends, Request
+from fastapi import Depends, Request, Response
 from safir.dependencies.db_session import db_session_dependency
 from safir.dependencies.logger import logger_dependency
 from sqlalchemy.ext.asyncio import async_scoped_session
@@ -36,6 +36,9 @@ class RequestContext:
 
     request: Request
     """The incoming request."""
+
+    response: Response
+    """The response to the request."""
 
     logger: BoundLogger
     """The request logger, rebound with discovered context."""
@@ -73,6 +76,7 @@ class ContextDependency:
     async def __call__(
         self,
         request: Request,
+        response: Response,
         session: Annotated[
             async_scoped_session, Depends(db_session_dependency)
         ],
@@ -81,6 +85,7 @@ class ContextDependency:
         """Create a per-request context and return it."""
         return RequestContext(
             request=request,
+            response=response,
             logger=logger,
             session=session,
             factory=Factory(
