@@ -11,8 +11,14 @@ from ook.domain.links import (
     SdmLinksCollection,
     SdmSchemaLink,
     SdmTableLink,
+    SdmTableLinksCollection,
 )
-from ook.storage.linkstore import LinkStore, SdmColumnLinksCollectionCursor
+from ook.storage.linkstore import (
+    LinkStore,
+    SdmColumnLinksCollectionCursor,
+    SdmLinksCollectionCursor,
+    SdmTableLinksCollectionCursor,
+)
 
 __all__ = ["LinksService"]
 
@@ -76,27 +82,37 @@ class LinksService:
         )
 
     async def get_table_links_for_sdm_schema(
-        self, *, schema_name: str, include_columns: bool
-    ) -> list[SdmLinksCollection] | None:
-        """Get links for all tables scoped to an SDM schema."""
-        sdm_entities_link_collection = (
-            await self._link_store.get_sdm_links_scoped_to_schema(
-                schema_name=schema_name,
-                include_columns=include_columns,
-            )
+        self,
+        *,
+        schema_name: str,
+        limit: int | None = None,
+        cursor: SdmTableLinksCollectionCursor | None = None,
+    ) -> CountedPaginatedList[
+        SdmTableLinksCollection, SdmTableLinksCollectionCursor
+    ]:
+        """Get links for all tables and columns scoped to an SDM schema."""
+        return await self._link_store.get_table_links_for_sdm_schema(
+            schema_name=schema_name,
+            limit=limit,
+            cursor=cursor,
         )
-        if len(sdm_entities_link_collection) == 0:
-            return None
-        return sdm_entities_link_collection
 
     async def get_sdm_links(
-        self, *, include_tables: bool, include_columns: bool
-    ) -> list[SdmLinksCollection] | None:
+        self,
+        *,
+        include_schemas: bool,
+        include_tables: bool,
+        include_columns: bool,
+        schema_name: str | None = None,
+        limit: int | None = None,
+        cursor: SdmLinksCollectionCursor | None = None,
+    ) -> CountedPaginatedList[SdmLinksCollection, SdmLinksCollectionCursor]:
         """Get links for all SDM schemas."""
-        sdm_entities_link_collection = await self._link_store.get_sdm_links(
+        return await self._link_store.get_sdm_links(
+            include_schemas=include_schemas,
             include_tables=include_tables,
             include_columns=include_columns,
+            schema_name=schema_name,
+            limit=limit,
+            cursor=cursor,
         )
-        if len(sdm_entities_link_collection) == 0:
-            return None
-        return sdm_entities_link_collection
