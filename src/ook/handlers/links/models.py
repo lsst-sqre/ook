@@ -12,6 +12,7 @@ from starlette.routing import Route
 from ook.domain.links import Link as DomainLink
 from ook.domain.links import (
     SdmColumnLinksCollection,
+    SdmLinksCollection,
     SdmSchemaLinksCollection,
     SdmTableLinksCollection,
 )
@@ -265,13 +266,48 @@ class SdmLinks(BaseModel):
         ],
         request: Request,
     ) -> list[Self]:
-        """Create a `SdmColumnLinks` from a `SdmColumnLinksCollection`."""
+        """Create a `SdmColumnLinks` a sequence of SDM link collections.
+
+        This method can be used for single-type collections. For mult-type
+        collections use `from_sdm_links_collection`.
+        """
         return [
             cls(
                 entity=cls._create_entity_info(domain, request),
                 links=[Link.from_domain_link(link) for link in domain.links],
             )
             for domain in domain_collection
+        ]
+
+    @classmethod
+    def from_sdm_links_collection(
+        cls,
+        *,
+        sdm_links_collections: Sequence[SdmLinksCollection],
+        request: Request,
+    ) -> list[Self]:
+        """Create a `SdmLinks` from an `SdmLinksCollection` sequence.
+
+        The SdmLinksCollection can be any of the three types:
+
+        - `SdmSchemaLinksCollection`
+        - `SdmTableLinksCollection`
+        - `SdmColumnLinksCollection`
+
+        This method will create a list of SdmLinks objects for each
+        SdmLinksCollection in the sequence.
+        """
+        return [
+            cls(
+                entity=cls._create_entity_info(
+                    sdm_links_collection.root, request
+                ),
+                links=[
+                    Link.from_domain_link(link)
+                    for link in sdm_links_collection.root.links
+                ],
+            )
+            for sdm_links_collection in sdm_links_collections
         ]
 
     @classmethod

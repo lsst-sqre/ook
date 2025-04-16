@@ -8,6 +8,11 @@ from safir.models import ErrorModel
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 from ook.exceptions import NotFoundError
+from ook.storage.linkstore import (
+    SdmColumnLinksCollectionCursor,
+    SdmLinksCollectionCursor,
+    SdmTableLinksCollectionCursor,
+)
 
 from .models import Link, SdmDomainInfo, SdmLinks
 
@@ -46,7 +51,6 @@ async def get_sdm_domain_info(
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_links(
-    context: Annotated[RequestContext, Depends(context_dependency)],
     *,
     include_tables: Annotated[
         bool,
@@ -62,16 +66,48 @@ async def get_sdm_links(
             description="Whether to include columns in the response",
         ),
     ] = False,
+    cursor: Annotated[
+        str | None,
+        Query(
+            title="Pagination cursor",
+            description="Cursor to navigate paginated results",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Query(
+            title="Row limit",
+            description="Maximum number of entries to return",
+            examples=[100],
+            ge=1,
+            le=100,
+        ),
+    ] = 100,
+    context: Annotated[RequestContext, Depends(context_dependency)],
 ) -> list[SdmLinks]:
+    if cursor:
+        parsed_cursor = SdmLinksCollectionCursor.from_str(cursor)
+    else:
+        parsed_cursor = None
+
     async with context.session.begin():
         link_service = context.factory.create_links_service()
-        entities_collection = await link_service.get_sdm_links(
-            include_tables=include_tables, include_columns=include_columns
+        results = await link_service.get_links_for_sdm_collection(
+            include_schemas=True,
+            include_tables=include_tables,
+            include_columns=include_columns,
+            limit=limit,
+            cursor=parsed_cursor,
         )
-        if entities_collection is None:
+        if results.count == 0:
             raise NotFoundError("No links found for SDM schemas.")
-        return SdmLinks.from_domain(
-            domain_collection=entities_collection, request=context.request
+        if cursor or limit:
+            response = context.response
+            request = context.request
+            response.headers["Link"] = results.link_header(request.url)
+            response.headers["X-Total-Count"] = str(results.count)
+        return SdmLinks.from_sdm_links_collection(
+            sdm_links_collections=results.entries, request=context.request
         )
 
 
@@ -107,28 +143,83 @@ async def get_sdm_schema_links(
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_links_scoped_to_schema(
-    schema_name: schema_name_path,
-    context: Annotated[RequestContext, Depends(context_dependency)],
     *,
     include_columns: Annotated[
         bool,
         Query(title="Include columns"),
     ] = False,
+    cursor: Annotated[
+        str | None,
+        Query(
+            title="Pagination cursor",
+            description="Cursor to navigate paginated results",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Query(
+            title="Row limit",
+            description="Maximum number of entries to return",
+            examples=[100],
+            ge=1,
+            le=100,
+        ),
+    ] = 100,
+    schema_name: schema_name_path,
+    context: Annotated[RequestContext, Depends(context_dependency)],
 ) -> list[SdmLinks]:
     async with context.session.begin():
         link_service = context.factory.create_links_service()
-        entities_collection = (
-            await link_service.get_table_links_for_sdm_schema(
-                schema_name=schema_name, include_columns=include_columns
+
+        if include_columns:
+            results = await link_service.get_links_for_sdm_collection(
+                include_schemas=False,
+                include_tables=True,
+                include_columns=True,
+                schema_name=schema_name,
+                limit=limit,
+                cursor=SdmLinksCollectionCursor.from_str(cursor)
+                if cursor
+                else None,
             )
-        )
-        if entities_collection is None:
-            raise NotFoundError(
-                f"No links found for SDM tables in schema {schema_name!r}."
+            if results.count == 0:
+                raise NotFoundError(
+                    f"No links found for SDM tables in schema {schema_name!r}."
+                )
+            if cursor or limit:
+                response = context.response
+                request = context.request
+                response.headers["Link"] = results.link_header(request.url)
+                response.headers["X-Total-Count"] = str(results.count)
+            return SdmLinks.from_sdm_links_collection(
+                sdm_links_collections=results.entries, request=context.request
             )
-        return SdmLinks.from_domain(
-            domain_collection=entities_collection, request=context.request
-        )
+
+        else:
+            table_results = await link_service.get_table_links_for_sdm_schema(
+                schema_name=schema_name,
+                limit=limit,
+                cursor=SdmTableLinksCollectionCursor.from_str(cursor)
+                if cursor
+                else None,
+            )
+
+            if table_results.count == 0:
+                raise NotFoundError(
+                    f"No links found for SDM tables in schema {schema_name!r}."
+                )
+            if cursor or limit:
+                response = context.response
+                request = context.request
+                response.headers["Link"] = table_results.link_header(
+                    request.url
+                )
+                response.headers["X-Total-Count"] = str(table_results.count)
+
+            return SdmLinks.from_domain(
+                domain_collection=table_results.entries,
+                request=context.request,
+            )
 
 
 @router.get(
@@ -168,22 +259,53 @@ async def get_sdm_schema_table_links(
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
 async def get_sdm_schema_column_links_for_table(
+    *,
     schema_name: schema_name_path,
     table_name: table_name_path,
+    cursor: Annotated[
+        str | None,
+        Query(
+            title="Pagination cursor",
+            description="Cursor to navigate paginated results",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Query(
+            title="Row limit",
+            description="Maximum number of entries to return",
+            examples=[100],
+            ge=1,
+            le=100,
+        ),
+    ] = 100,
     context: Annotated[RequestContext, Depends(context_dependency)],
 ) -> list[SdmLinks]:
+    if cursor:
+        parsed_cursor = SdmColumnLinksCollectionCursor.from_str(cursor)
+    else:
+        parsed_cursor = None
+
     async with context.session.begin():
         link_service = context.factory.create_links_service()
-        link_collection = await link_service.get_column_links_for_sdm_table(
-            schema_name=schema_name, table_name=table_name
+        results = await link_service.get_links_for_sdm_columns_in_table(
+            schema_name=schema_name,
+            table_name=table_name,
+            cursor=parsed_cursor,
+            limit=limit,
         )
-        if link_collection is None:
+        if results.count == 0:
             raise NotFoundError(
                 f"No links found for SDM columns in table "
                 f"{table_name} in schema {schema_name}."
             )
+        if cursor or limit:
+            response = context.response
+            request = context.request
+            response.headers["Link"] = results.link_header(request.url)
+            response.headers["X-Total-Count"] = str(results.count)
         return SdmLinks.from_domain(
-            domain_collection=link_collection, request=context.request
+            domain_collection=results.entries, request=context.request
         )
 
 

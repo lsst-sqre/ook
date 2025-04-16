@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field, RootModel
 
 __all__ = [
     "Link",
     "LinksCollection",
     "SdmColumnLink",
     "SdmColumnLinksCollection",
+    "SdmLinksCollection",
     "SdmSchemaLink",
     "SdmSchemaLinksCollection",
     "SdmTableLink",
@@ -16,92 +19,129 @@ __all__ = [
 ]
 
 
-@dataclass(slots=True, kw_only=True)
-class Link:
-    """A link to documentation."""
+class Link(BaseModel):
+    """A link to documentation.
 
-    html_url: str
-    """The URL to the documentation page."""
+    This is a Pydantic model to facilitate the parsing of SQLAlchemy queries
+    directly into the domain.
+    """
 
-    title: str
-    """The title of the documentation."""
+    html_url: str = Field(description="The URL to the documentation page.")
 
-    type: str
-    """The type of documentation."""
+    title: str = Field(description="The title of the documentation.")
 
-    collection_title: str | None = None
-    """The title of the collection of documentation this link refers to."""
+    type: str = Field(description="The type of documentation.")
+
+    collection_title: str | None = Field(
+        None,
+        description=(
+            "The title of the collection of documentation this link refers to."
+        ),
+    )
 
 
-@dataclass(slots=True, kw_only=True)
 class SdmSchemaLink(Link):
     """A link to an SDM schema's documentation."""
 
-    name: str
-    """The name of the schema."""
+    schema_name: str = Field(description="The name of the schema.")
 
 
-@dataclass(slots=True, kw_only=True)
 class SdmTableLink(Link):
     """A link to an SDM table's documentation."""
 
-    schema_name: str
-    """The name of the schema."""
+    schema_name: str = Field(description="The name of the schema.")
 
-    name: str
-    """The name of the table."""
+    table_name: str = Field(description="The name of the table.")
 
 
-@dataclass(slots=True, kw_only=True)
 class SdmColumnLink(Link):
     """A link to an SDM column's documentation."""
 
-    schema_name: str
-    """The name of the schema."""
+    schema_name: str = Field(description="The name of the schema.")
 
-    table_name: str
-    """The name of the table."""
+    table_name: str = Field(description="The name of the table.")
 
-    name: str
-    """The name of the column."""
+    column_name: str = Field(description="The name of the column.")
 
 
-@dataclass(slots=True, kw_only=True)
-class LinksCollection[T: Link]:
-    """A collection of links to documentation of a specific entity."""
+class LinksCollection[T: Link](BaseModel):
+    """A collection of links to documentation of a specific entity.
 
-    links: list[T]
-    """The documentation links."""
+    This is a Pydantic model to facilitate the parsing of SQLAlchemy queries
+    directly into the domain.
+    """
+
+    links: list[T] = Field(description="The documentation links.")
 
 
-@dataclass(slots=True, kw_only=True)
 class SdmSchemaLinksCollection(LinksCollection[SdmSchemaLink]):
     """A collection of links to an SDM schema."""
 
-    schema_name: str
-    """The name of the schema."""
+    domain: Literal["sdm"] = Field(
+        description="The links domain of the entity."
+    )
+
+    entity_type: Literal["schema"] = Field(
+        description="The type of the entity in the domain."
+    )
+
+    schema_name: str = Field(description="The name of the schema.")
 
 
-@dataclass(slots=True, kw_only=True)
 class SdmTableLinksCollection(LinksCollection[SdmTableLink]):
     """A collection of links to an SDM table."""
 
-    schema_name: str
-    """The name of the schema."""
+    domain: Literal["sdm"] = Field(
+        description="The links domain of the entity."
+    )
 
-    table_name: str
-    """The name of the table."""
+    entity_type: Literal["table"] = Field(
+        description="The type of the entity in the domain."
+    )
+
+    schema_name: str = Field(description="The name of the schema.")
+
+    table_name: str = Field(description="The name of the table.")
+
+    tap_table_index: int | None = Field(
+        description="The sorting index of the table in the TAP schema."
+    )
 
 
-@dataclass(slots=True, kw_only=True)
 class SdmColumnLinksCollection(LinksCollection[SdmColumnLink]):
     """A collection of links to SDM columns."""
 
-    schema_name: str
-    """The name of the schema."""
+    domain: Literal["sdm"] = Field(
+        description="The links domain of the entity."
+    )
 
-    table_name: str
-    """The name of the table."""
+    entity_type: Literal["column"] = Field(
+        description="The type of the entity in the domain."
+    )
 
-    column_name: str
-    """The name of the column."""
+    schema_name: str = Field(description="The name of the schema.")
+
+    table_name: str = Field(description="The name of the table.")
+
+    column_name: str = Field(description="The name of the column.")
+
+    tap_column_index: int | None = Field(
+        description="The sorting index of the column in the TAP schema."
+    )
+
+
+SdmLinksCollection = RootModel[
+    Annotated[
+        SdmSchemaLinksCollection
+        | SdmTableLinksCollection
+        | SdmColumnLinksCollection,
+        Field(discriminator="entity_type"),
+    ]
+]
+"""A generic collection of SDM links for any SDM entity type.
+
+Use this root model to parse SQLAlchemy query results when the domain type
+can be any of the three SDM entity types: schema, table, or column.
+
+Access the underlying collection using the ``root`` attribute.
+"""

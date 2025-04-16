@@ -2,6 +2,17 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.12.0'></a>
+## 0.12.0 (2025-04-16)
+
+### New features
+
+- The Links API collection endpoints now use pagination for improved performance and usability. Ook uses keyset pagination, so look for a Links header with `next`, `prev`, and `first` links. Use these URLs to advance to the next page. The `X-Total-Count` header indicates the total number of items in the collection. Pagination applies to the following endpoints:
+
+  - `GET /ook/links/domains/sdm/schemas`
+  - `GET /ook/links/domains/sdm/schemas/:schema/tables`
+  - `GET /ook/links/domains/sdm/schemas/:schema/tables/:table/columns`
+
 <a id='changelog-0.11.0'></a>
 
 ## 0.11.0 (2025-04-04)

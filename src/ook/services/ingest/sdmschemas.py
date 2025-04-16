@@ -213,7 +213,7 @@ class SdmSchemasIngestService:
                 continue
             schema_links = SdmSchemaBulkLinks(
                 schema=SdmSchemaLink(
-                    name=sdm_schema.name,
+                    schema_name=sdm_schema.name,
                     html_url=schema_url,
                     title=f"{sdm_schema.name} schema",
                     type="schema_browser",
@@ -221,7 +221,7 @@ class SdmSchemasIngestService:
                 ),
                 tables=[
                     SdmTableLink(
-                        name=table.name,
+                        table_name=table.name,
                         schema_name=sdm_schema.name,
                         html_url=f"{schema_url}{table.felis_id}",
                         title=f"{table.name} table",
@@ -232,7 +232,7 @@ class SdmSchemasIngestService:
                 ],
                 columns=[
                     SdmColumnLink(
-                        name=column.name,
+                        column_name=column.name,
                         schema_name=sdm_schema.name,
                         table_name=table.name,
                         html_url=f"{schema_url}{column.felis_id}",
