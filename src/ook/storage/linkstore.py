@@ -278,6 +278,21 @@ class LinkStore:
     ) -> Select:
         """Create a select that can query a links for a collection of some
         combination of schema, table, and column entity types.
+
+        Parameters
+        ----------
+        include_schemas
+            Whether to include SDM schema entities.
+        include_tables
+            Whether to include SDM table entities.
+        include_columns
+            Whether to include SDM column entities.
+
+        Returns
+        -------
+        Select
+            A SQLAlchemy select statement that can be used to query the
+            collection of links for the specified entity types.
         """
         table_links_cte = self._create_table_links_cte()
         column_links_cte = self._create_column_links_cte()

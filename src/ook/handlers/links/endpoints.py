@@ -92,7 +92,7 @@ async def get_sdm_links(
 
     async with context.session.begin():
         link_service = context.factory.create_links_service()
-        results = await link_service.get_sdm_links(
+        results = await link_service.get_links_for_sdm_collection(
             include_schemas=True,
             include_tables=include_tables,
             include_columns=include_columns,
@@ -172,7 +172,7 @@ async def get_sdm_links_scoped_to_schema(
         link_service = context.factory.create_links_service()
 
         if include_columns:
-            results = await link_service.get_sdm_links(
+            results = await link_service.get_links_for_sdm_collection(
                 include_schemas=False,
                 include_tables=True,
                 include_columns=True,
@@ -288,7 +288,7 @@ async def get_sdm_schema_column_links_for_table(
 
     async with context.session.begin():
         link_service = context.factory.create_links_service()
-        results = await link_service.get_column_links_for_sdm_table(
+        results = await link_service.get_links_for_sdm_columns_in_table(
             schema_name=schema_name,
             table_name=table_name,
             cursor=parsed_cursor,
