@@ -101,7 +101,7 @@ def iter_sphinx_sections(
     headers: list[str],
     header_callback: Callable[[str], str] | None = None,
     content_callback: Callable[[str], str] | None = None,
-) -> Generator[SphinxSection, None, None]:
+) -> Generator[SphinxSection]:
     """Iterate through the hierarchical sections in a root HTML element,
     yielding the content between that section header and the next section
     header.
