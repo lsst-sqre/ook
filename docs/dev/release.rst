@@ -37,41 +37,45 @@ Ook follows semver_, so follow its rules to pick the next version:
 
 Run the nox scriv-collect session with the version number you decided on:
 
-.. code-block:: sh
+.. tab-set:::
 
-   nox -s scriv-collect X.Y.Z
+   .. tab-item:: In venv
+
+      .. code-block:: sh
+
+         nox -s scriv-collect X.Y.Z
+
+   .. tab-item:: Without pre-installation
+
+      .. code-block:: sh
+
+         uv run --group=nox nox -s scriv-collect X.Y.Z
 
 This will delete the fragment files and collect them into :file:`CHANGELOG.md` under an entry for the new release.
 Review that entry and edit it as needed (proofread, change the order to put more important things first, etc.).
 
 Finally, create a PR from those changes and merge it before continuing with the release process.
 
-2. Tag the release
-------------------
-
-At the HEAD of the ``main`` branch, create and push a tag with the semantic version:
-
-.. code-block:: sh
-
-   git tag -s X.Y.Z -m "X.Y.Z"
-   git push --tags
-
-The tag **must** follow the :pep:`440` specification since Ook uses setuptools_scm_ to set version metadata based on Git tags.
-In particular, **don't** prefix the tag with ``v``.
-
-.. _setuptools_scm: https://github.com/pypa/setuptools_scm
-
-The `ci.yaml`_ GitHub Actions workflow uploads the new release to Docker Hub.
-
-3. Create a GitHub release
+2. Create a GitHub release
 --------------------------
 
-Add a new GitHub release for this version.
-The release title should be the same as the version number.
+Add a new GitHub release for this version:
+
+- The release title should be the same as the version number.
+- The release tag should be the version: ``X.Y.Z``.
+
+  .. note::
+
+     The tag **must** follow the :pep:`440` specification since Ook uses setuptools_scm_ to set version metadata based on Git tags.
+     In particular, **don't** prefix the tag with ``v``.
+
+.. _setuptools_scm: https://github.com/pypa/setuptools_scm
 
 Start the description of the release by using the :guilabel:`Generate release notes` button to include the GitHub-generated summary of pull requests.
 Then, above that, paste the contents of the :file:`CHANGELOG.md` entry for this release, without the initial heading specifying the version number and date.
 Adjust the heading depth of the subsections to use ``##`` instead of ``###`` to match the pull request summary.
+
+Once the release is created, `ci.yaml`_ GitHub Actions workflow uploads the new release to Docker Hub.
 
 .. _backport-release:
 
