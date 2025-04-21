@@ -1,7 +1,7 @@
 name: CI
 
 env:
-  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.6.14"
 
 "on":
   merge_group: {}
@@ -22,20 +22,24 @@ env:
 
 jobs:
   lint:
-
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version-file: ".python-version"
 
       - name: Run pre-commit
-        uses: pre-commit/action@v3.0.1
+        run: uv run --group=lint pre-commit run --all-files
 
   test:
     runs-on: ubuntu-latest
@@ -44,19 +48,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version-file: ".python-version"
 
       - name: Run nox
-        uses: lsst-sqre/run-nox@v1
-        with:
-          cache-dependency: "requirements/*.txt"
-          cache-key-prefix: test
-          nox-sessions: "typing test"
-          python-version: ${{ env.PYTHON_VERSION }}
-          nox-package: "nox[uv] testcontainers[kafka]"
+        run: uv run --group=nox nox -s typing test
 
   docs:
     runs-on: ubuntu-latest
@@ -68,6 +71,11 @@ jobs:
           # Ensure the documentation gets the right version.
           fetch-depth: 0
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+
       - name: Update package lists
         run: sudo apt-get update
 
@@ -77,16 +85,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version-file: ".python-version"
 
       - name: Run nox
-        uses: lsst-sqre/run-nox@v1
-        with:
-          cache-dependency: "requirements/*.txt"
-          cache-key-prefix: docs
-          nox-sessions: "docs"
-          python-version: ${{ env.PYTHON_VERSION }}
-          nox-package: "nox[uv] testcontainers[kafka]"
+        run: uv run --group=nox nox -s docs
 
       # Only attempt documentation uploads for long-lived branches, tagged
       # releases, and pull requests from ticket branches.  This avoids version
@@ -105,7 +107,6 @@ jobs:
             || startsWith(github.head_ref, 'tickets/'))
 
   build:
-
     runs-on: ubuntu-latest
     needs: [lint, test]
 
@@ -121,7 +122,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # full history for setuptools_scm
+          fetch-depth: 0 # full history for setuptools_scm
 
       - uses: lsst-sqre/build-and-push-to-ghcr@v1
         id: build

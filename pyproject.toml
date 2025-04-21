@@ -2,24 +2,43 @@
 # https://packaging.python.org/en/latest/specifications/declaring-project-metadata/
 name = "ook"
 description = "Ook is the librarian indexing the Vera C. Rubin Observatory's documentation."
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 readme = "README.md"
 keywords = ["rubin", "lsst"]
 # https://pypi.org/classifiers/
 classifiers = [
     "Development Status :: 4 - Beta",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.13",
     "Intended Audience :: Developers",
     "Natural Language :: English",
     "Operating System :: POSIX",
     "Typing :: Typed",
+    "Private :: Do Not Upload",
 ]
-requires-python = ">=3.11"
-# Use requirements/main.in for runtime dependencies instead.
-dependencies = []
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi",
+    "starlette",
+    "uvicorn[standard]",
+    "pydantic >= 2.0.0",
+    "pydantic_settings",
+    "safir[db]",
+    "alembic[tz]",
+    "faststream[kafka]",
+    "algoliasearch>=3.0,<4.0",
+    "dataclasses-avroschema",
+    "click",
+    "dateparser",
+    "lxml",
+    "cssselect", # for lxml
+    "lsst-felis", # SDM Schemas support
+    "markdown-it-py[linkify,plugins]",
+    "aiohttp>=2.0,<4.0", # for algoliasearch
+    "async_timeout>=2.0,<4.0", # for algoliasearch
+]
 dynamic = ["version"]
 
 [project.scripts]
@@ -32,6 +51,37 @@ Source = "https://github.com/lsst-sqre/ook"
 [build-system]
 requires = ["setuptools>=61", "wheel", "setuptools_scm[toml]>=6.2"]
 build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "asgi-lifespan",
+    "coverage[toml]",
+    "httpx",
+    "pydantic",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "respx",
+]
+docs = [
+    "documenteer[guide]",
+    "autodoc_pydantic",
+]
+lint = [
+    "ruff",
+    "pre-commit",
+    "pre-commit-uv",
+]
+nox = [
+    "nox",
+    "testcontainers[kafka,postgres]"
+]
+typing = [
+    "mypy",
+    "pydantic",
+    "types-dateparser",
+    "types-PyYAML",
+]
 
 [tool.setuptools_scm]
 

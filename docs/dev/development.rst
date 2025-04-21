@@ -21,12 +21,18 @@ Ook is developed by the Rubin Observatory SQuaRE team.
 Setting up a local development environment
 ==========================================
 
+Local development requires:
+
+- Python 3.13
+- Uv_
+- Docker or a compatible container runtime
+
 Ook is a Python project that should be developed within a virtual environment.
-You can either manage this virtual environment yourself, or use :command:`nox -s venv-init` to create one for you.
+You can create this virtual environment yourself, or use :command:`nox -s venv-init` to create one for you.
 
 .. tab-set::
 
-   .. tab-item:: Self-managed
+   .. tab-item:: Self-managed venv
 
       If you already have a Python virtual environment set up in your shell, you can use the :command:`nox -s init` command to install Ook and its development dependencies into it:
 
@@ -34,8 +40,7 @@ You can either manage this virtual environment yourself, or use :command:`nox -s
 
          git clone https://github.com/lsst-sqre/ook.git
          cd ook
-         pip install nox
-         nox -s init
+         uv run --group=nox nox -s init
 
       This init step does two things:
 
@@ -50,13 +55,12 @@ You can either manage this virtual environment yourself, or use :command:`nox -s
 
          git clone https://github.com/lsst-sqre/ook.git
          cd ook
-         pip install nox
-         nox -s venv-init
+         uv run --group=nox nox -s venv-init
          source .venv/bin/activate
 
       This init step does three things:
 
-      1. Creates a `venv`_ virtual environment in the ``.venv`` subdirectory.
+      1. Creates a ``venv`` virtual environment in the ``.venv`` subdirectory.
       2. Installs Ook along with its runtime and development dependencies.
       3. Installs the pre-commit hooks.
 
@@ -71,34 +75,95 @@ You can either manage this virtual environment yourself, or use :command:`nox -s
 Pre-commit hooks
 ================
 
-The pre-commit hooks, which are automatically installed by running the :command:`nox -s init-dev` command on :ref:`set up <dev-environment>`, ensure that files are valid and properly formatted.
-Some pre-commit hooks automatically reformat code:
-
-``ruff``
-    Sorts Python imports and automatically fixes some common Python issues.
-
-``black``
-    Automatically formats Python code.
+The pre-commit hooks ensure that files are valid and properly formatted.
+The hooks are automatically installed by running the :command:`nox -s init-dev` or :command:`nox -s init` commands on :ref:`set up <dev-environment>`.
 
 When these hooks fail, your Git commit will be aborted.
 To proceed, stage the new modifications and proceed with your Git commit.
+
+Refer to the :file:`.pre-commit-config.yaml` file for the list of hooks that are run.
 
 .. _dev-run-tests:
 
 Running tests
 =============
 
-To test all components of Ook, run nox_, which tests the library the same way that the GitHub Actions CI workflow does:
+To test all components of Ook, run nox_, which tests the library the same way that the GitHub Actions CI workflow does.
 
-.. code-block:: sh
+.. tab-set::
 
-   nox
+   .. tab-item:: In venv
+      :sync: venv
+
+      .. code-block:: sh
+
+         nox
+
+   .. tab-item:: Without pre-installation
+      :sync: uv
+
+      .. code-block:: sh
+
+         uv run --group=nox nox
+
+File linting, type checking, and unit tests are run as separate nox sessions:
+
+.. tab-set::
+
+   .. tab-item:: In venv
+      :sync: venv
+
+      .. code-block:: sh
+
+         nox -s lint
+         nox -s typing
+         nox -s unit
+
+   .. tab-item:: Without pre-installation
+      :sync: uv
+
+      .. code-block:: sh
+
+         uv run --group=nox nox -s lint
+         uv run --group=nox nox -s typing
+         uv run --group=nox nox -s unit
+
+With unit tests, you can run a specific test file or directory:
+
+.. tab-set::
+
+   .. tab-item:: In venv
+      :sync: venv
+
+      .. code-block:: sh
+
+         nox -s test -- tests/foo_test.py
+
+   .. tab-item:: Without pre-installation
+      :sync: uv
+
+      .. code-block:: sh
+
+         uv run --group=nox nox -s test -- tests/foo_test.py
 
 To see a listing of specific nox sessions, run:
 
-.. code-block:: sh
+.. tab-set::
 
-   nox -s
+   .. tab-item:: In venv
+      :sync: venv
+
+      .. code-block:: sh
+
+         nox --list
+
+   .. tab-item:: Without pre-installation
+      :sync: uv
+
+      .. code-block:: sh
+
+         uv run --group=nox nox --list
+
 
 Building documentation
 ======================
@@ -107,17 +172,42 @@ Documentation is built with Sphinx_:
 
 .. _Sphinx: https://www.sphinx-doc.org/en/master/
 
-.. code-block:: sh
 
-   nox -s docs
+.. tab-set::
 
-The build documentation is located in the :file:`docs/_build/html` directory.
+   .. tab-item:: In venv
+      :sync: venv
+
+      .. code-block:: sh
+
+         nox -s docs
+
+   .. tab-item:: Without pre-installation
+      :sync: uv
+
+      .. code-block:: sh
+
+         uv run --group=nox nox -s docs
+
+The built documentation is located in the :file:`docs/_build/html` directory.
 
 To check the documentation for broken links, run:
 
-.. code-block:: sh
+.. tab-set::
 
-   nox -s docs-linkcheck
+   .. tab-item:: In venv
+      :sync: venv
+
+      .. code-block:: sh
+
+         nox -s docs-linkcheck
+
+   .. tab-item:: Without pre-installation
+      :sync: uv
+
+      .. code-block:: sh
+
+         uv run --group=nox nox -s docs-linkcheck
 
 .. _dev-change-log:
 
@@ -128,9 +218,21 @@ Ook uses scriv_ to maintain its change log.
 
 When preparing a pull request, run
 
-.. code-block:: sh
+.. tab-set::
 
-   nox -s scriv-create
+   .. tab-item:: In venv
+      :sync: venv
+
+      .. code-block:: sh
+
+         nox -s scriv-create
+
+   .. tab-item:: Without pre-installation
+      :sync: uv
+
+      .. code-block:: sh
+
+         uv run --group=nox nox -s scriv-create
 
 This will create a change log fragment in :file:`changelog.d`.
 Edit that fragment, removing the sections that do not apply and adding entries for your pull request.
@@ -161,7 +263,7 @@ Style guide
 Code
 ----
 
-- The code style follows :pep:`8`, though in practice lean on Black and ruff to format the code for you. Use :sqr:`072` for for architectural guidance. Follow :sqr:`076` for the Pydantic-based Avro schemas.
+- The code style follows :pep:`8`, though in practice lean on Black and ruff to format the code for you. Use :sqr:`072` for for architectural guidance.
 
 - Use :pep:`484` type annotations.
   The ``nox -s typing`` test session, which runs mypy_, ensures that the project's types are consistent.

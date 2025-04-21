@@ -4,6 +4,8 @@ import subprocess
 from pathlib import Path
 
 import nox
+from testcontainers.kafka import KafkaContainer
+from testcontainers.postgres import PostgresContainer
 
 # Default sessions
 nox.options.sessions = ["lint", "typing", "test", "docs"]
@@ -13,19 +15,324 @@ nox.options.default_venv_backend = "uv"
 nox.options.reuse_existing_virtualenvs = True
 
 
-# Pip installable dependencies
-PIP_DEPENDENCIES = [
-    ("-r", "requirements/main.txt"),
-    ("-r", "requirements/dev.txt"),
-    ("-e", "."),
-]
+@nox.session(name="venv-init", venv_backend=None, python=False)
+def init_dev(session: nox.Session) -> None:
+    """Set up a development venv."""
+    # Create a venv in the current directory, replacing any existing one
+    session.run("uv", "venv", external=True)
+    _install_dev(session, bin_prefix=".venv/bin/")
+
+    print(
+        "\nTo activate this virtual env, run:\n\n\tsource .venv/bin/activate\n"
+    )
 
 
-def _install(session: nox.Session) -> None:
-    """Install the application and all dependencies into the session."""
-    session.install("--upgrade", "uv")
-    for deps in PIP_DEPENDENCIES:
-        session.install(*deps)
+@nox.session(name="init", venv_backend=None, python=False)
+def init(session: nox.Session) -> None:
+    """Set up the development environment in the current virtual env."""
+    _install_dev(session, bin_prefix=".venv/bin/")
+
+
+@nox.session
+def lint(session: nox.Session) -> None:
+    """Run pre-commit hooks."""
+    session.run_install(
+        "uv",
+        "sync",
+        "--only-group=lint",
+        "--frozen",
+        "--no-install-project",
+        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
+    )
+    session.run("pre-commit", "run", "--all-files", *session.posargs)
+
+
+@nox.session
+def typing(session: nox.Session) -> None:
+    """Run mypy."""
+    session.run_install(
+        "uv",
+        "sync",
+        "--group=typing",
+        "--no-default-groups",
+        "--frozen",
+        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
+    )
+    session.run("mypy", "noxfile.py", "src", "tests")
+
+
+@nox.session
+def test(session: nox.Session) -> None:
+    """Run pytest."""
+    session.run_install(
+        "uv",
+        "sync",
+        "--frozen",
+        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
+    )
+
+    with KafkaContainer().with_kraft() as kafka:
+        with PostgresContainer("postgres:16") as postgres:
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                }
+            )
+            session.run(
+                "pytest",
+                "--cov=ook",
+                "--cov-branch",
+                *session.posargs,
+                env=env_vars,
+            )
+
+
+@nox.session(name="dump-db-schema")
+def dump_db_schema(session: nox.Session) -> None:
+    """Initialize then dump the database schema."""
+    session.run_install(
+        "uv",
+        "sync",
+        "--frozen",
+        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
+    )
+
+    with KafkaContainer().with_kraft() as kafka:
+        with PostgresContainer("postgres:16") as postgres:
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                }
+            )
+
+            session.run(
+                "ook",
+                "init",
+                "--alembic-config-path",
+                "alembic.ini",
+                env=env_vars,
+            )
+
+            # Use docker exec to run pg_dump inside the container
+            # We're not using the -s flag to dump schema only because we want
+            # to include the data for the alembic version table.
+            dump_command = [
+                "docker",
+                "exec",
+                postgres._container.id,  # noqa: SLF001
+                "pg_dump",
+                "-U",
+                postgres.username,
+                postgres.dbname,
+            ]
+
+            with (
+                Path(__file__)
+                .parent.joinpath("alembic/schema_dump.sql")
+                .open("wb") as f
+            ):
+                subprocess.run(dump_command, stdout=f, check=True)
+
+            session.log("Database schema dumped to alembic/schema_dump.sql")
+
+
+@nox.session(name="alembic")
+def alembic(session: nox.Session) -> None:
+    """Run alembic commands."""
+    sql_dump_path = Path(__file__).parent.joinpath("alembic/schema_dump.sql")
+
+    if not sql_dump_path.exists():
+        session.error(
+            "Database schema dump not found at alembic/schema_dump.sql. Run "
+            "nox -s dump-db-schema with the earlier version of the "
+            "application first."
+        )
+
+    session.run_install(
+        "uv",
+        "sync",
+        "--frozen",
+        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
+    )
+
+    with KafkaContainer().with_kraft() as kafka:
+        with PostgresContainer("postgres:16") as postgres:
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                }
+            )
+            postgres.with_volume_mapping(
+                sql_dump_path,
+                "/docker-entrypoint-initdb.d/schema.sql",
+            )
+            session.run("alembic", *session.posargs, env=env_vars)
+
+
+@nox.session(name="run")
+def run(session: nox.Session) -> None:
+    """Run the application in development mode."""
+    session.run_install(
+        "uv",
+        "sync",
+        "--no-default-groups",
+        "--frozen",
+        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
+    )
+
+    with KafkaContainer().with_kraft() as kafka:
+        with PostgresContainer("postgres:16") as postgres:
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                },
+                use_local_secrets=True,
+            )
+            session.run(
+                "ook",
+                "init",
+                "--alembic-config-path",
+                "alembic.ini",
+                env=env_vars,
+            )
+            session.run(
+                "uvicorn",
+                "ook.main:app",
+                "--reload",
+                env=env_vars,
+            )
+
+
+@nox.session
+def docs(session: nox.Session) -> None:
+    """Build the docs."""
+    session.run_install(
+        "uv",
+        "sync",
+        "--group=docs",
+        "--no-default-groups",
+        "--frozen",
+        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
+    )
+    doctree_dir = (session.cache_dir / "doctrees").absolute()
+
+    with KafkaContainer().with_kraft() as kafka:
+        with PostgresContainer("postgres:16") as postgres:
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                }
+            )
+            with session.chdir("docs"):
+                session.run(
+                    "sphinx-build",
+                    # "-W", # Disable warnings-as-errors for now
+                    "--keep-going",
+                    "-n",
+                    "-T",
+                    "-b",
+                    "html",
+                    "-d",
+                    str(doctree_dir),
+                    ".",
+                    "./_build/html",
+                    env=env_vars,
+                )
+
+
+@nox.session(name="docs-linkcheck")
+def docs_linkcheck(session: nox.Session) -> None:
+    """Linkcheck the docs."""
+    session.run_install(
+        "uv",
+        "sync",
+        "--group=docs",
+        "--no-default-groups",
+        "--frozen",
+        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
+    )
+    doctree_dir = (session.cache_dir / "doctrees").absolute()
+    with KafkaContainer().with_kraft() as kafka:
+        with PostgresContainer("postgres:16") as postgres:
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                }
+            )
+            with session.chdir("docs"):
+                session.run(
+                    "sphinx-build",
+                    # "-W",  # Disable warnings-as-errors for now
+                    "--keep-going",
+                    "-n",
+                    "-T",
+                    "-b",
+                    "linkcheck",
+                    "-d",
+                    str(doctree_dir),
+                    ".",
+                    "./_build/html",
+                    env=env_vars,
+                )
+
+
+@nox.session(name="scriv-create")
+def scriv_create(session: nox.Session) -> None:
+    """Create a scriv entry."""
+    session.install("scriv")
+    session.run("scriv", "create")
+
+
+@nox.session(name="scriv-collect")
+def scriv_collect(session: nox.Session) -> None:
+    """Collect scriv entries."""
+    session.install("scriv")
+    session.run("scriv", "collect", "--add", "--version", *session.posargs)
+
+
+@nox.session(name="update-deps")
+def update_deps(session: nox.Session) -> None:
+    """Update pinned server dependencies and pre-commit hooks."""
+    session.run("uv", "lock", "--upgrade")
+    session.run("uv", "run", "--only-group=lint", "pre-commit", "autoupdate")
+
+    print("\nTo refresh the development venv, run:\n\n\tnox -s init\n")
+
+
+def _install_dev(session: nox.Session, bin_prefix: str = "") -> None:
+    """Install the application and all development dependencies into the
+    user's virtual environment.
+
+    This is for setting up a development environment. Testing sessions should
+    use the `uv sync` command to install dependencies into the nox virtual
+    environment.
+    """
+    session.run("uv", "sync", "--active", external=True)
+    session.run("uv", "run", "pre-commit", "install", external=True)
 
 
 TEST_GITHUB_APP_PRIVATE_KEY = """-----BEGIN RSA PRIVATE KEY-----
@@ -95,332 +402,3 @@ def _make_env_vars(
         if algolia_api_key := os.getenv("ALGOLIA_API_KEY"):
             env_vars["ALGOLIA_API_KEY"] = algolia_api_key
     return env_vars
-
-
-def _install_dev(session: nox.Session, bin_prefix: str = "") -> None:
-    """Install the application and all development dependencies into the
-    session.
-    """
-    python = f"{bin_prefix}python"
-    precommit = f"{bin_prefix}pre-commit"
-
-    # Install dev dependencies
-    session.run(python, "-m", "pip", "install", "uv", external=True)
-    for deps in PIP_DEPENDENCIES:
-        session.run(python, "-m", "uv", "pip", "install", *deps, external=True)
-    session.run(
-        python,
-        "-m",
-        "uv",
-        "pip",
-        "install",
-        "nox",
-        "pre-commit",
-        external=True,
-    )
-    # Install pre-commit hooks
-    session.run(precommit, "install", external=True)
-
-
-@nox.session(name="venv-init")
-def init_dev(session: nox.Session) -> None:
-    """Set up a development venv."""
-    # Create a venv in the current directory, replacing any existing one
-    session.run("python", "-m", "venv", ".venv", "--clear")
-    _install_dev(session, bin_prefix=".venv/bin/")
-
-    print(
-        "\nTo activate this virtual env, run:\n\n\tsource .venv/bin/activate\n"
-    )
-
-
-@nox.session(name="init", venv_backend=None, python=False)
-def init(session: nox.Session) -> None:
-    """Set up the development environment in the current virtual env."""
-    _install_dev(session, bin_prefix="")
-
-
-@nox.session
-def lint(session: nox.Session) -> None:
-    """Run pre-commit hooks."""
-    session.install("pre-commit")
-    session.run("pre-commit", "run", "--all-files", *session.posargs)
-
-
-@nox.session
-def typing(session: nox.Session) -> None:
-    """Run mypy."""
-    _install(session)
-    session.install("mypy")
-    session.run("mypy", "noxfile.py", "src", "tests")
-
-
-@nox.session
-def test(session: nox.Session) -> None:
-    """Run pytest."""
-    from testcontainers.kafka import KafkaContainer
-    from testcontainers.postgres import PostgresContainer
-
-    _install(session)
-
-    with KafkaContainer().with_kraft() as kafka:
-        with PostgresContainer("postgres:16") as postgres:
-            env_vars = _make_env_vars(
-                {
-                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
-                    "OOK_DATABASE_URL": postgres.get_connection_url(
-                        driver="asyncpg"
-                    ),
-                    "OOK_DATABASE_PASSWORD": postgres.password,
-                }
-            )
-            session.run(
-                "pytest",
-                "--cov=ook",
-                "--cov-branch",
-                *session.posargs,
-                env=env_vars,
-            )
-
-
-@nox.session(name="dump-db-schema")
-def dump_db_schema(session: nox.Session) -> None:
-    """Initialize then dump the database schema."""
-    from testcontainers.kafka import KafkaContainer
-    from testcontainers.postgres import PostgresContainer
-
-    _install(session)
-
-    with KafkaContainer().with_kraft() as kafka:
-        with PostgresContainer("postgres:16") as postgres:
-            env_vars = _make_env_vars(
-                {
-                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
-                    "OOK_DATABASE_URL": postgres.get_connection_url(
-                        driver="asyncpg"
-                    ),
-                    "OOK_DATABASE_PASSWORD": postgres.password,
-                }
-            )
-
-            session.run(
-                "ook",
-                "init",
-                "--alembic-config-path",
-                "alembic.ini",
-                env=env_vars,
-            )
-
-            # Use docker exec to run pg_dump inside the container
-            # We're not using the -s flag to dump schema only because we want
-            # to include the data for the alembic version table.
-            dump_command = [
-                "docker",
-                "exec",
-                postgres._container.id,  # noqa: SLF001
-                "pg_dump",
-                "-U",
-                postgres.username,
-                postgres.dbname,
-            ]
-
-            with (
-                Path(__file__)
-                .parent.joinpath("alembic/schema_dump.sql")
-                .open("wb") as f
-            ):
-                subprocess.run(dump_command, stdout=f, check=True)
-
-            session.log("Database schema dumped to alembic/schema_dump.sql")
-
-
-@nox.session(name="alembic")
-def alembic(session: nox.Session) -> None:
-    """Run alembic commands."""
-    from testcontainers.kafka import KafkaContainer
-    from testcontainers.postgres import PostgresContainer
-
-    sql_dump_path = Path(__file__).parent.joinpath("alembic/schema_dump.sql")
-
-    if not sql_dump_path.exists():
-        session.error(
-            "Database schema dump not found at alembic/schema_dump.sql. Run "
-            "nox -s dump-db-schema with the earlier version of the "
-            "application first."
-        )
-
-    _install(session)
-
-    with KafkaContainer().with_kraft() as kafka:
-        with PostgresContainer("postgres:16") as postgres:
-            env_vars = _make_env_vars(
-                {
-                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
-                    "OOK_DATABASE_URL": postgres.get_connection_url(
-                        driver="asyncpg"
-                    ),
-                    "OOK_DATABASE_PASSWORD": postgres.password,
-                }
-            )
-            postgres.with_volume_mapping(
-                sql_dump_path,
-                "/docker-entrypoint-initdb.d/schema.sql",
-            )
-            session.run("alembic", *session.posargs, env=env_vars)
-
-
-@nox.session(name="run")
-def run(session: nox.Session) -> None:
-    """Run the application in development mode."""
-    from testcontainers.kafka import KafkaContainer
-    from testcontainers.postgres import PostgresContainer
-
-    _install(session)
-
-    with KafkaContainer().with_kraft() as kafka:
-        with PostgresContainer("postgres:16") as postgres:
-            env_vars = _make_env_vars(
-                {
-                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
-                    "OOK_DATABASE_URL": postgres.get_connection_url(
-                        driver="asyncpg"
-                    ),
-                    "OOK_DATABASE_PASSWORD": postgres.password,
-                },
-                use_local_secrets=True,
-            )
-            session.run(
-                "ook",
-                "init",
-                "--alembic-config-path",
-                "alembic.ini",
-                env=env_vars,
-            )
-            session.run(
-                "uvicorn",
-                "ook.main:app",
-                "--reload",
-                env=env_vars,
-            )
-
-
-@nox.session
-def docs(session: nox.Session) -> None:
-    """Build the docs."""
-    from testcontainers.kafka import KafkaContainer
-    from testcontainers.postgres import PostgresContainer
-
-    _install(session)
-    session.install("setuptools")  # for sphinxcontrib-redoc (pkg_resources)
-    doctree_dir = (session.cache_dir / "doctrees").absolute()
-
-    with KafkaContainer().with_kraft() as kafka:
-        with PostgresContainer("postgres:16") as postgres:
-            env_vars = _make_env_vars(
-                {
-                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
-                    "OOK_DATABASE_URL": postgres.get_connection_url(
-                        driver="asyncpg"
-                    ),
-                    "OOK_DATABASE_PASSWORD": postgres.password,
-                }
-            )
-            with session.chdir("docs"):
-                session.run(
-                    "sphinx-build",
-                    # "-W", # Disable warnings-as-errors for now
-                    "--keep-going",
-                    "-n",
-                    "-T",
-                    "-b",
-                    "html",
-                    "-d",
-                    str(doctree_dir),
-                    ".",
-                    "./_build/html",
-                    env=env_vars,
-                )
-
-
-@nox.session(name="docs-linkcheck")
-def docs_linkcheck(session: nox.Session) -> None:
-    """Linkcheck the docs."""
-    from testcontainers.kafka import KafkaContainer
-    from testcontainers.postgres import PostgresContainer
-
-    _install(session)
-    session.install("setuptools")  # for sphinxcontrib-redoc (pkg_resources)
-    doctree_dir = (session.cache_dir / "doctrees").absolute()
-    with KafkaContainer().with_kraft() as kafka:
-        with PostgresContainer("postgres:16") as postgres:
-            env_vars = _make_env_vars(
-                {
-                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
-                    "OOK_DATABASE_URL": postgres.get_connection_url(
-                        driver="asyncpg"
-                    ),
-                    "OOK_DATABASE_PASSWORD": postgres.password,
-                }
-            )
-            with session.chdir("docs"):
-                session.run(
-                    "sphinx-build",
-                    # "-W",  # Disable warnings-as-errors for now
-                    "--keep-going",
-                    "-n",
-                    "-T",
-                    "-b",
-                    "linkcheck",
-                    "-d",
-                    str(doctree_dir),
-                    ".",
-                    "./_build/html",
-                    env=env_vars,
-                )
-
-
-@nox.session(name="scriv-create")
-def scriv_create(session: nox.Session) -> None:
-    """Create a scriv entry."""
-    session.install("scriv")
-    session.run("scriv", "create")
-
-
-@nox.session(name="scriv-collect")
-def scriv_collect(session: nox.Session) -> None:
-    """Collect scriv entries."""
-    session.install("scriv")
-    session.run("scriv", "collect", "--add", "--version", *session.posargs)
-
-
-@nox.session(name="update-deps")
-def update_deps(session: nox.Session) -> None:
-    """Update pinned server dependencies and pre-commit hooks."""
-    session.install("--upgrade", "uv", "wheel", "pre-commit")
-    session.run("pre-commit", "autoupdate")
-
-    # Dependencies are unpinned for compatibility with the unpinned client
-    # dependency.
-    session.run(
-        "uv",
-        "pip",
-        "compile",
-        "--upgrade",
-        "--build-isolation",
-        "--output-file",
-        "requirements/main.txt",
-        "requirements/main.in",
-    )
-
-    session.run(
-        "uv",
-        "pip",
-        "compile",
-        "--upgrade",
-        "--build-isolation",
-        "--output-file",
-        "requirements/dev.txt",
-        "requirements/dev.in",
-    )
-
-    print("\nTo refresh the development venv, run:\n\n\tnox -s init\n")

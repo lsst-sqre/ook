@@ -6,7 +6,7 @@
 name: Periodic CI
 
 env:
-  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.6.14"
 
 "on":
   schedule:
@@ -21,19 +21,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Update dependencies
-        uses: lsst-sqre/run-nox@v1
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          nox-sessions: "update-deps"
-          python-version: ${{ env.PYTHON_VERSION }}
+          version: ${{ env.UV_VERSION }}
 
-      - name: Run nox
-        uses: lsst-sqre/run-nox@v1
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          nox-sessions: "typing test docs"
-          python-version: ${{ env.PYTHON_VERSION }}
-          use-cache: false
-          nox-package: "nox[uv] testcontainers[kafka]"
+          python-version-file: ".python-version"
+
+      - name: Update dependencies
+        run: uv run --group=nox nox -s update-deps
+
+      - name: Run tests
+        run: uv run --group=nox nox -s lint typing test docs
 
       - name: Report status
         if: always()
