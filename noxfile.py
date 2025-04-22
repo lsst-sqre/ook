@@ -317,8 +317,15 @@ def scriv_collect(session: nox.Session) -> None:
 @nox.session(name="update-deps")
 def update_deps(session: nox.Session) -> None:
     """Update pinned server dependencies and pre-commit hooks."""
-    session.run("uv", "lock", "--upgrade")
-    session.run("uv", "run", "--only-group=lint", "pre-commit", "autoupdate")
+    session.run("uv", "lock", "--active", "--upgrade", external=True)
+    session.run(
+        "uv",
+        "run",
+        "--only-group=lint",
+        "pre-commit",
+        "autoupdate",
+        external=True,
+    )
 
     print("\nTo refresh the development venv, run:\n\n\tnox -s init\n")
 
@@ -331,7 +338,7 @@ def _install_dev(session: nox.Session, bin_prefix: str = "") -> None:
     use the `uv sync` command to install dependencies into the nox virtual
     environment.
     """
-    session.run("uv", "sync", "--active", external=True)
+    session.run("uv", "sync", "--active", "--all-groups", external=True)
     session.run("uv", "run", "pre-commit", "install", external=True)
 
 
