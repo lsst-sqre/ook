@@ -75,3 +75,15 @@ async def test_repo_store(
     assert len(authordb.affiliations) > 0
     assert len(authordb.emails) > 0
     assert authordb.authors["DMPipelines"].is_collaboration is True
+
+
+def test_authordb_converstion_to_domain(
+    authordb_content: dict[str, str],
+) -> None:
+    authordb = AuthorDbYaml.model_validate(authordb_content)
+    affiliations = authordb.affiliations_to_domain()
+    assert len(affiliations) > 0
+    authors = authordb.authors_to_domain()
+    assert len(authors) > 0
+    collaborations = authordb.collaborations_to_domain()
+    assert len(collaborations) == 1
