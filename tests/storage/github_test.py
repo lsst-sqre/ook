@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from io import StringIO
 from pathlib import Path
 
 import httpx
 import pytest
 import respx
 import structlog
+import yaml
 from gidgethub.httpx import GitHubAPI
 
 from ook.storage.github import GitHubRepoStore
@@ -79,3 +81,33 @@ async def test_get_latest_release(
     assert release.name == "w.2025.10"
     assert release.body == ""
     assert len(release.assets) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.respx(base_url="https://api.github.com")
+async def test_get_file_contents(
+    respx_mock: respx.MockRouter, http_client: httpx.AsyncClient
+) -> None:
+    data_root = Path(__file__).parent.parent / "data" / "github" / "lsst-texmf"
+    respx_mock.get(
+        "/repos/lsst/lsst-texmf/contents/etc/authordb.yaml?ref=main"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json=json.loads(
+                (data_root / "authordb-contents.json").read_text()
+            ),
+        )
+    )
+    logger = structlog.get_logger()
+    gh_client = GitHubAPI(http_client, "lsst-sqre")
+
+    gh_repo = GitHubRepoStore(github_client=gh_client, logger=logger)
+    contents = await gh_repo.get_file_contents(
+        owner="lsst", repo="lsst-texmf", path="etc/authordb.yaml", ref="main"
+    )
+    assert contents.path == "etc/authordb.yaml"
+
+    # Check that we can decode the contents
+    authordb_yaml = yaml.safe_load(StringIO(contents.decode_content()))
+    assert "authors" in authordb_yaml
