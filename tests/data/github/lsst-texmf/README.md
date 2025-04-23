@@ -2,4 +2,5 @@
 
 ```
 http get --download -o authordb-contents.json "https://api.github.com/repos/lsst/lsst-texmf/contents/etc/authordb.yaml?ref=main" "Accept:application/vnd.github+json" "X-GitHub-Api-Version:2022-11-28"
+http get --download -o authordb.yaml "https://raw.githubusercontent.com/lsst/lsst-texmf/main/etc/authordb.yaml" "Accept:application/vnd.github+json" "X-GitHub-Api-Version:2022-11-28"
 ```
