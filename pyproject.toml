@@ -157,8 +157,11 @@ extend-ignore = [
 ]
 
 [tool.ruff.lint.extend-per-file-ignores]
-"src/ook/handlers/**" = [
+"src/ook/handlers/**/endpoints.py" = [
     "D103",    # FastAPI handlers should not have docstrings
+    "D400",    # Bold test may not end a period with a sentence.
+    "D401",    # Bold test may not end a period with a sentence.
+    "D404",    # Allow for "this" in the API description
 ]
 "src/ook/dependencies/algoliasearch.py" = [
     "D401",    # A dependency does not need to be in imperative mood

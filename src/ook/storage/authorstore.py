@@ -30,6 +30,72 @@ class AuthorStore:
         self._session = session
         self._logger = logger
 
+    async def get_author_by_id(self, internal_id: str) -> Author | None:
+        """Get an author by their internal ID.
+
+        Parameters
+        ----------
+        internal_id
+            The internal ID of the author to retrieve.
+
+        Returns
+        -------
+        Author or None
+            The author with the specified internal ID, or None if not found.
+        """
+        from sqlalchemy import case, func
+        from sqlalchemy.dialects.postgresql import JSONB
+
+        # Subquery to get affiliations as a JSON array
+        affiliations_subquery = (
+            select(
+                func.json_agg(
+                    func.json_build_object(
+                        "internal_id",
+                        SqlAffiliation.internal_id,
+                        "name",
+                        SqlAffiliation.name,
+                        "address",
+                        SqlAffiliation.address,
+                    ).cast(JSONB)
+                ).label("affiliations")
+            )
+            .select_from(SqlAffiliation)
+            .join(
+                SqlAuthorAffiliation,
+                SqlAffiliation.id == SqlAuthorAffiliation.affiliation_id,
+            )
+            .join(SqlAuthor, SqlAuthor.id == SqlAuthorAffiliation.author_id)
+            .where(SqlAuthor.internal_id == internal_id)
+            .group_by(SqlAuthor.id)
+            .order_by(
+                # Order within json_agg
+                func.array_agg(SqlAuthorAffiliation.position)
+            )
+        ).scalar_subquery()
+
+        # Main query to get author with affiliations
+        stmt = select(
+            SqlAuthor.internal_id,
+            SqlAuthor.surname,
+            SqlAuthor.given_name,
+            SqlAuthor.orcid,
+            SqlAuthor.email,
+            SqlAuthor.notes,
+            case(
+                (affiliations_subquery.is_(None), func.json_build_array()),
+                else_=affiliations_subquery,
+            ).label("affiliations"),
+        ).where(SqlAuthor.internal_id == internal_id)
+
+        result = (await self._session.execute(stmt)).first()
+
+        return (
+            Author.model_validate(result, from_attributes=True)
+            if result
+            else None
+        )
+
     async def upsert_affiliations(
         self, affiliations: Sequence[Affiliation]
     ) -> None:

@@ -16,6 +16,8 @@ from safir.github import GitHubAppClientFactory
 from sqlalchemy.ext.asyncio import AsyncEngine, async_scoped_session
 from structlog.stdlib import BoundLogger
 
+from ook.services.authors import AuthorService
+
 from .config import config
 from .dependencies.algoliasearch import algolia_client_dependency
 from .kafkarouter import kafka_router
@@ -309,4 +311,11 @@ class Factory:
         return LinksService(
             logger=self._logger,
             link_store=self.create_link_store(),
+        )
+
+    def create_author_service(self) -> AuthorService:
+        """Create an AuthorService."""
+        return AuthorService(
+            author_store=self.create_author_store(),
+            loggger=self._logger,
         )
