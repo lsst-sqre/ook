@@ -38,6 +38,26 @@ class GitHubMocker:
             url__regex=r"/repos/(?P<owner>[^/]+)/(?P<repo>[^/]+)/installation",
         ).respond(json={"id": 12345})
 
+    def mock_lsst_texmf_ingest(
+        self, owner: str = "lsst", repo: str = "lsst-texmf"
+    ) -> None:
+        """Mock the GitHub interactions used by
+        LsstTexmfIngestService.ingest().
+        """
+        texmf_data_dir = GITHUB_DATA_DIR / "lsst-texmf"
+        authordb_data = (texmf_data_dir / "authordb-contents.json").read_text()
+        repo_data = (texmf_data_dir / "repo.json").read_text()
+        self.router.get(
+            url=f"/repos/{owner}/{repo}",
+        ).respond(
+            json=json.loads(repo_data),
+        )
+        self.router.get(
+            url=f"/repos/{owner}/{repo}/contents/etc/authordb.yaml?ref=main",
+        ).respond(
+            json=json.loads(authordb_data),
+        )
+
     def mock_sdm_schema_release_ingest(
         self, owner: str = "lsst", repo: str = "sdm_schemas"
     ) -> None:

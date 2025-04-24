@@ -8,7 +8,11 @@ from fastapi import APIRouter, Depends, Response
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 
-from .models import LtdIngestRequest, SdmSchemasIngestRequest
+from .models import (
+    LsstTexmfIngestRequest,
+    LtdIngestRequest,
+    SdmSchemasIngestRequest,
+)
 
 router = APIRouter(prefix=f"{config.path_prefix}/ingest", tags=["ingest"])
 """FastAPI router for all ingest handlers."""
@@ -75,5 +79,29 @@ async def post_ingest_sdm_schemas(
             )
         )
         await ingest_service.ingest(ingest_request.github_release_tag)
+        await context.session.commit()
+    return Response(status_code=200)
+
+
+@router.post(
+    "/lsst-texmf",
+    summary="Ingest lsst-texmf (author info and glossary)",
+)
+async def post_ingest_lsst_texmf(
+    ingest_request: LsstTexmfIngestRequest,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> Response:
+    """Trigger an ingest of lsst-texmf."""
+    logger = context.logger
+    logger.info("Received request to ingest lsst-texmf.")
+    async with context.session.begin():
+        ingest_service = (
+            await context.factory.create_lsst_texmf_ingest_service()
+        )
+        await ingest_service.ingest(
+            git_ref=ingest_request.git_ref,
+            ingest_authordb=ingest_request.ingest_authordb,
+            ingest_glossary=ingest_request.ingest_glossary,
+        )
         await context.session.commit()
     return Response(status_code=200)

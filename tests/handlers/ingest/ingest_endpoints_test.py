@@ -59,3 +59,15 @@ async def test_post_ingest_sdm_schemas(
         "type": "schema_browser",
         "collection_title": "Science Data Model Schemas",
     }
+
+
+@pytest.mark.asyncio
+async def test_post_ingest_lsst_texmf(
+    client: AsyncClient, mock_github: GitHubMocker
+) -> None:
+    """Test ``POST /ook/ingest/sdm-schemas``."""
+    mock_github.mock_lsst_texmf_ingest()
+
+    # Ingest the lsst/lsst-texmf repo (authordb.yaml and glossary)
+    response = await client.post("/ook/ingest/lsst-texmf", json={})
+    assert response.status_code == 200
