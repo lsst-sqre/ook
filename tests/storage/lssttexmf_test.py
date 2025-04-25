@@ -14,7 +14,11 @@ import yaml
 from gidgethub.httpx import GitHubAPI
 
 from ook.storage.github import GitHubRepoStore
-from ook.storage.lssttexmf import AuthorDbYaml, LsstTexmfGitHubRepo
+from ook.storage.lssttexmf import (
+    AuthorDbYaml,
+    GlossaryDef,
+    LsstTexmfGitHubRepo,
+)
 
 
 @pytest.fixture
@@ -28,6 +32,32 @@ def authordb_content() -> dict[str, str]:
         / "authordb.yaml"
     )
     return yaml.safe_load(StringIO(path.read_text()))
+
+
+@pytest.fixture
+def glossarydefs_content() -> str:
+    """Fixture for the content of the glossary definitions."""
+    path = (
+        Path(__file__).parent.parent
+        / "data"
+        / "github"
+        / "lsst-texmf"
+        / "glossarydefs.csv"
+    )
+    return path.read_text()
+
+
+@pytest.fixture
+def glossarydefs_es_content() -> str:
+    """Fixture for the content of the glossary definitions in Spanish."""
+    path = (
+        Path(__file__).parent.parent
+        / "data"
+        / "github"
+        / "lsst-texmf"
+        / "glossarydefs_es.csv"
+    )
+    return path.read_text()
 
 
 def test_authordb_models(
@@ -87,3 +117,10 @@ def test_authordb_converstion_to_domain(
     assert len(authors) > 0
     collaborations = authordb.collaborations_to_domain()
     assert len(collaborations) == 1
+
+
+def test_glossarydef_models(
+    glossarydefs_content: str,
+) -> None:
+    defs = GlossaryDef.parse_csv(glossarydefs_content)
+    assert len(defs) > 0

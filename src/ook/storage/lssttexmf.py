@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import csv
 from io import StringIO
+from typing import Annotated, Literal, Self
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field, ValidationError
 from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
 
@@ -77,6 +79,20 @@ class LsstTexmfGitHubRepo:
             StringIO(file_contents.decode_content())
         )
         return AuthorDbYaml.model_validate(authordb_yaml)
+
+    async def load_glossarydefs(self) -> list[GlossaryDef]:
+        """Load the glossarydefs.csv file."""
+        glossary_path = "etc/glossarydefs.csv"
+        file_contents = await self._repo_client.get_file_contents(
+            owner=self._gh_repo["owner"],
+            repo=self._gh_repo["repo"],
+            path=glossary_path,
+            ref=self._git_ref,
+        )
+        csv_content = file_contents.decode_content()
+        if csv_content is None:
+            raise ValueError("No content in glossarydefs.csv file")
+        return GlossaryDef.parse_csv(csv_content)
 
 
 class AuthorDbAuthor(BaseModel):
@@ -239,3 +255,101 @@ class AuthorDbYaml(BaseModel):
             for author_id, author in self.authors.items()
             if author.is_collaboration
         }
+
+
+def split_list(
+    value: str | list[str],
+) -> list[str]:
+    """Split a string or list of strings into a list of strings."""
+    if isinstance(value, str):
+        return [v.strip() for v in value.split() if v.strip()]
+    return [v.strip() for v in value if v.strip()]
+
+
+def split_list_csv(
+    value: str | list[str],
+) -> list[str]:
+    """Split a string or list of strings based on comma-separated values
+    into a list of strings.
+    """
+    if isinstance(value, str):
+        return [v.strip() for v in value.split(",") if v.strip()]
+    return [v.strip() for v in value if v.strip()]
+
+
+class GlossaryDef(BaseModel):
+    """Model for a row in the glossarydefs.csv file in lsst/lsst-texmf."""
+
+    term: str = Field(
+        description="The glossary term.",
+        validation_alias="Term",
+    )
+
+    definition: str = Field(
+        description="The glossary term definition.",
+        validation_alias="Description",
+    )
+
+    contexts: Annotated[
+        list[str],
+        Field(
+            default_factory=list,
+            description="The glossary term contexts.",
+            validation_alias="Subsystem Tags",
+        ),
+        BeforeValidator(split_list),
+    ]
+
+    documentation_tags: Annotated[
+        list[str],
+        Field(
+            default_factory=list,
+            description=(
+                "The glossary term documentation tags. These are used to "
+                "determine the related documentation for the glossary term."
+            ),
+            validation_alias="Documentation Tags",
+        ),
+        BeforeValidator(split_list_csv),
+    ]
+
+    related_terms: Annotated[
+        list[str],
+        Field(
+            default_factory=list,
+            description=(
+                "The glossary term related terms. These are used to determine "
+                "the related terms for the glossary term."
+            ),
+            validation_alias="Associated Acronyms and Alternative Terms",
+        ),
+        BeforeValidator(split_list_csv),
+    ]
+
+    type: Literal["A", "G"] = Field(
+        default="G",
+        description=(
+            "The glossary term type. ``A`` for abbreviation, ``G`` for "
+            "glossary term."
+        ),
+        validation_alias="Type",
+    )
+
+    @classmethod
+    def parse_csv(
+        cls,
+        csv_content: str,
+    ) -> list[Self]:
+        """Parse the glossarydefs.csv file."""
+        glossary_defs = []
+        reader = csv.DictReader(StringIO(csv_content))
+        for i, row in enumerate(reader):
+            try:
+                glossary_def = cls.model_validate(row)
+            except ValidationError as e:
+                raise ValueError(
+                    f"Error parsing glossarydefs.csv at line {i + 2}"
+                    f"\n\n{row}\n\n{e}"
+                ) from e
+            glossary_defs.append(glossary_def)
+        return glossary_defs
