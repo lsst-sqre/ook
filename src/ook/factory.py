@@ -25,6 +25,7 @@ from .services.algoliaaudit import AlgoliaAuditService
 from .services.algoliadocindex import AlgoliaDocIndexService
 from .services.classification import ClassificationService
 from .services.githubmetadata import GitHubMetadataService
+from .services.glossary import GlossaryService
 from .services.ingest.lssttexmf import LsstTexmfIngestService
 from .services.ingest.sdmschemas import SdmSchemasIngestService
 from .services.landerjsonldingest import LtdLanderJsonLdIngestService
@@ -327,4 +328,11 @@ class Factory:
         return AuthorService(
             author_store=self.create_author_store(),
             loggger=self._logger,
+        )
+
+    def create_glossary_service(self) -> GlossaryService:
+        """Create a GlossaryService."""
+        return GlossaryService(
+            glossary_store=self.create_glossary_store(),
+            logger=self._logger,
         )

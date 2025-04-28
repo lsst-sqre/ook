@@ -27,6 +27,7 @@ from .config import config
 from .dependencies.consumercontext import consumer_context_dependency
 from .dependencies.context import context_dependency
 from .handlers.authors import authors_router
+from .handlers.glossary import glossary_router
 from .handlers.ingest import ingest_router
 from .handlers.internal import internal_router
 
@@ -97,6 +98,10 @@ app = FastAPI(
             "description": "Documentation links for different domains.",
         },
         {
+            "name": "glossary",
+            "description": "Glossary terms.",
+        },
+        {
             "name": "authors",
             "description": "Author information.",
         },
@@ -116,6 +121,7 @@ app = FastAPI(
 app.include_router(internal_router)
 app.include_router(root_router)
 app.include_router(authors_router)
+app.include_router(glossary_router)
 app.include_router(ingest_router)
 app.include_router(links_router)
 app.include_router(kafka_router)

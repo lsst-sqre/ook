@@ -5,11 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from safir.datetime import current_datetime
-from sqlalchemy import delete
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import async_scoped_session
+from sqlalchemy.sql.expression import case
 from structlog.stdlib import BoundLogger
 
 from ook.dbschema.glossary import SqlTerm
+from ook.domain.glossary import GlossaryTerm
 from ook.storage.lssttexmf import GlossaryDef, GlossaryDefEs
 
 __all__ = ["GlossaryStore"]
@@ -34,6 +36,135 @@ class GlossaryStore:
         delete_terms_stmt = delete(SqlTerm)
         await self._session.execute(delete_terms_stmt)
         await self._session.flush()
+
+    async def search_terms(
+        self,
+        *,
+        search_term: str,
+        contexts: list[str] | None = None,
+        include_abbr: bool = True,
+        include_terms: bool = True,
+        search_definitions: bool = True,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[GlossaryTerm]:
+        """Search for glossary a term in the database."""
+        # Shape results to match the GlossaryTerm model
+        # TODO(jonathansick) include related_terms and referenced_by
+        # in the results
+        stmt = select(
+            SqlTerm.term,
+            SqlTerm.definition,
+            SqlTerm.definition_es,
+            SqlTerm.contexts,
+            SqlTerm.is_abbr,
+            SqlTerm.related_documentation,
+        )
+
+        # Convert search term to lowercase for case-insensitive matching
+        search_term_lower = search_term.lower()
+
+        # Create a combined relevance expression for ordering results
+        # Exact match (highest priority)
+        exact_match = case(
+            *[(func.lower(SqlTerm.term) == search_term_lower, 100)], else_=0
+        )
+        # Term begins with search term
+        begins_with = case(
+            *[(func.lower(SqlTerm.term).like(f"{search_term_lower}%"), 50)],
+            else_=0,
+        )
+        # Term contains search term
+        contains_term = case(
+            *[(func.lower(SqlTerm.term).like(f"%{search_term_lower}%"), 25)],
+            else_=0,
+        )
+        # Trigram similarity components
+        term_similarity = func.similarity(SqlTerm.term, search_term) * 20
+        # Consider the definition only if requested
+        if search_definitions:
+            # Definition contains search term
+            definition_contains = case(
+                *[
+                    (
+                        func.lower(SqlTerm.definition).like(
+                            f"%{search_term_lower}%"
+                        ),
+                        10,
+                    )
+                ],
+                else_=0,
+            )
+            # Trigram similarity components
+            def_similarity = (
+                func.similarity(SqlTerm.definition, search_term) * 5
+            )
+            # Combine all factors into a relevance score
+            relevance_expr = (
+                exact_match
+                + begins_with
+                + contains_term
+                + definition_contains
+                + term_similarity
+                + def_similarity
+            ).label("relevance")
+        else:
+            # Combine all factors into a relevance score (no definition
+            # considered)
+            relevance_expr = (
+                exact_match + begins_with + contains_term + term_similarity
+            ).label("relevance")
+
+        # Filter to only include relevant terms
+        if search_definitions:
+            stmt = stmt.filter(
+                or_(
+                    func.lower(SqlTerm.term).like(f"%{search_term_lower}%"),
+                    func.similarity(SqlTerm.term, search_term) > 0.3,
+                    func.lower(SqlTerm.definition).like(
+                        f"%{search_term_lower}%"
+                    ),
+                    func.similarity(SqlTerm.definition, search_term) > 0.1,
+                )
+            )
+        else:
+            stmt = stmt.filter(
+                or_(
+                    func.lower(SqlTerm.term).like(f"%{search_term_lower}%"),
+                    func.similarity(SqlTerm.term, search_term) > 0.3,
+                )
+            )
+
+        # Order by relevance score (descending)
+        stmt = (
+            stmt.order_by(text("relevance DESC"), SqlTerm.term)
+            .add_columns(relevance_expr.label("relevance"))
+            .params(
+                search_term=search_term, search_term_lower=search_term_lower
+            )
+        )
+
+        # Apply context filters if provided
+        if contexts and len(contexts) > 0:
+            # Return terms where at least one context matches any of the
+            # provided contexts
+            stmt = stmt.filter(SqlTerm.contexts.overlap(contexts))
+
+        if not include_abbr and include_terms:
+            # Exclude abbreviations
+            stmt = stmt.filter(SqlTerm.is_abbr.is_(False))
+        elif include_abbr and not include_terms:
+            # Exclude terms
+            stmt = stmt.filter(SqlTerm.is_abbr.is_(True))
+
+        # Apply pagination
+        stmt = stmt.limit(limit).offset(offset)
+
+        results = (await self._session.execute(stmt)).all()
+        return [
+            GlossaryTerm.model_validate(result, from_attributes=True)
+            for result in results
+        ]
 
     async def store_glossarydefs(
         self, *, terms: list[GlossaryDef], es_translations: list[GlossaryDefEs]

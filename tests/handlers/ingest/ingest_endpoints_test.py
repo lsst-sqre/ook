@@ -85,3 +85,10 @@ async def test_post_ingest_lsst_texmf(
     data = response.json()
     assert data["surname"] == "Ivezić"
     assert data["given_name"] == "Željko"
+
+    # Check that we got a glossary term
+    response = await client.get("/ook/glossary/search", params={"q": "square"})
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) >= 1
+    assert data[0]["term"] == "SQuaRE"
