@@ -46,6 +46,12 @@ class GitHubMocker:
         """
         texmf_data_dir = GITHUB_DATA_DIR / "lsst-texmf"
         authordb_data = (texmf_data_dir / "authordb-contents.json").read_text()
+        glossarydefs_data = (
+            texmf_data_dir / "glossarydefs-contents.json"
+        ).read_text()
+        glossarydefs_es_data = (
+            texmf_data_dir / "glossarydefs-es-contents.json"
+        ).read_text()
         repo_data = (texmf_data_dir / "repo.json").read_text()
         self.router.get(
             url=f"/repos/{owner}/{repo}",
@@ -56,6 +62,16 @@ class GitHubMocker:
             url=f"/repos/{owner}/{repo}/contents/etc/authordb.yaml?ref=main",
         ).respond(
             json=json.loads(authordb_data),
+        )
+        self.router.get(
+            url=f"/repos/{owner}/{repo}/contents/etc/glossarydefs.csv?ref=main",
+        ).respond(
+            json=json.loads(glossarydefs_data),
+        )
+        self.router.get(
+            url=f"/repos/{owner}/{repo}/contents/etc/glossarydefs_es.csv?ref=main",
+        ).respond(
+            json=json.loads(glossarydefs_es_data),
         )
 
     def mock_sdm_schema_release_ingest(
