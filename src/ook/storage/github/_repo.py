@@ -178,14 +178,6 @@ class GitHubRepoStore:
             url_vars,  # type: ignore[arg-type]
             accept="application/vnd.github.object+json",
         )
-        self._logger.debug(
-            "Got file contents",
-            owner=owner,
-            repo=repo,
-            path=path,
-            ref=ref,
-            data=data,
-        )
         return GitHubContents.model_validate(data)
 
     async def get_raw_file_contents(
