@@ -33,6 +33,7 @@ from .services.ltdmetadataservice import LtdMetadataService
 from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
 from .services.technoteingest import TechnoteIngestService
 from .storage.authorstore import AuthorStore
+from .storage.glossarystore import GlossaryStore
 from .storage.linkstore import LinkStore
 from .storage.sdmschemastore import SdmSchemasStore
 
@@ -208,6 +209,13 @@ class Factory:
             logger=self._logger,
         )
 
+    def create_glossary_store(self) -> GlossaryStore:
+        """Create a GlossaryStore."""
+        return GlossaryStore(
+            session=self._session,
+            logger=self._logger,
+        )
+
     def create_algolia_doc_index_service(self) -> AlgoliaDocIndexService:
         """Create an Algolia document indexing service."""
         index = self._process_context.algolia_client.init_index(
@@ -304,6 +312,7 @@ class Factory:
             http_client=self.http_client,
             gh_factory=self.create_github_client_factory(),
             author_store=self.create_author_store(),
+            glossary_store=self.create_glossary_store(),
         )
 
     def create_links_service(self) -> LinksService:

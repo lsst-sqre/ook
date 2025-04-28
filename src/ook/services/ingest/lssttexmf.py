@@ -10,6 +10,7 @@ from structlog.stdlib import BoundLogger
 
 from ook.storage.authorstore import AuthorStore
 from ook.storage.github import GitHubRepoStore
+from ook.storage.glossarystore import GlossaryStore
 from ook.storage.lssttexmf import LsstTexmfGitHubRepo
 
 
@@ -23,12 +24,14 @@ class LsstTexmfIngestService:
         http_client: AsyncClient,
         github_repo_store: GitHubRepoStore,
         author_store: AuthorStore,
+        glossary_store: GlossaryStore,
         github_owner: str = "lsst",
         github_repo: str = "lsst-texmf",
     ) -> None:
         self._logger = logger
         self._http_client = http_client
         self._author_store = author_store
+        self._glossary_store = glossary_store
         self._gh_repo_store = github_repo_store
         self._gh_repo = {"owner": github_owner, "repo": github_repo}
 
@@ -40,6 +43,7 @@ class LsstTexmfIngestService:
         http_client: AsyncClient,
         gh_factory: GitHubAppClientFactory,
         author_store: AuthorStore,
+        glossary_store: GlossaryStore,
         github_owner: str = "lsst",
         github_repo: str = "lsst-texmf",
     ) -> Self:
@@ -57,6 +61,7 @@ class LsstTexmfIngestService:
             http_client=http_client,
             github_repo_store=gh_repo_store,
             author_store=author_store,
+            glossary_store=glossary_store,
             github_owner=github_owner,
             github_repo=github_repo,
         )
@@ -94,6 +99,9 @@ class LsstTexmfIngestService:
         if ingest_authordb:
             await self._ingest_authordb(texmf_repo)
 
+        if ingest_glossary:
+            await self._ingest_glossary(texmf_repo)
+
     async def _ingest_authordb(self, repo: LsstTexmfGitHubRepo) -> None:
         """Ingest the authordb.yaml file."""
         author_db_data = await repo.load_authordb()
@@ -107,3 +115,8 @@ class LsstTexmfIngestService:
                 author_db_data.collaborations_to_domain().values()
             )
         )
+
+    async def _ingest_glossary(self, repo: LsstTexmfGitHubRepo) -> None:
+        """Ingest the glossarydefs.csv file."""
+        glossary_data = await repo.load_glossarydefs()
+        await self._glossary_store.store_glossarydefs(glossary_data)
