@@ -94,6 +94,20 @@ class LsstTexmfGitHubRepo:
             raise ValueError("No content in glossarydefs.csv file")
         return GlossaryDef.parse_csv(csv_content)
 
+    async def load_glossarydefs_es(self) -> list[GlossaryDefEs]:
+        """Load the glossarydefs_es.csv file."""
+        glossary_path = "etc/glossarydefs_es.csv"
+        file_contents = await self._repo_client.get_file_contents(
+            owner=self._gh_repo["owner"],
+            repo=self._gh_repo["repo"],
+            path=glossary_path,
+            ref=self._git_ref,
+        )
+        csv_content = file_contents.decode_content()
+        if csv_content is None:
+            raise ValueError("No content in glossarydefs_es.csv file")
+        return GlossaryDefEs.parse_csv(csv_content)
+
 
 class AuthorDbAuthor(BaseModel):
     """Model for an author entry in the authordb.yaml file."""
@@ -258,20 +272,24 @@ class AuthorDbYaml(BaseModel):
 
 
 def split_list(
-    value: str | list[str],
+    value: str | list[str] | None,
 ) -> list[str]:
     """Split a string or list of strings into a list of strings."""
+    if value is None:
+        return []
     if isinstance(value, str):
         return [v.strip() for v in value.split() if v.strip()]
     return [v.strip() for v in value if v.strip()]
 
 
 def split_list_csv(
-    value: str | list[str],
+    value: str | list[str] | None,
 ) -> list[str]:
     """Split a string or list of strings based on comma-separated values
     into a list of strings.
     """
+    if value is None:
+        return []
     if isinstance(value, str):
         return [v.strip() for v in value.split(",") if v.strip()]
     return [v.strip() for v in value if v.strip()]
@@ -349,6 +367,49 @@ class GlossaryDef(BaseModel):
             except ValidationError as e:
                 raise ValueError(
                     f"Error parsing glossarydefs.csv at line {i + 2}"
+                    f"\n\n{row}\n\n{e}"
+                ) from e
+            glossary_defs.append(glossary_def)
+        return glossary_defs
+
+
+class GlossaryDefEs(BaseModel):
+    """Model for a row in the glossarydefs_es.csv file in lsst/lsst-texmf."""
+
+    term: str = Field(
+        description="The glossary term (English).",
+        validation_alias="English",
+    )
+
+    definition: str = Field(
+        description="The glossary term definition (in Spanish).",
+        validation_alias="Español",
+    )
+
+    contexts: Annotated[
+        list[str],
+        Field(
+            default_factory=list,
+            description="The glossary term contexts.",
+            validation_alias="Subsystem Tags",
+        ),
+        BeforeValidator(split_list),
+    ]
+
+    @classmethod
+    def parse_csv(
+        cls,
+        csv_content: str,
+    ) -> list[Self]:
+        """Parse the glossarydefs_es.csv file."""
+        glossary_defs = []
+        reader = csv.DictReader(StringIO(csv_content))
+        for i, row in enumerate(reader):
+            try:
+                glossary_def = cls.model_validate(row)
+            except ValidationError as e:
+                raise ValueError(
+                    f"Error parsing glossarydefs_es.csv at line {i + 2}"
                     f"\n\n{row}\n\n{e}"
                 ) from e
             glossary_defs.append(glossary_def)

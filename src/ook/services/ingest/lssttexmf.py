@@ -119,4 +119,7 @@ class LsstTexmfIngestService:
     async def _ingest_glossary(self, repo: LsstTexmfGitHubRepo) -> None:
         """Ingest the glossarydefs.csv file."""
         glossary_data = await repo.load_glossarydefs()
-        await self._glossary_store.store_glossarydefs(glossary_data)
+        es_glossary_data = await repo.load_glossarydefs_es()
+        await self._glossary_store.store_glossarydefs(
+            terms=glossary_data, es_translations=es_glossary_data
+        )

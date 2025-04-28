@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import async_scoped_session
 from structlog.stdlib import BoundLogger
 
 from ook.dbschema.glossary import SqlTerm
-from ook.storage.lssttexmf import GlossaryDef
+from ook.storage.lssttexmf import GlossaryDef, GlossaryDefEs
 
 __all__ = ["GlossaryStore"]
 
@@ -35,9 +35,11 @@ class GlossaryStore:
         await self._session.execute(delete_terms_stmt)
         await self._session.flush()
 
-    async def store_glossarydefs(self, terms: list[GlossaryDef]) -> None:
+    async def store_glossarydefs(
+        self, *, terms: list[GlossaryDef], es_translations: list[GlossaryDefEs]
+    ) -> None:
         """Store glossary terms from the GlossaryDef data loaded from
-        lsst-texmf's glossarydefs.csv file.
+        lsst-texmf's glossarydefs.csv and glossarydefs_es.csv files.
 
         This method completely replaces all existing terms with the new terms.
         """
@@ -73,6 +75,8 @@ class GlossaryStore:
             )
 
         await self._associate_related_terms(term_map)
+
+        await self._add_es_translations(term_map, es_translations)
 
         await self._session.flush()
 
@@ -153,6 +157,49 @@ class GlossaryStore:
                             target_term=target_term.term,
                             target_id=target_term.id,
                         )
+
+    async def _add_es_translations(
+        self,
+        term_map: dict[TermMapKey, TermMapValue],
+        es_translations: list[GlossaryDefEs],
+    ) -> None:
+        """Add Spanish translations to the terms in the database."""
+        for es_term in es_translations:
+            # Find the corresponding term in the term map
+            matching_terms = [
+                v.sql_term
+                for k, v in term_map.items()
+                if k.term == es_term.term
+            ]
+            if not matching_terms:
+                self._logger.warning(
+                    "English term for Spanish translation not found",
+                    term=es_term.term,
+                    contexts=es_term.contexts,
+                )
+                continue
+
+            if len(matching_terms) == 1:
+                matching_term = matching_terms[0]
+            else:
+                # Get the term with the most matching contexts. If a tie,
+                # default to the first one.
+                matching_term = max(
+                    matching_terms,
+                    key=lambda t: len(
+                        set(t.contexts).intersection(es_term.contexts)
+                    ),
+                )
+                self._logger.info(
+                    "Multiple matching terms found for Spanish "
+                    "translation, using the one with the most "
+                    "matching contexts",
+                    term=es_term.term,
+                    contexts=es_term.contexts,
+                    matching_term=matching_term.term,
+                )
+
+            matching_term.definition_es = es_term.definition
 
 
 @dataclass(frozen=True)
