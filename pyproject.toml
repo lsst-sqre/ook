@@ -75,7 +75,9 @@ lint = [
 ]
 nox = [
     "nox",
-    "testcontainers[kafka,postgres]"
+    "testcontainers[kafka,postgres]",
+    "psycopg2",
+    "sqlalchemy",
 ]
 typing = [
     "mypy",

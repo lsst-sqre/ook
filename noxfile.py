@@ -2,8 +2,10 @@ import base64
 import os
 import subprocess
 from pathlib import Path
+from time import sleep
 
 import nox
+import sqlalchemy
 from testcontainers.kafka import KafkaContainer
 from testcontainers.postgres import PostgresContainer
 
@@ -73,6 +75,8 @@ def test(session: nox.Session) -> None:
 
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16") as postgres:
+            _install_postgres_extensions(postgres)
+
             env_vars = _make_env_vars(
                 {
                     "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
@@ -194,6 +198,8 @@ def run(session: nox.Session) -> None:
 
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16") as postgres:
+            _install_postgres_extensions(postgres)
+
             env_vars = _make_env_vars(
                 {
                     "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
@@ -409,3 +415,13 @@ def _make_env_vars(
         if algolia_api_key := os.getenv("ALGOLIA_API_KEY"):
             env_vars["ALGOLIA_API_KEY"] = algolia_api_key
     return env_vars
+
+
+def _install_postgres_extensions(postgres: PostgresContainer) -> None:
+    """Install PostgreSQL extensions in the container."""
+    sleep(1)
+    engine = sqlalchemy.create_engine(postgres.get_connection_url())
+    with engine.begin() as connection:
+        connection.execute(
+            sqlalchemy.text("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+        )
