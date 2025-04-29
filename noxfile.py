@@ -168,7 +168,13 @@ def alembic(session: nox.Session) -> None:
     )
 
     with KafkaContainer().with_kraft() as kafka:
-        with PostgresContainer("postgres:16") as postgres:
+        with PostgresContainer("postgres:16").with_volume_mapping(
+            sql_dump_path, "/docker-entrypoint-initdb.d/schema.sql"
+        ) as postgres:
+            session.log(
+                "Postgres connection URL: "
+                f"{postgres.get_connection_url(driver=None)}"
+            )
             env_vars = _make_env_vars(
                 {
                     "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
@@ -178,10 +184,50 @@ def alembic(session: nox.Session) -> None:
                     "OOK_DATABASE_PASSWORD": postgres.password,
                 }
             )
-            postgres.with_volume_mapping(
-                sql_dump_path,
-                "/docker-entrypoint-initdb.d/schema.sql",
-            )
+
+            sleep(1)
+            engine = sqlalchemy.create_engine(postgres.get_connection_url())
+            with engine.begin() as connection:
+                result = connection.execute(
+                    sqlalchemy.text(
+                        "SELECT version_num FROM "
+                        "public.alembic_version LIMIT 1;"
+                    )
+                )
+                row = result.fetchone()
+                if row:
+                    session.log(
+                        f"Current alembic version: {row[0]}",
+                    )
+                else:
+                    session.error("No alembic version found.")
+
+                # Print the current database schema
+                session.log("Current database schema:")
+                schema_query = sqlalchemy.text(
+                    """
+                    SELECT
+                        table_schema,
+                        table_name,
+                        column_name,
+                        data_type,
+                        is_nullable
+                    FROM
+                        information_schema.columns
+                    WHERE
+                        table_schema = 'public'
+                    ORDER BY
+                        table_name,
+                        ordinal_position;
+                    """
+                )
+                schema_result = connection.execute(schema_query)
+                for row in schema_result:
+                    session.log(
+                        f"  {row.table_name}.{row.column_name}: "
+                        f"{row.data_type} (nullable: {row.is_nullable})"
+                    )
+
             session.run("alembic", *session.posargs, env=env_vars)
 
 
