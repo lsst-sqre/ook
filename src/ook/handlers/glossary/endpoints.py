@@ -27,6 +27,12 @@ async def search_glossary(
         str,
         Query(
             title="Search term",
+            description=(
+                "The term to search for in the glossary. To consider "
+                "the definition in the search, also set "
+                "`?search_definitions=true`."
+            ),
+            min_length=1,
             alias="q",
         ),
     ],
@@ -46,8 +52,8 @@ async def search_glossary(
         Query(
             title="Include abbreviations",
             description=(
-                "Whether to include abbreviations in the search. "
-                "Defaults to true."
+                "Whether to include abbreviations in the results. "
+                "Defaults to true. See also `include_terms`."
             ),
         ),
     ] = True,
@@ -56,7 +62,9 @@ async def search_glossary(
         Query(
             title="Include terms",
             description=(
-                "Whether to include terms in the search. Defaults to true."
+                "Whether to include glossary terms in the search. Defaults to "
+                "true. To get only abbreviations, set `?include_terms=false` "
+                "See also `include_abbr`."
             ),
         ),
     ] = True,
@@ -65,11 +73,11 @@ async def search_glossary(
         Query(
             title="Search definitions",
             description=(
-                "Whether to search the text of definitions as well. Defaults "
-                "to true."
+                "Whether to search in the text of definitions as well. "
+                "Defaults to false."
             ),
         ),
-    ] = True,
+    ] = False,
     limit: Annotated[
         int,
         Query(
