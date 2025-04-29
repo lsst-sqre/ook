@@ -197,8 +197,14 @@ def run(session: nox.Session) -> None:
     )
 
     with KafkaContainer().with_kraft() as kafka:
-        with PostgresContainer("postgres:16") as postgres:
+        with PostgresContainer(
+            "postgres:16", username="user", password="pass"
+        ) as postgres:
             _install_postgres_extensions(postgres)
+            session.log(
+                "Postgres connection URL: "
+                f"{postgres.get_connection_url(driver='asyncpg')}"
+            )
 
             env_vars = _make_env_vars(
                 {
