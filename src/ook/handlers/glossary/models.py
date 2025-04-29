@@ -43,6 +43,24 @@ class Term(BaseModel):
         ),
     ]
 
+    related_terms: Annotated[
+        list[GlossaryTerm],
+        Field(
+            default_factory=list,
+            description="The related terms.",
+        ),
+    ]
+
+    referenced_by: Annotated[
+        list[GlossaryTerm],
+        Field(
+            default_factory=list,
+            description=(
+                "The terms that reference this term in their definitions."
+            ),
+        ),
+    ]
+
     @classmethod
     def from_domain(cls, term: GlossaryTerm) -> Self:
         """Create a Term response model from a domain model."""
@@ -52,6 +70,8 @@ class Term(BaseModel):
             related_documentation=term.related_documentation,
             is_abbr=term.is_abbr,
             contexts=term.contexts,
+            related_terms=term.related_terms,
+            referenced_by=term.referenced_by,
         )
 
 
@@ -78,6 +98,8 @@ class SearchedTerm(Term):
             definition=term.definition,
             related_documentation=term.related_documentation,
             is_abbr=term.is_abbr,
-            relevance=term.relevance,
             contexts=term.contexts,
+            related_terms=term.related_terms,
+            referenced_by=term.referenced_by,
+            relevance=term.relevance,
         )

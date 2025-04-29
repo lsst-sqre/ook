@@ -57,7 +57,7 @@ class GlossaryTerm(BaseModel):
     ]
 
     related_terms: Annotated[
-        list[str],
+        list[GlossaryTerm],
         Field(
             default_factory=list,
             description="The related terms.",
@@ -65,7 +65,7 @@ class GlossaryTerm(BaseModel):
     ]
 
     referenced_by: Annotated[
-        list[str],
+        list[GlossaryTerm],
         Field(
             default_factory=list,
             description="The terms that reference this term.",

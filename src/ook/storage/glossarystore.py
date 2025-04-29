@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import async_scoped_session
 from sqlalchemy.sql.expression import case
 from structlog.stdlib import BoundLogger
 
-from ook.dbschema.glossary import SqlTerm
+from ook.dbschema.glossary import SqlTerm, term_relationships
 from ook.domain.glossary import GlossaryTerm
 from ook.storage.lssttexmf import GlossaryDef, GlossaryDefEs
 
@@ -49,16 +49,90 @@ class GlossaryStore:
         offset: int = 0,
     ) -> list[GlossaryTerm]:
         """Search for glossary a term in the database."""
+        # Create an explicit empty JSON array literal
+        empty_json_array = func.json_build_array()
+
+        # Subquery to get related terms as a JSON array
+        related_terms_subquery = (
+            select(
+                term_relationships.c.source_term_id.label("term_id"),
+                func.coalesce(
+                    func.json_agg(
+                        func.json_build_object(
+                            "term",
+                            SqlTerm.term,
+                            "definition",
+                            SqlTerm.definition,
+                            "definition_es",
+                            SqlTerm.definition_es,
+                            "is_abbr",
+                            SqlTerm.is_abbr,
+                            "contexts",
+                            SqlTerm.contexts,
+                            "related_documentation",
+                            SqlTerm.related_documentation,
+                        )
+                    ),
+                    empty_json_array,
+                ).label("related_terms"),
+            )
+            .select_from(term_relationships)
+            .join(SqlTerm, term_relationships.c.related_term_id == SqlTerm.id)
+            .group_by(term_relationships.c.source_term_id)
+        ).alias("related_terms_subquery")
+
+        # Subquery to get referenced_by terms as a JSON array
+        referenced_by_subquery = (
+            select(
+                term_relationships.c.related_term_id.label("term_id"),
+                func.coalesce(
+                    func.json_agg(
+                        func.json_build_object(
+                            "term",
+                            SqlTerm.term,
+                            "definition",
+                            SqlTerm.definition,
+                            "definition_es",
+                            SqlTerm.definition_es,
+                            "is_abbr",
+                            SqlTerm.is_abbr,
+                            "contexts",
+                            SqlTerm.contexts,
+                            "related_documentation",
+                            SqlTerm.related_documentation,
+                        )
+                    ),
+                    empty_json_array,
+                ).label("referenced_by"),
+            )
+            .select_from(term_relationships)
+            .join(SqlTerm, term_relationships.c.source_term_id == SqlTerm.id)
+            .group_by(term_relationships.c.related_term_id)
+        ).alias("referenced_by_subquery")
+
         # Shape results to match the GlossaryTerm model
-        # TODO(jonathansick) include related_terms and referenced_by
-        # in the results
-        stmt = select(
+        main_query = select(
+            SqlTerm.id,
             SqlTerm.term,
             SqlTerm.definition,
             SqlTerm.definition_es,
             SqlTerm.contexts,
             SqlTerm.is_abbr,
             SqlTerm.related_documentation,
+            case(
+                (
+                    related_terms_subquery.c.related_terms.is_(None),
+                    empty_json_array,
+                ),
+                else_=related_terms_subquery.c.related_terms,
+            ).label("related_terms"),
+            case(
+                (
+                    referenced_by_subquery.c.referenced_by.is_(None),
+                    empty_json_array,
+                ),
+                else_=referenced_by_subquery.c.referenced_by,
+            ).label("referenced_by"),
         )
 
         # Convert search term to lowercase for case-insensitive matching
@@ -117,7 +191,7 @@ class GlossaryStore:
 
         # Filter to only include relevant terms
         if search_definitions:
-            stmt = stmt.filter(
+            main_query = main_query.filter(
                 or_(
                     func.lower(SqlTerm.term).like(f"%{search_term_lower}%"),
                     func.similarity(SqlTerm.term, search_term) > 0.3,
@@ -128,43 +202,82 @@ class GlossaryStore:
                 )
             )
         else:
-            stmt = stmt.filter(
+            main_query = main_query.filter(
                 or_(
                     func.lower(SqlTerm.term).like(f"%{search_term_lower}%"),
                     func.similarity(SqlTerm.term, search_term) > 0.3,
                 )
             )
 
+        # Apply context filters if provided
+        if contexts and len(contexts) > 0:
+            # Return terms where at least one context matches any of the
+            # provided contexts
+            main_query = main_query.filter(SqlTerm.contexts.overlap(contexts))
+
+        if not include_abbr and include_terms:
+            # Exclude abbreviations
+            main_query = main_query.filter(SqlTerm.is_abbr.is_(False))
+        elif include_abbr and not include_terms:
+            # Exclude terms
+            main_query = main_query.filter(SqlTerm.is_abbr.is_(True))
+
+        # Join with the subqueries for related terms and referenced_by terms
+        main_query = (
+            main_query.select_from(SqlTerm)
+            .outerjoin(  # Use outerjoin instead of join with isouter=True
+                related_terms_subquery,
+                SqlTerm.id == related_terms_subquery.c.term_id,
+            )
+            .outerjoin(
+                referenced_by_subquery,
+                SqlTerm.id == referenced_by_subquery.c.term_id,
+            )
+        )
+
         # Order by relevance score (descending)
-        stmt = (
-            stmt.order_by(text("relevance DESC"), SqlTerm.term)
+        main_query = (
+            main_query.order_by(text("relevance DESC"), SqlTerm.term)
             .add_columns(relevance_expr.label("relevance"))
             .params(
                 search_term=search_term, search_term_lower=search_term_lower
             )
         )
 
-        # Apply context filters if provided
-        if contexts and len(contexts) > 0:
-            # Return terms where at least one context matches any of the
-            # provided contexts
-            stmt = stmt.filter(SqlTerm.contexts.overlap(contexts))
-
-        if not include_abbr and include_terms:
-            # Exclude abbreviations
-            stmt = stmt.filter(SqlTerm.is_abbr.is_(False))
-        elif include_abbr and not include_terms:
-            # Exclude terms
-            stmt = stmt.filter(SqlTerm.is_abbr.is_(True))
-
         # Apply pagination
-        stmt = stmt.limit(limit).offset(offset)
+        main_query = main_query.limit(limit).offset(offset)
 
-        results = (await self._session.execute(stmt)).all()
-        return [
-            GlossaryTerm.model_validate(result, from_attributes=True)
-            for result in results
+        # Execute the query
+        results = await self._session.execute(main_query)
+        result_rows = results.all()
+
+        # Debug: Log the first result if available
+        if result_rows:
+            self._logger.debug(
+                "First search result",
+                term=result_rows[0].term,
+                related_terms_type=type(result_rows[0].related_terms),
+                related_terms=result_rows[0].related_terms,
+                referenced_by_type=type(result_rows[0].referenced_by),
+                referenced_by=result_rows[0].referenced_by,
+            )
+
+        # Convert results to GlossaryTerm objects
+        glossary_terms = [
+            GlossaryTerm.model_validate(row, from_attributes=True)
+            for row in result_rows
         ]
+
+        # Debug: Log the first processed term if available
+        if glossary_terms:
+            self._logger.debug(
+                "First glossary term after validation",
+                term=glossary_terms[0].term,
+                related_terms=glossary_terms[0].related_terms,
+                referenced_by=glossary_terms[0].referenced_by,
+            )
+
+        return glossary_terms
 
     async def store_glossarydefs(
         self, *, terms: list[GlossaryDef], es_translations: list[GlossaryDefEs]
@@ -211,26 +324,16 @@ class GlossaryStore:
 
         await self._session.flush()
 
-    async def _associate_related_terms(  # noqa: C901 PLR0912
+    async def _associate_related_terms(
         self, term_map: dict[TermMapKey, TermMapValue]
     ) -> None:
         """Associate related terms in the database."""
-        # Track relationships by ID to prevent duplicates
-        established_relationships: set[tuple[int, int]] = set()
-
         for term_map_value in term_map.values():
             domain_term = term_map_value.domain_term
             sql_term = term_map_value.sql_term
 
             if not domain_term.related_terms:
                 continue
-
-            self._logger.debug(
-                "Associating related terms",
-                source_term=domain_term.term,
-                contexts=domain_term.contexts,
-                related_terms=domain_term.related_terms,
-            )
 
             for related_term_name in domain_term.related_terms:
                 # Get all rows with the same term name
@@ -242,7 +345,7 @@ class GlossaryStore:
 
                 if not related_terms:
                     self._logger.warning(
-                        "Related term not found in database",
+                        "Related glossary term not found in database",
                         source_term=domain_term.term,
                         related_term=related_term_name,
                     )
@@ -266,28 +369,23 @@ class GlossaryStore:
                     else:
                         # Just use the first one as a fallback
                         target_term = related_terms[0]
-                        self._logger.info(
+                        self._logger.debug(
                             "Multiple related terms found with no context "
                             "match, using first",
                             source_term=domain_term.term,
                             related_term=related_term_name,
                             contexts=domain_term.contexts,
-                        )
-
-                # Check if this relationship already exists by ID
-                if target_term is not None:
-                    relationship_key = (sql_term.id, target_term.id)
-                    if relationship_key not in established_relationships:
-                        sql_term.related_terms.append(target_term)
-                        established_relationships.add(relationship_key)
-                    else:
-                        self._logger.debug(
-                            "Skipping duplicate relationship",
-                            source_term=sql_term.term,
-                            source_id=sql_term.id,
-                            target_term=target_term.term,
                             target_id=target_term.id,
                         )
+
+                sql_term.related_terms.append(target_term)
+                self._logger.debug(
+                    "Adding glossary term relationship",
+                    source_term=sql_term.term,
+                    target_term=target_term.term,
+                    target_id=target_term.id,
+                    source_id=sql_term.id,
+                )
 
     async def _add_es_translations(
         self,
