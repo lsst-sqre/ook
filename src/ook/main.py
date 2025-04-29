@@ -66,9 +66,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator:
         config.database_url, config.database_password
     )
 
-    async with kafka_router.lifespan_context(app):
-        logger.info("Ook start up complete.")
-        yield
+    logger.info("Ook start up complete.")
+    yield
 
     # Shut down
     logger.info("Ook is shutting down.")
