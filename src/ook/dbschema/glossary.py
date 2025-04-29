@@ -20,7 +20,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
 
-__all__ = ["SqlTerm"]
+__all__ = ["SqlTerm", "term_relationships"]
 
 
 term_relationships = Table(
