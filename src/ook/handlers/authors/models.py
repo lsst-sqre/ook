@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, HttpUrl, model_validator
 
 from ook.domain.authors import Author as AuthorDomain
 
-__all__ = ["Author", "AuthorFull"]
+__all__ = ["Author"]
 
 
 class Affiliation(BaseModel):
@@ -82,12 +82,3 @@ class Author(BaseModel):
     def from_domain(cls, author: AuthorDomain) -> Self:
         """Create an AuthorResponse from a domain Author."""
         return cls.model_validate(author, from_attributes=True)
-
-
-class AuthorFull(Author):
-    """An author with full details."""
-
-    email: str | None = Field(
-        default=None,
-        description="Email address of the author.",
-    )

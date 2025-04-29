@@ -67,37 +67,11 @@ async def test_get_author_by_id(
 
 
 @pytest.mark.asyncio
-async def test_get_full_author_by_id(
-    client: AsyncClient, ingest_lsst_texmf: None
-) -> None:
-    response = await client.get("/ook/authors/project-access/id/sickj")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["email"] == "jsick@lsst.org"
-
-
-@pytest.mark.asyncio
 async def test_get_author_by_id_not_found(
     client: AsyncClient, ingest_lsst_texmf: None
 ) -> None:
     """Test the /authors/id/{internal_id} endpoint with a non-existent ID."""
     response = await client.get("/ook/authors/id/doesnotexist")
-    assert response.status_code == 404
-    data = response.json()
-    assert data["detail"][0] == {
-        "msg": "Author 'doesnotexist' not found",
-        "type": "not_found",
-    }
-
-
-@pytest.mark.asyncio
-async def test_get_author_full_by_id_not_found(
-    client: AsyncClient, ingest_lsst_texmf: None
-) -> None:
-    """Test the /authors/project-access/id/{internal_id} endpoint with a
-    non-existent ID.
-    """
-    response = await client.get("/ook/authors/project-access/id/doesnotexist")
     assert response.status_code == 404
     data = response.json()
     assert data["detail"][0] == {
