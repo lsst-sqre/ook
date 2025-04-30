@@ -2,6 +2,13 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.13.1'></a>
+## 0.13.1 (2025-04-30)
+
+### Bug fixes
+
+- The database session is now committed after running `ook ingest-lsst-texmf`.
+
 <a id='changelog-0.13.0'></a>
 
 ## 0.13.0 (2025-04-30)
