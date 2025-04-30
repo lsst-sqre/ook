@@ -2,8 +2,10 @@ import base64
 import os
 import subprocess
 from pathlib import Path
+from time import sleep
 
 import nox
+import sqlalchemy
 from testcontainers.kafka import KafkaContainer
 from testcontainers.postgres import PostgresContainer
 
@@ -73,6 +75,8 @@ def test(session: nox.Session) -> None:
 
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16") as postgres:
+            _install_postgres_extensions(postgres)
+
             env_vars = _make_env_vars(
                 {
                     "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
@@ -164,7 +168,13 @@ def alembic(session: nox.Session) -> None:
     )
 
     with KafkaContainer().with_kraft() as kafka:
-        with PostgresContainer("postgres:16") as postgres:
+        with PostgresContainer("postgres:16").with_volume_mapping(
+            sql_dump_path, "/docker-entrypoint-initdb.d/schema.sql"
+        ) as postgres:
+            session.log(
+                "Postgres connection URL: "
+                f"{postgres.get_connection_url(driver=None)}"
+            )
             env_vars = _make_env_vars(
                 {
                     "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
@@ -174,10 +184,50 @@ def alembic(session: nox.Session) -> None:
                     "OOK_DATABASE_PASSWORD": postgres.password,
                 }
             )
-            postgres.with_volume_mapping(
-                sql_dump_path,
-                "/docker-entrypoint-initdb.d/schema.sql",
-            )
+
+            sleep(1)
+            engine = sqlalchemy.create_engine(postgres.get_connection_url())
+            with engine.begin() as connection:
+                result = connection.execute(
+                    sqlalchemy.text(
+                        "SELECT version_num FROM "
+                        "public.alembic_version LIMIT 1;"
+                    )
+                )
+                row = result.fetchone()
+                if row:
+                    session.log(
+                        f"Current alembic version: {row[0]}",
+                    )
+                else:
+                    session.error("No alembic version found.")
+
+                # Print the current database schema
+                session.log("Current database schema:")
+                schema_query = sqlalchemy.text(
+                    """
+                    SELECT
+                        table_schema,
+                        table_name,
+                        column_name,
+                        data_type,
+                        is_nullable
+                    FROM
+                        information_schema.columns
+                    WHERE
+                        table_schema = 'public'
+                    ORDER BY
+                        table_name,
+                        ordinal_position;
+                    """
+                )
+                schema_result = connection.execute(schema_query)
+                for row in schema_result:
+                    session.log(
+                        f"  {row.table_name}.{row.column_name}: "
+                        f"{row.data_type} (nullable: {row.is_nullable})"
+                    )
+
             session.run("alembic", *session.posargs, env=env_vars)
 
 
@@ -193,7 +243,15 @@ def run(session: nox.Session) -> None:
     )
 
     with KafkaContainer().with_kraft() as kafka:
-        with PostgresContainer("postgres:16") as postgres:
+        with PostgresContainer(
+            "postgres:16", username="user", password="pass"
+        ) as postgres:
+            _install_postgres_extensions(postgres)
+            session.log(
+                "Postgres connection URL: "
+                f"{postgres.get_connection_url(driver='asyncpg')}"
+            )
+
             env_vars = _make_env_vars(
                 {
                     "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
@@ -215,6 +273,49 @@ def run(session: nox.Session) -> None:
                 "uvicorn",
                 "ook.main:app",
                 "--reload",
+                env=env_vars,
+            )
+
+
+@nox.session(name="cli")
+def cli(session: nox.Session) -> None:
+    """Run an ook CLI command.
+
+    Pass argument to the Ook CLI as positional arguments to this session::
+
+      op run --env-file="square.env" -- nox -s cli -- --help
+    """
+    session.run_install(
+        "uv",
+        "sync",
+        "--no-default-groups",
+        "--frozen",
+        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
+    )
+
+    with KafkaContainer().with_kraft() as kafka:
+        with PostgresContainer(
+            "postgres:16", username="user", password="pass"
+        ) as postgres:
+            _install_postgres_extensions(postgres)
+            session.log(
+                "Postgres connection URL: "
+                f"{postgres.get_connection_url(driver='asyncpg')}"
+            )
+
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                },
+                use_local_secrets=True,
+            )
+            session.run(
+                "ook",
+                *session.posargs,
                 env=env_vars,
             )
 
@@ -317,8 +418,15 @@ def scriv_collect(session: nox.Session) -> None:
 @nox.session(name="update-deps")
 def update_deps(session: nox.Session) -> None:
     """Update pinned server dependencies and pre-commit hooks."""
-    session.run("uv", "lock", "--upgrade")
-    session.run("uv", "run", "--only-group=lint", "pre-commit", "autoupdate")
+    session.run("uv", "lock", "--active", "--upgrade", external=True)
+    session.run(
+        "uv",
+        "run",
+        "--only-group=lint",
+        "pre-commit",
+        "autoupdate",
+        external=True,
+    )
 
     print("\nTo refresh the development venv, run:\n\n\tnox -s init\n")
 
@@ -331,7 +439,7 @@ def _install_dev(session: nox.Session, bin_prefix: str = "") -> None:
     use the `uv sync` command to install dependencies into the nox virtual
     environment.
     """
-    session.run("uv", "sync", "--active", external=True)
+    session.run("uv", "sync", "--active", "--all-groups", external=True)
     session.run("uv", "run", "pre-commit", "install", external=True)
 
 
@@ -402,3 +510,13 @@ def _make_env_vars(
         if algolia_api_key := os.getenv("ALGOLIA_API_KEY"):
             env_vars["ALGOLIA_API_KEY"] = algolia_api_key
     return env_vars
+
+
+def _install_postgres_extensions(postgres: PostgresContainer) -> None:
+    """Install PostgreSQL extensions in the container."""
+    sleep(1)
+    engine = sqlalchemy.create_engine(postgres.get_connection_url())
+    with engine.begin() as connection:
+        connection.execute(
+            sqlalchemy.text("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+        )

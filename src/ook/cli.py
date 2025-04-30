@@ -195,6 +195,7 @@ async def audit(*, reingest: bool = False) -> None:
 )
 @run_with_asyncio
 async def ingest_updated(*, window: str) -> None:
+    """Ingest LTD projects updated recently."""
     logger = structlog.get_logger("ook")
     window_timedelta = parse_timedelta(window)
     engine = create_database_engine(
@@ -208,6 +209,28 @@ async def ingest_updated(*, window: str) -> None:
             window_timedelta
         )
     await engine.dispose()
+
+
+@main.command(name="ingest-lsst-texmf")
+@click.option(
+    "--git-ref",
+    default="main",
+    help="Git ref (branch or tag) of the Git repository to use.",
+)
+@run_with_asyncio
+async def ingest_lsst_texmf(*, git_ref: str) -> None:
+    """Update author and glossary data from GitHub."""
+    logger = structlog.get_logger("ook")
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    async with Factory.create_standalone(
+        logger=logger, engine=engine
+    ) as factory:
+        ingest_service = await factory.create_lsst_texmf_ingest_service()
+        await ingest_service.ingest(git_ref=git_ref)
+    await engine.dispose()
+    logger.info("Completed ingest of lsst/lsst-texmf", git_ref=git_ref)
 
 
 timespan_pattern = re.compile(

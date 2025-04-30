@@ -8,6 +8,7 @@ from typing import Self
 from pydantic import BaseModel, Field, model_validator
 
 __all__ = [
+    "LsstTexmfIngestRequest",
     "LtdIngestRequest",
     "SdmSchemasIngestRequest",
 ]
@@ -72,4 +73,32 @@ class SdmSchemasIngestRequest(BaseModel):
             "the latest release will be ingested."
         ),
         examples=["w.2025.10"],
+    )
+
+
+class LsstTexmfIngestRequest(BaseModel):
+    """Schema for `post_ingest_lsst_texmf`."""
+
+    git_ref: str | None = Field(
+        None,
+        description=(
+            "The Git reference to use for the lsst-texmf repository. If not "
+            "provided, the default branch will be used."
+        ),
+        examples=["main"],
+    )
+
+    ingest_authordb: bool = Field(
+        True,
+        description=(
+            "Whether to ingest the author database from the lsst-texmf "
+            "repository."
+        ),
+    )
+
+    ingest_glossary: bool = Field(
+        True,
+        description=(
+            "Whether to ingest the glossary from the lsst-texmf repository."
+        ),
     )

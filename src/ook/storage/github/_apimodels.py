@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import base64
 from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
@@ -13,6 +14,7 @@ from typing import Annotated
 from pydantic import BaseModel, Field, HttpUrl
 
 __all__ = [
+    "GitHubContents",
     "GitHubReleaseAssetModel",
     "GitHubReleaseModel",
     "GitTreeItem",
@@ -179,3 +181,117 @@ class GitHubReleaseModel(BaseModel):
     ]
 
     assets: Annotated[list[dict], Field(title="Release assets")]
+
+
+class GitHubContents(BaseModel):
+    """A Pydantic model for a GitHub contents (repository contents API).
+
+    https://docs.github.com/en/rest/repos/contents?apiVersion=2022-11-28#get-repository-content
+    """
+
+    type: Annotated[
+        str,
+        Field(
+            description=(
+                "The type of the file. Can be one of 'file', 'dir', or "
+                "'symlink'."
+            ),
+        ),
+    ]
+
+    size: Annotated[
+        int,
+        Field(
+            description="The size of the file in bytes.",
+        ),
+    ]
+
+    name: Annotated[
+        str,
+        Field(
+            description="The name of the file.",
+        ),
+    ]
+
+    path: Annotated[
+        str,
+        Field(
+            description="The path to the file in the repository.",
+        ),
+    ]
+
+    sha: Annotated[
+        str,
+        Field(
+            description="The SHA of the file.",
+        ),
+    ]
+    url: Annotated[
+        HttpUrl,
+        Field(
+            description="The URL of the file.",
+        ),
+    ]
+
+    git_url: Annotated[
+        HttpUrl,
+        Field(
+            description="The Git URL of the file.",
+        ),
+    ]
+
+    html_url: Annotated[
+        HttpUrl,
+        Field(
+            description="The HTML URL of the file.",
+        ),
+    ]
+
+    download_url: Annotated[
+        HttpUrl,
+        Field(
+            description="The download URL of the file.",
+        ),
+    ]
+
+    content: Annotated[
+        str | None,
+        Field(
+            description="The content of the file, base64 encoded.",
+        ),
+    ] = None
+
+    encoding: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The encoding of the file. Is base64 if the content is "
+                "present."
+            )
+        ),
+    ] = None
+
+    entries: Annotated[
+        list[GitHubContents] | None,
+        Field(
+            description=(
+                "The entries in the directory. Only present if the type is "
+                "'dir'."
+            ),
+        ),
+    ] = None
+
+    def decode_content(self) -> str | None:
+        """Decode the content of the file.
+
+        Returns
+        -------
+        str | None
+            The decoded content of the file, or None if the content is not
+            present.
+        """
+        if self.content is None:
+            return None
+        if self.encoding == "base64":
+            return base64.b64decode(self.content).decode("utf-8")
+        return self.content

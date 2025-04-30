@@ -26,6 +26,8 @@ from structlog import get_logger
 from .config import config
 from .dependencies.consumercontext import consumer_context_dependency
 from .dependencies.context import context_dependency
+from .handlers.authors import authors_router
+from .handlers.glossary import glossary_router
 from .handlers.ingest import ingest_router
 from .handlers.internal import internal_router
 
@@ -64,9 +66,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator:
         config.database_url, config.database_password
     )
 
-    async with kafka_router.lifespan_context(app):
-        logger.info("Ook start up complete.")
-        yield
+    logger.info("Ook start up complete.")
+    yield
 
     # Shut down
     logger.info("Ook is shutting down.")
@@ -96,9 +97,18 @@ app = FastAPI(
             "description": "Documentation links for different domains.",
         },
         {
-            "name": "ingest",
-            "description": "Ingest endpoints for Ook.",
+            "name": "glossary",
+            "description": "Glossary terms.",
         },
+        {
+            "name": "authors",
+            "description": "Author information.",
+        },
+        {
+            "name": "ingest",
+            "description": "Ingest services.",
+        },
+        {"name": "default", "description": "Application metadata."},
     ],
     docs_url=f"{config.path_prefix}/docs",
     redoc_url=f"{config.path_prefix}/redoc",
@@ -109,6 +119,8 @@ app = FastAPI(
 # Attach the routers. Prefixes are set in the routers themselves.
 app.include_router(internal_router)
 app.include_router(root_router)
+app.include_router(authors_router)
+app.include_router(glossary_router)
 app.include_router(ingest_router)
 app.include_router(links_router)
 app.include_router(kafka_router)

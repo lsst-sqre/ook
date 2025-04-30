@@ -6,7 +6,11 @@ from gidgethub.httpx import GitHubAPI
 from safir.github.models import GitHubBlobModel, GitHubRepositoryModel
 from structlog.stdlib import BoundLogger
 
-from ._apimodels import GitHubReleaseModel, RecursiveGitTreeModel
+from ._apimodels import (
+    GitHubContents,
+    GitHubReleaseModel,
+    RecursiveGitTreeModel,
+)
 
 __all__ = ["GitHubRepoStore"]
 
@@ -137,3 +141,78 @@ class GitHubRepoStore:
         """
         response = await self._gh.getitem(blob_url)
         return GitHubBlobModel.model_validate(response)
+
+    async def get_file_contents(
+        self, *, owner: str, repo: str, path: str, ref: str | None = None
+    ) -> GitHubContents:
+        """Get the contents of a file in a GitHub repository.
+
+        Parameters
+        ----------
+        owner
+            The owner of the GitHub repository (user or organization).
+        repo
+            The name of the GitHub repository.
+        path
+            The path to the file in the repository.
+        ref
+            The git reference to use for the repository. If not provided, the
+            default branch is used.
+
+        Returns
+        -------
+        GitHubContents
+            The contents of the file.
+        """
+        url = "/repos/{owner}/{repo}/contents/{path}{?ref}"
+        url_vars = {
+            "owner": owner,
+            "repo": repo,
+            "path": path,
+        }
+        if ref is not None:
+            url_vars["ref"] = str(ref)
+
+        data = await self._gh.getitem(
+            url,
+            url_vars,  # type: ignore[arg-type]
+            accept="application/vnd.github.object+json",
+        )
+        return GitHubContents.model_validate(data)
+
+    async def get_raw_file_contents(
+        self, *, owner: str, repo: str, path: str, ref: str | None = None
+    ) -> str:
+        """Get the raw contents of a file in a GitHub repository.
+
+        Parameters
+        ----------
+        owner
+            The owner of the GitHub repository (user or organization).
+        repo
+            The name of the GitHub repository.
+        path
+            The path to the file in the repository.
+        ref
+            The git reference to use for the repository. If not provided, the
+            default branch is used.
+
+        Returns
+        -------
+        str
+            The raw contents of the file.
+        """
+        url = "/repos/{owner}/{repo}/contents/{path}{?ref}"
+        url_vars = {
+            "owner": owner,
+            "repo": repo,
+            "path": path,
+        }
+        if ref is not None:
+            url_vars["ref"] = str(ref)
+
+        return await self._gh.getitem(
+            url,
+            url_vars,  # type: ignore[arg-type]
+            accept="application/vnd.github.raw+json",
+        )

@@ -16,6 +16,8 @@ from safir.github import GitHubAppClientFactory
 from sqlalchemy.ext.asyncio import AsyncEngine, async_scoped_session
 from structlog.stdlib import BoundLogger
 
+from ook.services.authors import AuthorService
+
 from .config import config
 from .dependencies.algoliasearch import algolia_client_dependency
 from .kafkarouter import kafka_router
@@ -23,12 +25,16 @@ from .services.algoliaaudit import AlgoliaAuditService
 from .services.algoliadocindex import AlgoliaDocIndexService
 from .services.classification import ClassificationService
 from .services.githubmetadata import GitHubMetadataService
+from .services.glossary import GlossaryService
+from .services.ingest.lssttexmf import LsstTexmfIngestService
 from .services.ingest.sdmschemas import SdmSchemasIngestService
 from .services.landerjsonldingest import LtdLanderJsonLdIngestService
 from .services.links import LinksService
 from .services.ltdmetadataservice import LtdMetadataService
 from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
 from .services.technoteingest import TechnoteIngestService
+from .storage.authorstore import AuthorStore
+from .storage.glossarystore import GlossaryStore
 from .storage.linkstore import LinkStore
 from .storage.sdmschemastore import SdmSchemasStore
 
@@ -68,7 +74,7 @@ class ProcessContext:
             http_client=http_client,
             kafka_broker=broker,
             kafka_ingest_publisher=broker.publisher(
-                config.ingest_kafka_topic, title="Ook ingest requests"
+                config.ingest_kafka_topic, title="ook-ingest-requests"
             ),
             algolia_client=algolia_client,
         )
@@ -197,6 +203,20 @@ class Factory:
             logger=self._logger,
         )
 
+    def create_author_store(self) -> AuthorStore:
+        """Create an AuthorStore."""
+        return AuthorStore(
+            session=self._session,
+            logger=self._logger,
+        )
+
+    def create_glossary_store(self) -> GlossaryStore:
+        """Create a GlossaryStore."""
+        return GlossaryStore(
+            session=self._session,
+            logger=self._logger,
+        )
+
     def create_algolia_doc_index_service(self) -> AlgoliaDocIndexService:
         """Create an Algolia document indexing service."""
         index = self._process_context.algolia_client.init_index(
@@ -284,9 +304,35 @@ class Factory:
             github_repo=github_repo,
         )
 
+    async def create_lsst_texmf_ingest_service(
+        self,
+    ) -> LsstTexmfIngestService:
+        """Create an LsstTexmfIngestService."""
+        return await LsstTexmfIngestService.create(
+            logger=self._logger,
+            http_client=self.http_client,
+            gh_factory=self.create_github_client_factory(),
+            author_store=self.create_author_store(),
+            glossary_store=self.create_glossary_store(),
+        )
+
     def create_links_service(self) -> LinksService:
         """Create a LinksService."""
         return LinksService(
             logger=self._logger,
             link_store=self.create_link_store(),
+        )
+
+    def create_author_service(self) -> AuthorService:
+        """Create an AuthorService."""
+        return AuthorService(
+            author_store=self.create_author_store(),
+            loggger=self._logger,
+        )
+
+    def create_glossary_service(self) -> GlossaryService:
+        """Create a GlossaryService."""
+        return GlossaryService(
+            glossary_store=self.create_glossary_store(),
+            logger=self._logger,
         )

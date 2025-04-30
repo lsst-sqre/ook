@@ -38,6 +38,7 @@ dependencies = [
     "markdown-it-py[linkify,plugins]",
     "aiohttp>=2.0,<4.0", # for algoliasearch
     "async_timeout>=2.0,<4.0", # for algoliasearch
+    "pylatexenc>=2.10",
 ]
 dynamic = ["version"]
 
@@ -74,7 +75,9 @@ lint = [
 ]
 nox = [
     "nox",
-    "testcontainers[kafka,postgres]"
+    "testcontainers[kafka,postgres]",
+    "psycopg2",
+    "sqlalchemy",
 ]
 typing = [
     "mypy",
@@ -156,8 +159,11 @@ extend-ignore = [
 ]
 
 [tool.ruff.lint.extend-per-file-ignores]
-"src/ook/handlers/**" = [
+"src/ook/handlers/**/endpoints.py" = [
     "D103",    # FastAPI handlers should not have docstrings
+    "D400",    # Bold test may not end a period with a sentence.
+    "D401",    # Bold test may not end a period with a sentence.
+    "D404",    # Allow for "this" in the API description
 ]
 "src/ook/dependencies/algoliasearch.py" = [
     "D401",    # A dependency does not need to be in imperative mood

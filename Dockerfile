@@ -73,4 +73,4 @@ ENV PATH="/app/.venv/bin:$PATH"
 ENV OOK_ALEMBIC_CONFIG_PATH="/app/alembic.ini"
 
 # Run the application.
-CMD ["/app/scripts/start-frontend.sh"]
+CMD ["/app/scripts/start-service.sh"]
