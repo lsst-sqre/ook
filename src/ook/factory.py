@@ -74,7 +74,7 @@ class ProcessContext:
             http_client=http_client,
             kafka_broker=broker,
             kafka_ingest_publisher=broker.publisher(
-                config.ingest_kafka_topic, title="Ook ingest requests"
+                config.ingest_kafka_topic, title="ook-ingest-requests"
             ),
             algolia_client=algolia_client,
         )
