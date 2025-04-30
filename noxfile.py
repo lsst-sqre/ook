@@ -277,6 +277,49 @@ def run(session: nox.Session) -> None:
             )
 
 
+@nox.session(name="cli")
+def cli(session: nox.Session) -> None:
+    """Run an ook CLI command.
+
+    Pass argument to the Ook CLI as positional arguments to this session::
+
+      op run --env-file="square.env" -- nox -s cli -- --help
+    """
+    session.run_install(
+        "uv",
+        "sync",
+        "--no-default-groups",
+        "--frozen",
+        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
+    )
+
+    with KafkaContainer().with_kraft() as kafka:
+        with PostgresContainer(
+            "postgres:16", username="user", password="pass"
+        ) as postgres:
+            _install_postgres_extensions(postgres)
+            session.log(
+                "Postgres connection URL: "
+                f"{postgres.get_connection_url(driver='asyncpg')}"
+            )
+
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                },
+                use_local_secrets=True,
+            )
+            session.run(
+                "ook",
+                *session.posargs,
+                env=env_vars,
+            )
+
+
 @nox.session
 def docs(session: nox.Session) -> None:
     """Build the docs."""
