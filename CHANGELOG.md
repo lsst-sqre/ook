@@ -2,7 +2,40 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.13.0'></a>
+
+## 0.13.0 (2025-04-30)
+
+### New features
+
+- Added a new Author API to interact with author metadata records from Rubin Observatory's author database, which is canonically maintained as the `etc/authordb.yaml` file in [lsst/lsst-texmf](https://github.com/lsst/lsst-texmf).
+
+  - Use the new endpoint `GET /ook/authors` to paginate over all author records. Author records include affiliations.
+
+  - Use `GET /ook/authors/id/{internal_id}` to retrieve the record for a single author based on their author ID.
+
+- Added a Glossary API to interact with the Rubin Observatory glossary, which is canonically maintained in the `etc/glossarydefs.csv` and `etc/glossarydefs_es.csv` files in [lsst/lsst-texmf](https://github.com/lsst/lsst-texmf).
+
+  - The `GET /ook/glossary/search?q={term}` endpoint allows searching for glossary terms. The search is case-insensitive and typo-tolerant.
+
+- A new ingest endpoint, `POST /ook/ingest/lsst-texmf` triggers a refresh of author and glossary data from the `lsst/lsst-texmf` repository. This service can also be run from the CLI with the `ook ingest-lsst-texmf` command (useful for testing or cron jobs).
+
+### Bug fixes
+
+- Fixed the AsyncAPI documentation generation (available at `/ook/asyncapi`).
+
+### Other changes
+
+- Migrated dependency management to UV lockfiles, with dependencies defined in pyproject.toml's `dependencies` array and `dependency-groups` table. In addition to deleting the old `requirements/` files, this change also affects the Dockerfile, GitHub Actions, and Nox setup (`noxfile.py`).
+
+- Adopt Python 3.13.
+
+- Fixed the process for creating Alembic migrations, ensuring that the previous database schema is mounted correctly.
+
+- The FastStream lifecycle is no longer explicitly managed.
+
 <a id='changelog-0.12.0'></a>
+
 ## 0.12.0 (2025-04-16)
 
 ### New features
