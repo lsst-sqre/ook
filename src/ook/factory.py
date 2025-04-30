@@ -168,6 +168,11 @@ class Factory:
         """The shared HTTP client."""
         return self._process_context.http_client
 
+    @property
+    def db_session(self) -> async_scoped_session:
+        """The database session."""
+        return self._session
+
     def create_github_client_factory(self) -> GitHubAppClientFactory:
         """Create a GitHub client factory.
 

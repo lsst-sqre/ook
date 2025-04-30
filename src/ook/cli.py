@@ -229,6 +229,7 @@ async def ingest_lsst_texmf(*, git_ref: str) -> None:
     ) as factory:
         ingest_service = await factory.create_lsst_texmf_ingest_service()
         await ingest_service.ingest(git_ref=git_ref)
+        await factory.db_session.commit()
     await engine.dispose()
     logger.info("Completed ingest of lsst/lsst-texmf", git_ref=git_ref)
 
