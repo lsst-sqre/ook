@@ -418,7 +418,7 @@ def scriv_collect(session: nox.Session) -> None:
 @nox.session(name="update-deps")
 def update_deps(session: nox.Session) -> None:
     """Update pinned server dependencies and pre-commit hooks."""
-    session.run("uv", "lock", "--active", "--upgrade", external=True)
+    session.run("uv", "lock", "--upgrade", external=True)
     session.run(
         "uv",
         "run",
