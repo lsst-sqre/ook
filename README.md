@@ -27,16 +27,12 @@ Ook is developed with SQuaRE's [Safir](https://safir.lsst.io) framework for Fast
 ### Environment set up
 
 ```bash
-nox -s init-dev
+uv venv
+source .venv/bin/activate
+make init
 ```
 
-Or if in an existing Python virtual environment:
-
-```bash
-nox -s init
-```
-
-### Testing and linking nox sessions
+### Testing and linting nox sessions
 
 ```bash
 nox -s test
