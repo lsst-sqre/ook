@@ -17,24 +17,6 @@ nox.options.default_venv_backend = "uv"
 nox.options.reuse_existing_virtualenvs = True
 
 
-@nox.session(name="venv-init", venv_backend=None, python=False)
-def init_dev(session: nox.Session) -> None:
-    """Set up a development venv."""
-    # Create a venv in the current directory, replacing any existing one
-    session.run("uv", "venv", external=True)
-    _install_dev(session, bin_prefix=".venv/bin/")
-
-    print(
-        "\nTo activate this virtual env, run:\n\n\tsource .venv/bin/activate\n"
-    )
-
-
-@nox.session(name="init", venv_backend=None, python=False)
-def init(session: nox.Session) -> None:
-    """Set up the development environment in the current virtual env."""
-    _install_dev(session, bin_prefix=".venv/bin/")
-
-
 @nox.session
 def lint(session: nox.Session) -> None:
     """Run pre-commit hooks."""
@@ -413,34 +395,6 @@ def scriv_collect(session: nox.Session) -> None:
     """Collect scriv entries."""
     session.install("scriv")
     session.run("scriv", "collect", "--add", "--version", *session.posargs)
-
-
-@nox.session(name="update-deps")
-def update_deps(session: nox.Session) -> None:
-    """Update pinned server dependencies and pre-commit hooks."""
-    session.run("uv", "lock", "--upgrade", external=True)
-    session.run(
-        "uv",
-        "run",
-        "--only-group=lint",
-        "pre-commit",
-        "autoupdate",
-        external=True,
-    )
-
-    print("\nTo refresh the development venv, run:\n\n\tnox -s init\n")
-
-
-def _install_dev(session: nox.Session, bin_prefix: str = "") -> None:
-    """Install the application and all development dependencies into the
-    user's virtual environment.
-
-    This is for setting up a development environment. Testing sessions should
-    use the `uv sync` command to install dependencies into the nox virtual
-    environment.
-    """
-    session.run("uv", "sync", "--active", "--all-groups", external=True)
-    session.run("uv", "run", "pre-commit", "install", external=True)
 
 
 TEST_GITHUB_APP_PRIVATE_KEY = """-----BEGIN RSA PRIVATE KEY-----
