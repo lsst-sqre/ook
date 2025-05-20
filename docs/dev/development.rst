@@ -27,48 +27,26 @@ Local development requires:
 - Uv_
 - Docker or a compatible container runtime
 
+First, clone the Ook repository:
+
+.. code-block:: sh
+
+   git clone https://github.com/lsst-sqre/ook.git
+   cd ook
+
 Ook is a Python project that should be developed within a virtual environment.
-You can create this virtual environment yourself, or use :command:`nox -s venv-init` to create one for you.
+Create this virtual environment with UV:
 
-.. tab-set::
+.. code-block:: sh
 
-   .. tab-item:: Self-managed venv
+   uv venv
+   source .venv/bin/activate
 
-      If you already have a Python virtual environment set up in your shell, you can use the :command:`nox -s init` command to install Ook and its development dependencies into it:
+Then install the development dependencies and pre-commit hooks:
 
-      .. code-block:: sh
+.. code-block:: sh
 
-         git clone https://github.com/lsst-sqre/ook.git
-         cd ook
-         uv run --group=nox nox -s init
-
-      This init step does two things:
-
-      1. Installs Ook along with its runtime and development dependencies.
-      2. Installs the pre-commit hooks.
-
-   .. tab-item:: Managed venv
-
-      Nox can create the virtual environment for you and install Ook and its development dependencies init it:
-
-      .. code-block:: sh
-
-         git clone https://github.com/lsst-sqre/ook.git
-         cd ook
-         uv run --group=nox nox -s venv-init
-         source .venv/bin/activate
-
-      This init step does three things:
-
-      1. Creates a ``venv`` virtual environment in the ``.venv`` subdirectory.
-      2. Installs Ook along with its runtime and development dependencies.
-      3. Installs the pre-commit hooks.
-
-      Whenever you return to the project in a new shell you will need to activate the virtual environment:
-
-      .. code-block:: sh
-
-         source .venv/bin/activate
+   make init
 
 .. _pre-commit-hooks:
 
@@ -76,7 +54,7 @@ Pre-commit hooks
 ================
 
 The pre-commit hooks ensure that files are valid and properly formatted.
-The hooks are automatically installed by running the :command:`nox -s init-dev` or :command:`nox -s init` commands on :ref:`set up <dev-environment>`.
+The hooks are automatically installed by running the :command:`make init`.
 
 When these hooks fail, your Git commit will be aborted.
 To proceed, stage the new modifications and proceed with your Git commit.
