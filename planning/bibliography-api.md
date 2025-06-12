@@ -37,30 +37,36 @@ The central entity representing any trackable item in the system. This unified a
 
 #### 2. ResourceRelationship
 
-Captures relationships between resources (e.g., "documentation website is output of repository").
+Captures all types of relationships between resources, including citations, references, and other semantic connections. This unified approach aligns with DataCite's RelatedIdentifier model.
 
 **Attributes:**
 
 - `id` (Primary Key): Unique identifier
 - `source_resource_id` (Foreign Key): References Resource (the "from" resource)
-- `target_resource_id` (Foreign Key): References Resource (the "to" resource)
-- `relationship_type`: Enumeration (generates, documents, implements, supersedes, etc.)
+- `target_resource_id` (Foreign Key, nullable): References Resource (if target is in Ook)
+- `external_reference_id` (Foreign Key, nullable): References ExternalReference (for external targets)
+- `relationship_type`: Enumeration matching DataCite relationType values
+- `citation_context`: Optional context where citation/reference appears (nullable)
 - `created_at`: Timestamp when relationship was established
 
-#### 3. Citation
+**DataCite-Compatible Relationship Types:**
 
-Represents bibliographic references made by citable resources to other resources. Since all resources (root and versioned) can make citations, this table works uniformly across the system.
+- **Citation types**: `Cites`, `IsCitedBy`, `References`, `IsReferencedBy`
+- **Version relationships**: `HasVersion`, `IsVersionOf`, `IsNewVersionOf`, `IsPreviousVersionOf`
+- **Content relationships**: `IsSupplementTo`, `IsSupplementedBy`, `IsPartOf`, `HasPart`
+- **Derivation relationships**: `IsDerivedFrom`, `IsSourceOf`, `IsCompiledBy`, `Compiles`
+- **Documentation relationships**: `Documents`, `IsDocumentedBy`, `Describes`, `IsDescribedBy`
+- **Review relationships**: `Reviews`, `IsReviewedBy`
+- **Publication relationships**: `IsPublishedIn`
+- **Dependency relationships**: `Requires`, `IsRequiredBy`
+- **Lifecycle relationships**: `Continues`, `IsContinuedBy`, `Obsoletes`, `IsObsoletedBy`
+- **Collection relationships**: `Collects`, `IsCollectedBy`
+- **Translation relationships**: `IsTranslationOf`, `HasTranslation`
+- **Form relationships**: `IsVariantFormOf`, `IsOriginalFormOf`, `IsIdenticalTo`
+- **Metadata relationships**: `HasMetadata`, `IsMetadataFor`
+- **Ook-specific types**: `generates` (for repo→docs), `implements`, `supersedes`
 
-**Attributes:**
-
-- `id` (Primary Key): Unique identifier
-- `citing_resource_id` (Foreign Key): References Resource (the resource making the citation)
-- `cited_resource_id` (Foreign Key, nullable): References Resource (if cited resource is in Ook)
-- `external_reference_id` (Foreign Key, nullable): References ExternalReference (for external citations)
-- `citation_context`: Optional context where citation appears
-- `created_at`: Timestamp when citation was recorded
-
-#### 4. ExternalReference
+#### 3. ExternalReference
 
 Stores information about resources referenced by Ook resources but not tracked in the Ook database.
 
@@ -75,7 +81,7 @@ Stores information about resources referenced by Ook resources but not tracked i
 - `resource_type`: Type of external resource (journal_article, book, website, etc.)
 - `created_at`: Timestamp when added to system
 
-#### 5. Author
+#### 4. Author
 
 Represents authors/contributors to resources. This aligns with the existing `SqlAuthor` model in the codebase.
 
@@ -95,7 +101,7 @@ Represents authors/contributors to resources. This aligns with the existing `Sql
 - Links to `Affiliation` through `AuthorAffiliation` junction table
 - Links to `Collaboration` (future enhancement)
 
-#### 6. ResourceAuthor
+#### 5. ResourceAuthor
 
 Many-to-many relationship between Resources and Authors. Works uniformly for both root resources and their versions.
 
@@ -106,7 +112,7 @@ Many-to-many relationship between Resources and Authors. Works uniformly for bot
 - `author_order`: Order/position in author list
 - `role`: Author role (author, editor, contributor, etc.)
 
-#### 7. Affiliation
+#### 6. Affiliation
 
 Represents institutional affiliations for authors. This aligns with the existing `SqlAffiliation` model.
 
@@ -118,7 +124,7 @@ Represents institutional affiliations for authors. This aligns with the existing
 - `address`: Physical address of the institution (nullable, indexed)
 - `date_updated`: Timestamp of last update
 
-#### 8. AuthorAffiliation
+#### 7. AuthorAffiliation
 
 Junction table for the many-to-many relationship between Authors and Affiliations, with ordering support.
 
@@ -128,7 +134,7 @@ Junction table for the many-to-many relationship between Authors and Affiliation
 - `affiliation_id` (Foreign Key): References Affiliation (primary key component)
 - `position`: Order/position of this affiliation for the author
 
-#### 9. Collaboration
+#### 8. Collaboration
 
 Represents research collaborations. This aligns with the existing `SqlCollaboration` model.
 
@@ -142,14 +148,13 @@ Represents research collaborations. This aligns with the existing `SqlCollaborat
 ### Entity Relationships Summary
 
 1. **Resource** ↔ **Resource**: Self-referencing one-to-many for versioning (parent_resource_id)
-2. **Resource** ↔ **ResourceRelationship**: Many-to-many through self-referencing relationship
-3. **Resource** ↔ **Citation** ↔ **Resource**: Many-to-many (resources can cite and be cited by many other resources)
-4. **Citation** ↔ **ExternalReference**: Many-to-one (multiple citations can reference same external resource)
-5. **Resource** ↔ **Author**: Many-to-many through ResourceAuthor
-6. **Author** ↔ **Affiliation**: Many-to-many through AuthorAffiliation (with ordering)
-7. **Author** ↔ **AuthorAffiliation**: One-to-many
-8. **Affiliation** ↔ **AuthorAffiliation**: One-to-many
-9. **Resource** ↔ **ResourceAuthor**: One-to-many
+2. **Resource** ↔ **ResourceRelationship** ↔ **Resource**: Many-to-many relationships including citations
+3. **ResourceRelationship** ↔ **ExternalReference**: Many-to-one (multiple relationships can reference same external resource)
+4. **Resource** ↔ **Author**: Many-to-many through ResourceAuthor
+5. **Author** ↔ **Affiliation**: Many-to-many through AuthorAffiliation (with ordering)
+6. **Author** ↔ **AuthorAffiliation**: One-to-many
+7. **Affiliation** ↔ **AuthorAffiliation**: One-to-many
+8. **Resource** ↔ **ResourceAuthor**: One-to-many
 
 ### Design Considerations
 
@@ -173,12 +178,14 @@ Represents research collaborations. This aligns with the existing `SqlCollaborat
    - Prevent circular references in parent_resource_id
    - Validate that versioned resources inherit compatible resource_type from parent
 
-4. **Citation Model**:
+4. **Unified Relationship Model**:
 
-   - **Internal citations**: Use `cited_resource_id` for resources within Ook
-   - **External citations**: Use `external_reference_id` for resources outside Ook
-   - **Version-specific citations**: Any resource (root or version) can cite any other resource
-   - **Citation inheritance**: Consider whether citations should inherit from parent to versions
+   - **DataCite compatibility**: Uses the same relationship types as DataCite's RelatedIdentifier
+   - **Citations as relationships**: `Cites`, `IsCitedBy`, `References`, `IsReferencedBy` are relationship types
+   - **Internal relationships**: Use `target_resource_id` for resources within Ook
+   - **External relationships**: Use `external_reference_id` for resources outside Ook
+   - **Contextual information**: Optional `citation_context` field for additional details
+   - **Bidirectional tracking**: Automatic reciprocal relationship creation where appropriate
 
 5. **Performance Optimizations**:
 
@@ -216,20 +223,22 @@ UPDATE Resource SET is_default_version = FALSE WHERE parent_resource_id = 1 OR i
 UPDATE Resource SET is_default_version = TRUE WHERE id = 2;
 ```
 
-#### Cross-Resource Relationships
+#### Cross-Resource Relationships and Citations
 
 ```sql
 -- Documentation website generated from repository
 INSERT INTO ResourceRelationship (source_resource_id, target_resource_id, relationship_type)
 VALUES (1, 3, 'generates');
-```
 
-#### Citations
+-- Internal citation using DataCite relationship types
+INSERT INTO ResourceRelationship (source_resource_id, target_resource_id, relationship_type, citation_context)
+VALUES (1, 2, 'Cites', 'See Smith et al. for methodology details');
 
-```sql
--- Internal citation (resource cites another Ook resource)
-INSERT INTO Citation (citing_resource_id, cited_resource_id) VALUES (1, 2);
+-- External citation to paper not in Ook
+INSERT INTO ResourceRelationship (source_resource_id, external_reference_id, relationship_type)
+VALUES (1, 5, 'References');
 
--- External citation (resource cites external paper)
-INSERT INTO Citation (citing_resource_id, external_reference_id) VALUES (1, 5);
+-- Version relationships
+INSERT INTO ResourceRelationship (source_resource_id, target_resource_id, relationship_type)
+VALUES (2, 1, 'IsNewVersionOf');
 ```
