@@ -25,15 +25,14 @@ The central entity representing any trackable item in the system. This unified a
 - `doi`: Digital Object Identifier (nullable, for citable resources)
 - `version_identifier`: Version string/tag (nullable, e.g., "v1.2.0", "2024-01-15")
 - `version_type`: Enumeration (nullable, semantic_version, date_version, git_tag, etc.)
-- `parent_resource_id` (Foreign Key, nullable): References Resource (null for root resources, set for versions)
 - `is_default_version`: Boolean indicating if this is the current default version
 - `release_date`: When this version was released (nullable, for versioned resources)
 
 **Resource Hierarchy Examples:**
 
-- **Root resource**: `parent_resource_id = NULL`, `is_default_version = TRUE`, `version_identifier = NULL`
-- **Versioned resource**: `parent_resource_id = <root_id>`, `is_default_version = FALSE`, `version_identifier = "v1.2.0"`
-- **Promoted version**: Any version can become default by setting `is_default_version = TRUE`
+- **Root resource**: `is_default_version = TRUE`, `version_identifier = NULL`
+- **Versioned resource**: `is_default_version = FALSE`, `version_identifier = "v1.2.0"`
+- **Version relationships**: Established through ResourceRelationship using DataCite relationship types
 
 #### 2. ResourceRelationship
 
@@ -51,9 +50,10 @@ Captures all types of relationships between resources, including citations, refe
 
 **DataCite-Compatible Relationship Types:**
 
-- **Citation types**: `Cites`, `IsCitedBy`, `References`, `IsReferencedBy`
+- **Primary citation types**: `Cites`, `IsCitedBy` (most commonly used)
+- **Alternative citation types**: `References`, `IsReferencedBy`, `IsSupplementTo`, `IsSupplementedBy`
 - **Version relationships**: `HasVersion`, `IsVersionOf`, `IsNewVersionOf`, `IsPreviousVersionOf`
-- **Content relationships**: `IsSupplementTo`, `IsSupplementedBy`, `IsPartOf`, `HasPart`
+- **Content relationships**: `IsPartOf`, `HasPart`
 - **Derivation relationships**: `IsDerivedFrom`, `IsSourceOf`, `IsCompiledBy`, `Compiles`
 - **Documentation relationships**: `Documents`, `IsDocumentedBy`, `Describes`, `IsDescribedBy`
 - **Review relationships**: `Reviews`, `IsReviewedBy`
@@ -147,14 +147,13 @@ Represents research collaborations. This aligns with the existing `SqlCollaborat
 
 ### Entity Relationships Summary
 
-1. **Resource** ↔ **Resource**: Self-referencing one-to-many for versioning (parent_resource_id)
-2. **Resource** ↔ **ResourceRelationship** ↔ **Resource**: Many-to-many relationships including citations
-3. **ResourceRelationship** ↔ **ExternalReference**: Many-to-one (multiple relationships can reference same external resource)
-4. **Resource** ↔ **Author**: Many-to-many through ResourceAuthor
-5. **Author** ↔ **Affiliation**: Many-to-many through AuthorAffiliation (with ordering)
-6. **Author** ↔ **AuthorAffiliation**: One-to-many
-7. **Affiliation** ↔ **AuthorAffiliation**: One-to-many
-8. **Resource** ↔ **ResourceAuthor**: One-to-many
+1. **Resource** ↔ **ResourceRelationship** ↔ **Resource**: Many-to-many relationships including citations and versioning
+2. **ResourceRelationship** ↔ **ExternalReference**: Many-to-one (multiple relationships can reference same external resource)
+3. **Resource** ↔ **Author**: Many-to-many through ResourceAuthor
+4. **Author** ↔ **Affiliation**: Many-to-many through AuthorAffiliation (with ordering)
+5. **Author** ↔ **AuthorAffiliation**: One-to-many
+6. **Affiliation** ↔ **AuthorAffiliation**: One-to-many
+7. **Resource** ↔ **ResourceAuthor**: One-to-many
 
 ### Design Considerations
 
@@ -167,16 +166,18 @@ Represents research collaborations. This aligns with the existing `SqlCollaborat
 
 2. **Versioning Strategy**:
 
-   - **Root resources**: `parent_resource_id = NULL`, `is_default_version = TRUE`
-   - **Version snapshots**: `parent_resource_id` references root, `is_default_version = FALSE`
+   - **Root resources**: `is_default_version = TRUE`, `version_identifier = NULL`
+   - **Version resources**: `is_default_version = FALSE`, `version_identifier = "v1.2.0"`
+   - **Version relationships**: Use ResourceRelationship with DataCite types (`HasVersion`, `IsVersionOf`, etc.)
    - **Version promotion**: Update `is_default_version` flags to change which version is default
-   - **Recursive queries**: Use CTEs to traverse version hierarchies
+   - **Version queries**: Use ResourceRelationship joins to traverse version hierarchies
 
 3. **Data Integrity Constraints**:
 
    - Ensure only one `is_default_version = TRUE` per resource family
-   - Prevent circular references in parent_resource_id
-   - Validate that versioned resources inherit compatible resource_type from parent
+   - Prevent circular references in version relationships through ResourceRelationship
+   - Validate that versioned resources inherit compatible resource_type
+   - Enforce proper use of version relationship types (`HasVersion`, `IsVersionOf`, etc.)
 
 4. **Unified Relationship Model**:
 
@@ -187,20 +188,32 @@ Represents research collaborations. This aligns with the existing `SqlCollaborat
    - **Contextual information**: Optional `citation_context` field for additional details
    - **Bidirectional tracking**: Automatic reciprocal relationship creation where appropriate
 
-5. **Performance Optimizations**:
+5. **Citation Type Strategy**:
 
-   - Index on `parent_resource_id` and `is_default_version` for version queries
+   - **Default to primary types**: Use `Cites`/`IsCitedBy` for most citation relationships
+   - **Semantic choice**: Allow `References`/`IsReferencedBy` for general references
+   - **Supplementary materials**: Use `IsSupplementedBy`/`IsSupplementTo` for datasets, appendices, etc.
+   - **Functional equivalence**: All citation types count equally in DataCite metrics
+   - **User guidance**: Provide clear guidelines on when to use each type
+   - **Documentation linking**: Use `References`/`IsReferencedBy` for documentation cross-links and related material pointers
+
+   See [DataCite's Contributing Citations and References](https://support.datacite.org/docs/contributing-citations-and-references) for a discussion of citations versus references.
+
+6. **Performance Optimizations**:
+
+   - Index on `is_default_version` for version queries
+   - Index on `relationship_type` in ResourceRelationship for version traversal
    - Consider materialized views for complex bibliographic aggregations
    - Cache latest version information for frequently accessed resources
 
-6. **Author System Integration**:
+7. **Author System Integration**:
 
    - Leverages existing `SqlAuthor`, `SqlAffiliation`, and `SqlCollaboration` models
    - Supports complex author-affiliation relationships with ordering
    - Integrates with LSST TeX author database YAML format
    - Maintains backward compatibility with existing author data structures
 
-7. **Extensibility**:
+8. **Extensibility**:
    - `resource_type` enumeration easily extended for new resource types
    - `relationship_type` enumeration supports various inter-resource relationships
    - JSON fields in `ExternalReference` allow flexible external metadata storage
@@ -211,15 +224,21 @@ Represents research collaborations. This aligns with the existing `SqlCollaborat
 
 ```sql
 -- Root GitHub repository
-INSERT INTO Resource (title, resource_type, parent_resource_id, is_default_version)
-VALUES ('My Project', 'GitHub_repository', NULL, TRUE);
+INSERT INTO Resource (title, resource_type, is_default_version)
+VALUES ('My Project', 'GitHub_repository', TRUE);
 
 -- Version 1.0 release
-INSERT INTO Resource (title, resource_type, parent_resource_id, is_default_version, version_identifier)
-VALUES ('My Project v1.0', 'GitHub_repository', 1, FALSE, 'v1.0.0');
+INSERT INTO Resource (title, resource_type, is_default_version, version_identifier)
+VALUES ('My Project v1.0', 'GitHub_repository', FALSE, 'v1.0.0');
+
+-- Establish version relationship using DataCite types
+INSERT INTO ResourceRelationship (source_resource_id, target_resource_id, relationship_type)
+VALUES (1, 2, 'HasVersion');
+INSERT INTO ResourceRelationship (source_resource_id, target_resource_id, relationship_type)
+VALUES (2, 1, 'IsVersionOf');
 
 -- Promote version 1.0 to default
-UPDATE Resource SET is_default_version = FALSE WHERE parent_resource_id = 1 OR id = 1;
+UPDATE Resource SET is_default_version = FALSE WHERE id = 1;
 UPDATE Resource SET is_default_version = TRUE WHERE id = 2;
 ```
 
