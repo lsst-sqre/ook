@@ -19,14 +19,14 @@ The central entity representing any trackable item in the system. This unified a
 - `description`: Optional description
 - `url`: Primary URL for the resource (if applicable)
 - `resource_type`: Enumeration (GitHub_repository, document, documentation_website, etc.)
-- `created_at`: Timestamp when resource was added to Ook
-- `updated_at`: Timestamp of last modification
+- `date_created`: Timestamp when resource was added to Ook
+- `date_updated`: Timestamp of last modification
 - `is_citable`: Boolean indicating if resource can be cited
 - `doi`: Digital Object Identifier (nullable, for citable resources)
 - `version_identifier`: Version string/tag (nullable, e.g., "v1.2.0", "2024-01-15")
 - `version_type`: Enumeration (nullable, semantic_version, date_version, git_tag, etc.)
 - `is_default_version`: Boolean indicating if this is the current default version
-- `release_date`: When this version was released (nullable, for versioned resources)
+- `date_released`: When this version was released (nullable, for versioned resources)
 
 **Resource Hierarchy Examples:**
 
@@ -46,7 +46,7 @@ Captures all types of relationships between resources, including citations, refe
 - `external_reference_id` (Foreign Key, nullable): References ExternalReference (for external targets)
 - `relationship_type`: Enumeration matching DataCite relationType values
 - `citation_context`: Optional context where citation/reference appears (nullable)
-- `created_at`: Timestamp when relationship was established
+- `date_created`: Timestamp when relationship was established
 
 **DataCite-Compatible Relationship Types:**
 
@@ -77,9 +77,9 @@ Stores information about resources referenced by Ook resources but not tracked i
 - `url`: URL if available
 - `title`: Title of the external resource
 - `authors`: Author information (JSON or separate table)
-- `publication_date`: When external resource was published
+- `date_published`: When external resource was published
 - `resource_type`: Type of external resource (journal_article, book, website, etc.)
-- `created_at`: Timestamp when added to system
+- `date_created`: Timestamp when added to system
 
 #### 4. Author
 
@@ -157,66 +157,67 @@ Represents research collaborations. This aligns with the existing `SqlCollaborat
 
 ### Design Considerations
 
-1. **Unified Model Benefits**:
+#### Unified Model Benefits
 
-   - **Single source of truth**: All bibliographic information (citations, authors, DOIs) handled consistently
-   - **Simplified queries**: No need to join Resource and ResourceVersion tables for bibliographic data
-   - **Flexible versioning**: Any resource can become versioned, and any version can become the default
-   - **API consistency**: Single endpoint pattern for all resource operations
+- **Single source of truth**: All bibliographic information (citations, authors, DOIs) handled consistently
+- **Simplified queries**: No need to join Resource and ResourceVersion tables for bibliographic data
+- **Flexible versioning**: Any resource can become versioned, and any version can become the default
+- **API consistency**: Single endpoint pattern for all resource operations
 
-2. **Versioning Strategy**:
+#### Versioning Strategy
 
-   - **Root resources**: `is_default_version = TRUE`, `version_identifier = NULL`
-   - **Version resources**: `is_default_version = FALSE`, `version_identifier = "v1.2.0"`
-   - **Version relationships**: Use ResourceRelationship with DataCite types (`HasVersion`, `IsVersionOf`, etc.)
-   - **Version promotion**: Update `is_default_version` flags to change which version is default
-   - **Version queries**: Use ResourceRelationship joins to traverse version hierarchies
+- **Root resources**: `is_default_version = TRUE`, `version_identifier = NULL`
+- **Version resources**: `is_default_version = FALSE`, `version_identifier = "v1.2.0"`
+- **Version relationships**: Use ResourceRelationship with DataCite types (`HasVersion`, `IsVersionOf`, etc.)
+- **Version promotion**: Update `is_default_version` flags to change which version is default
+- **Version queries**: Use ResourceRelationship joins to traverse version hierarchies
 
-3. **Data Integrity Constraints**:
+#### Data Integrity Constraints
 
-   - Ensure only one `is_default_version = TRUE` per resource family
-   - Prevent circular references in version relationships through ResourceRelationship
-   - Validate that versioned resources inherit compatible resource_type
-   - Enforce proper use of version relationship types (`HasVersion`, `IsVersionOf`, etc.)
+- Ensure only one `is_default_version = TRUE` per resource family
+- Prevent circular references in version relationships through ResourceRelationship
+- Validate that versioned resources inherit compatible resource_type
+- Enforce proper use of version relationship types (`HasVersion`, `IsVersionOf`, etc.)
 
-4. **Unified Relationship Model**:
+#### Unified Relationship Model
 
-   - **DataCite compatibility**: Uses the same relationship types as DataCite's RelatedIdentifier
-   - **Citations as relationships**: `Cites`, `IsCitedBy`, `References`, `IsReferencedBy` are relationship types
-   - **Internal relationships**: Use `target_resource_id` for resources within Ook
-   - **External relationships**: Use `external_reference_id` for resources outside Ook
-   - **Contextual information**: Optional `citation_context` field for additional details
-   - **Bidirectional tracking**: Automatic reciprocal relationship creation where appropriate
+- **DataCite compatibility**: Uses the same relationship types as DataCite's RelatedIdentifier
+- **Citations as relationships**: `Cites`, `IsCitedBy`, `References`, `IsReferencedBy` are relationship types
+- **Internal relationships**: Use `target_resource_id` for resources within Ook
+- **External relationships**: Use `external_reference_id` for resources outside Ook
+- **Contextual information**: Optional `citation_context` field for additional details
+- **Bidirectional tracking**: Automatic reciprocal relationship creation where appropriate
 
-5. **Citation Type Strategy**:
+#### Citation Type Strategy
 
-   - **Default to primary types**: Use `Cites`/`IsCitedBy` for most citation relationships
-   - **Semantic choice**: Allow `References`/`IsReferencedBy` for general references
-   - **Supplementary materials**: Use `IsSupplementedBy`/`IsSupplementTo` for datasets, appendices, etc.
-   - **Functional equivalence**: All citation types count equally in DataCite metrics
-   - **User guidance**: Provide clear guidelines on when to use each type
-   - **Documentation linking**: Use `References`/`IsReferencedBy` for documentation cross-links and related material pointers
+- **Default to primary types**: Use `Cites`/`IsCitedBy` for most citation relationships
+- **Semantic choice**: Allow `References`/`IsReferencedBy` for general references
+- **Supplementary materials**: Use `IsSupplementedBy`/`IsSupplementTo` for datasets, appendices, etc.
+- **Functional equivalence**: All citation types count equally in DataCite metrics
+- **User guidance**: Provide clear guidelines on when to use each type
+- **Documentation linking**: Use `References`/`IsReferencedBy` for documentation cross-links and related material pointers
 
-   See [DataCite's Contributing Citations and References](https://support.datacite.org/docs/contributing-citations-and-references) for a discussion of citations versus references.
+See [DataCite's Contributing Citations and References](https://support.datacite.org/docs/contributing-citations-and-references) for a discussion of citations versus references.
 
-6. **Performance Optimizations**:
+#### Performance Optimizations
 
-   - Index on `is_default_version` for version queries
-   - Index on `relationship_type` in ResourceRelationship for version traversal
-   - Consider materialized views for complex bibliographic aggregations
-   - Cache latest version information for frequently accessed resources
+- Index on `is_default_version` for version queries
+- Index on `relationship_type` in ResourceRelationship for version traversal
+- Consider materialized views for complex bibliographic aggregations
+- Cache latest version information for frequently accessed resources
 
-7. **Author System Integration**:
+#### Author System Integration
 
-   - Leverages existing `SqlAuthor`, `SqlAffiliation`, and `SqlCollaboration` models
-   - Supports complex author-affiliation relationships with ordering
-   - Integrates with LSST TeX author database YAML format
-   - Maintains backward compatibility with existing author data structures
+- Leverages existing `SqlAuthor`, `SqlAffiliation`, and `SqlCollaboration` models
+- Supports complex author-affiliation relationships with ordering
+- Integrates with LSST TeX author database YAML format
+- Maintains backward compatibility with existing author data structures
 
-8. **Extensibility**:
-   - `resource_type` enumeration easily extended for new resource types
-   - `relationship_type` enumeration supports various inter-resource relationships
-   - JSON fields in `ExternalReference` allow flexible external metadata storage
+#### Extensibility
+
+- `resource_type` enumeration easily extended for new resource types
+- `relationship_type` enumeration supports various inter-resource relationships
+- JSON fields in `ExternalReference` allow flexible external metadata storage
 
 ### Example Usage Patterns
 
