@@ -152,14 +152,21 @@ Represents authors/contributors to resources. This aligns with the existing `Sql
 
 #### 6. ResourceAuthor
 
-Many-to-many relationship between Resources and Authors. Works uniformly for both root resources and their versions.
+Many-to-many relationship between Resources and Authors/Collaborations. This unified table allows author lists to contain a mix of individual authors and collaborations. Works uniformly for both root resources and their versions.
 
 **Attributes:**
 
 - `resource_id` (Foreign Key): References Resource (primary key component)
-- `author_id` (Foreign Key): References Author (primary key component)
+- `author_id` (Foreign Key, nullable): References Author (mutually exclusive with collaboration_id)
+- `collaboration_id` (Foreign Key, nullable): References Collaboration (mutually exclusive with author_id)
 - `author_order`: Order/position in author list (integer, 1-based indexing)
 - `role`: Author role (author, editor, contributor, etc.)
+
+**Constraints:**
+
+- Exactly one of `author_id` or `collaboration_id` must be non-null (check constraint)
+- Composite primary key: `(resource_id, author_order)` to ensure unique ordering
+- Alternative composite unique constraint: `(resource_id, author_id)` and `(resource_id, collaboration_id)` to prevent duplicates
 
 #### 7. Affiliation
 
@@ -213,11 +220,12 @@ Represents projects hosted on LSST the Docs (LTD) for specific resource types li
 2. **ResourceRelationship** ↔ **ExternalReference**: Many-to-one (multiple relationships can reference same external resource)
 3. **Resource** ↔ **Type-specific tables**: One-to-one inheritance (GitHubRepository, Document, DocumentationWebsite)
 4. **Resource** ↔ **Author**: Many-to-many through ResourceAuthor
-5. **Author** ↔ **Affiliation**: Many-to-many through AuthorAffiliation (with ordering)
-6. **Author** ↔ **AuthorAffiliation**: One-to-many
-7. **Affiliation** ↔ **AuthorAffiliation**: One-to-many
-8. **Resource** ↔ **ResourceAuthor**: One-to-many
-9. **Resource** ↔ **LtdProject**: One-to-one (optional, for LTD-hosted resources)
+5. **Resource** ↔ **Collaboration**: Many-to-many through ResourceAuthor
+6. **Author** ↔ **Affiliation**: Many-to-many through AuthorAffiliation (with ordering)
+7. **Author** ↔ **AuthorAffiliation**: One-to-many
+8. **Affiliation** ↔ **AuthorAffiliation**: One-to-many
+9. **Resource** ↔ **ResourceAuthor**: One-to-many
+10. **Resource** ↔ **LtdProject**: One-to-one (optional, for LTD-hosted resources)
 
 ```mermaid
 erDiagram
@@ -303,7 +311,8 @@ erDiagram
 
     ResourceAuthor {
         bigint resource_id PK,FK
-        bigint author_id PK,FK
+        bigint author_id FK
+        bigint collaboration_id FK
         int author_order
         string role
     }
@@ -349,6 +358,7 @@ erDiagram
 
     Resource ||--o{ ResourceAuthor : "has"
     Author ||--o{ ResourceAuthor : "authors"
+    Collaboration ||--o{ ResourceAuthor : "authors"
 
     Author ||--o{ AuthorAffiliation : "has"
     Affiliation ||--o{ AuthorAffiliation : "employs"
@@ -560,3 +570,92 @@ WHERE r.resource_type IN ('document', 'documentation_website');
 - **API Clarity**: Clear distinction between LTD-hosted and external resources
 
 This approach maintains the flexibility of the hybrid metadata model while providing optimal performance and data integrity for the common use case of identifying and working with LTD-hosted resources.
+
+#### Mixed Author and Collaboration Usage
+
+The updated ResourceAuthor model supports mixed author lists containing both individual authors and collaborations. Here are usage examples:
+
+```sql
+-- Create a resource with mixed author list: individual authors and a collaboration
+INSERT INTO Resource (title, resource_type, is_default_version)
+VALUES ('LSST Data Release Processing', 'document', TRUE);
+
+-- Add individual authors (positions 1 and 3)
+INSERT INTO ResourceAuthor (resource_id, author_id, collaboration_id, author_order, role)
+VALUES
+    (1, 101, NULL, 1, 'author'),  -- First author (individual)
+    (1, 102, NULL, 3, 'author');  -- Third author (individual)
+
+-- Add collaboration as second author
+INSERT INTO ResourceAuthor (resource_id, author_id, collaboration_id, author_order, role)
+VALUES (1, NULL, 201, 2, 'author');  -- Second author (collaboration)
+
+-- Query to get complete author list in order
+SELECT
+    ra.author_order,
+    ra.role,
+    COALESCE(a.given_name || ' ' || a.surname, c.name) as author_name,
+    CASE
+        WHEN ra.author_id IS NOT NULL THEN 'individual'
+        WHEN ra.collaboration_id IS NOT NULL THEN 'collaboration'
+    END as author_type
+FROM ResourceAuthor ra
+LEFT JOIN Author a ON ra.author_id = a.id
+LEFT JOIN Collaboration c ON ra.collaboration_id = c.id
+WHERE ra.resource_id = 1
+ORDER BY ra.author_order;
+
+-- Find all resources authored by a specific collaboration
+SELECT r.title, r.resource_type, ra.author_order, ra.role
+FROM Resource r
+JOIN ResourceAuthor ra ON r.id = ra.resource_id
+JOIN Collaboration c ON ra.collaboration_id = c.id
+WHERE c.name = 'LSST Dark Energy Science Collaboration'
+ORDER BY r.title, ra.author_order;
+
+-- Find resources with mixed authorship (both individuals and collaborations)
+SELECT r.title,
+       COUNT(CASE WHEN ra.author_id IS NOT NULL THEN 1 END) as individual_authors,
+       COUNT(CASE WHEN ra.collaboration_id IS NOT NULL THEN 1 END) as collaboration_authors
+FROM Resource r
+JOIN ResourceAuthor ra ON r.id = ra.resource_id
+GROUP BY r.id, r.title
+HAVING COUNT(CASE WHEN ra.author_id IS NOT NULL THEN 1 END) > 0
+   AND COUNT(CASE WHEN ra.collaboration_id IS NOT NULL THEN 1 END) > 0;
+
+-- Validate data integrity: ensure exactly one of author_id or collaboration_id is set
+SELECT ra.*
+FROM ResourceAuthor ra
+WHERE (ra.author_id IS NULL AND ra.collaboration_id IS NULL)
+   OR (ra.author_id IS NOT NULL AND ra.collaboration_id IS NOT NULL);
+```
+
+**Database Constraints:**
+
+```sql
+-- Check constraint to ensure exactly one of author_id or collaboration_id is set
+ALTER TABLE ResourceAuthor ADD CONSTRAINT chk_author_xor_collaboration
+CHECK (
+    (author_id IS NOT NULL AND collaboration_id IS NULL) OR
+    (author_id IS NULL AND collaboration_id IS NOT NULL)
+);
+
+-- Unique constraint to prevent duplicate author entries for the same resource
+CREATE UNIQUE INDEX idx_resource_author_unique ON ResourceAuthor (resource_id, author_id)
+WHERE author_id IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_resource_collaboration_unique ON ResourceAuthor (resource_id, collaboration_id)
+WHERE collaboration_id IS NOT NULL;
+
+-- Unique constraint for author ordering within a resource
+CREATE UNIQUE INDEX idx_resource_author_order ON ResourceAuthor (resource_id, author_order);
+```
+
+**Benefits of This Approach:**
+
+- **Unified author lists**: Individual authors and collaborations can be intermixed in any order
+- **Consistent ordering**: Single `author_order` field maintains sequence regardless of author type
+- **Data integrity**: Database constraints prevent invalid combinations
+- **Query flexibility**: Can filter by author type or query all authors uniformly
+- **API simplicity**: Single endpoint can return mixed author lists with type indicators
+- **Citation compatibility**: Supports standard academic citation formats with mixed authorship
