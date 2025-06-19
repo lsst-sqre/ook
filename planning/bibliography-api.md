@@ -27,6 +27,7 @@ The central entity representing any trackable item in the system. This unified a
 - `version_type`: Enumeration (nullable, semantic_version, date_version, git_tag, etc.)
 - `is_default_version`: Boolean indicating if this is the current default version
 - `date_released`: When this version was released (nullable, for versioned resources)
+- `type_metadata`: JSONB field for type-specific metadata (nullable)
 
 **Resource Hierarchy Examples:**
 
@@ -34,7 +35,55 @@ The central entity representing any trackable item in the system. This unified a
 - **Versioned resource**: `is_default_version = FALSE`, `version_identifier = "v1.2.0"`
 - **Version relationships**: Established through ResourceRelationship using DataCite relationship types
 
-#### 2. ResourceRelationship
+#### 2. Type-specific resource tables
+
+These tables are related to the Resource table through joined-table inheritance, allowing for specific metadata storage while maintaining a unified resource model.
+
+#### GitHubRepository
+
+Represents GitHub repositories with specific metadata.
+
+**Attributes:**
+
+- `resource_id` (Primary Key, Foreign Key): References Resource
+- `github_owner`: GitHub owner (organization or user)
+- `github_name`: GitHub repository name
+- `default_branch`: Default branch name (e.g., "main")
+- `language`: Primary programming language of the repository (nullable)
+- `stars_count`: Number of stars (nullable)
+- `forks_count`: Number of forks (nullable)
+- `watchers_count`: Number of watchers (nullable)
+- `date_created`: Timestamp when added to system
+- `date_updated`: Timestamp of last update
+
+#### Document
+
+Represents documents with specific metadata, such as series and handle.
+
+**Attributes:**
+
+- `resource_id` (Primary Key, Foreign Key): References Resource
+- `series`: Series name (e.g., "DMTN", "LDM")
+- `handle`: Handle identifier (e.g., "031")
+- `generator`: Document generator used (e.g., `Documenteer 2.0.0`, `Lander 2.0.0`)
+- `abstract`: Optional abstract or summary of the document
+- `date_created`: Timestamp when added to system
+- `date_updated`: Timestamp of last update
+
+#### DocumentationWebsite
+
+Represents documentation websites with specific metadata.
+The `url` of the Resource will point to the main page of the documentation.
+
+**Attributes:**
+
+- `resource_id` (Primary Key, Foreign Key): References Resource
+- `sitemap_url`: URL to the sitemap (if available)
+- `generator`: Documentation generator used (e.g. `Documenteer 2.0.0`)
+- `date_created`: Timestamp when added to system
+- `date_updated`: Timestamp of last update
+
+#### 3. ResourceRelationship
 
 Captures all types of relationships between resources, including citations, references, and other semantic connections. This unified approach aligns with DataCite's RelatedIdentifier model.
 
@@ -66,7 +115,7 @@ Captures all types of relationships between resources, including citations, refe
 - **Metadata relationships**: `HasMetadata`, `IsMetadataFor`
 - **Ook-specific types**: `generates` (for repo→docs), `implements`, `supersedes`
 
-#### 3. ExternalReference
+#### 4. ExternalReference
 
 Stores information about resources referenced by Ook resources but not tracked in the Ook database.
 
@@ -81,7 +130,7 @@ Stores information about resources referenced by Ook resources but not tracked i
 - `resource_type`: Type of external resource (journal_article, book, website, etc.)
 - `date_created`: Timestamp when added to system
 
-#### 4. Author
+#### 5. Author
 
 Represents authors/contributors to resources. This aligns with the existing `SqlAuthor` model in the codebase.
 
@@ -101,18 +150,18 @@ Represents authors/contributors to resources. This aligns with the existing `Sql
 - Links to `Affiliation` through `AuthorAffiliation` junction table
 - Links to `Collaboration` (future enhancement)
 
-#### 5. ResourceAuthor
+#### 6. ResourceAuthor
 
 Many-to-many relationship between Resources and Authors. Works uniformly for both root resources and their versions.
 
 **Attributes:**
 
-- `resource_id` (Foreign Key): References Resource
-- `author_id` (Foreign Key): References Author
-- `author_order`: Order/position in author list
+- `resource_id` (Foreign Key): References Resource (primary key component)
+- `author_id` (Foreign Key): References Author (primary key component)
+- `author_order`: Order/position in author list (integer, 1-based indexing)
 - `role`: Author role (author, editor, contributor, etc.)
 
-#### 6. Affiliation
+#### 7. Affiliation
 
 Represents institutional affiliations for authors. This aligns with the existing `SqlAffiliation` model.
 
@@ -124,7 +173,7 @@ Represents institutional affiliations for authors. This aligns with the existing
 - `address`: Physical address of the institution (nullable, indexed)
 - `date_updated`: Timestamp of last update
 
-#### 7. AuthorAffiliation
+#### 8. AuthorAffiliation
 
 Junction table for the many-to-many relationship between Authors and Affiliations, with ordering support.
 
@@ -134,7 +183,7 @@ Junction table for the many-to-many relationship between Authors and Affiliation
 - `affiliation_id` (Foreign Key): References Affiliation (primary key component)
 - `position`: Order/position of this affiliation for the author
 
-#### 8. Collaboration
+#### 9. Collaboration
 
 Represents research collaborations. This aligns with the existing `SqlCollaboration` model.
 
@@ -149,11 +198,12 @@ Represents research collaborations. This aligns with the existing `SqlCollaborat
 
 1. **Resource** ↔ **ResourceRelationship** ↔ **Resource**: Many-to-many relationships including citations and versioning
 2. **ResourceRelationship** ↔ **ExternalReference**: Many-to-one (multiple relationships can reference same external resource)
-3. **Resource** ↔ **Author**: Many-to-many through ResourceAuthor
-4. **Author** ↔ **Affiliation**: Many-to-many through AuthorAffiliation (with ordering)
-5. **Author** ↔ **AuthorAffiliation**: One-to-many
-6. **Affiliation** ↔ **AuthorAffiliation**: One-to-many
-7. **Resource** ↔ **ResourceAuthor**: One-to-many
+3. **Resource** ↔ **Type-specific tables**: One-to-one inheritance (GitHubRepository, Document, DocumentationWebsite)
+4. **Resource** ↔ **Author**: Many-to-many through ResourceAuthor
+5. **Author** ↔ **Affiliation**: Many-to-many through AuthorAffiliation (with ordering)
+6. **Author** ↔ **AuthorAffiliation**: One-to-many
+7. **Affiliation** ↔ **AuthorAffiliation**: One-to-many
+8. **Resource** ↔ **ResourceAuthor**: One-to-many
 
 ### Design Considerations
 
@@ -219,46 +269,44 @@ See [DataCite's Contributing Citations and References](https://support.datacite.
 - `relationship_type` enumeration supports various inter-resource relationships
 - JSON fields in `ExternalReference` allow flexible external metadata storage
 
-### Example Usage Patterns
+#### Type-Specific Metadata Strategy
 
-#### Resource Versioning
+- **Joined-table inheritance**: Well-defined types (GitHub repos, documents) get dedicated tables
+- **JSONB fallback**: `type_metadata` field for flexible/experimental metadata
+- **Performance balance**: Frequently queried fields in dedicated tables, occasional fields in JSON
+- **Migration strategy**: Start with JSONB, promote to dedicated tables as patterns emerge
+- **Query patterns**:
+  - Type-specific queries use LEFT JOINs to subtype tables
+  - Cross-type queries use base Resource table
+  - Hybrid queries combine both approaches
+
+#### Type-Specific Metadata Usage
 
 ```sql
--- Root GitHub repository
+-- Create a GitHub repository with type-specific metadata
+INSERT INTO Resource (title, resource_type, is_default_version, type_metadata)
+VALUES ('LSST Science Pipelines', 'GitHub_repository', TRUE, '{"topics": ["astronomy", "python"]}');
+
+INSERT INTO GitHubRepository (resource_id, github_owner, github_name, default_branch, language)
+VALUES (1, 'lsst', 'pipelines', 'main', 'Python');
+
+-- Create a document with series and handle
 INSERT INTO Resource (title, resource_type, is_default_version)
-VALUES ('My Project', 'GitHub_repository', TRUE);
+VALUES ('Data Management Test Plan', 'document', TRUE);
 
--- Version 1.0 release
-INSERT INTO Resource (title, resource_type, is_default_version, version_identifier)
-VALUES ('My Project v1.0', 'GitHub_repository', FALSE, 'v1.0.0');
+INSERT INTO Document (resource_id, series, handle, document_type, abstract)
+VALUES (2, 'DMTN', '031', 'technical_note', 'This document describes...');
 
--- Establish version relationship using DataCite types
-INSERT INTO ResourceRelationship (source_resource_id, target_resource_id, relationship_type)
-VALUES (1, 2, 'HasVersion');
-INSERT INTO ResourceRelationship (source_resource_id, target_resource_id, relationship_type)
-VALUES (2, 1, 'IsVersionOf');
+-- Query GitHub repositories with metadata
+SELECT r.title, gr.github_owner, gr.github_name, gr.stars_count, r.type_metadata->'topics'
+FROM Resource r
+JOIN GitHubRepository gr ON r.id = gr.resource_id
+WHERE r.resource_type = 'GitHub_repository';
 
--- Promote version 1.0 to default
-UPDATE Resource SET is_default_version = FALSE WHERE id = 1;
-UPDATE Resource SET is_default_version = TRUE WHERE id = 2;
-```
-
-#### Cross-Resource Relationships and Citations
-
-```sql
--- Documentation website generated from repository
-INSERT INTO ResourceRelationship (source_resource_id, target_resource_id, relationship_type)
-VALUES (1, 3, 'generates');
-
--- Internal citation using DataCite relationship types
-INSERT INTO ResourceRelationship (source_resource_id, target_resource_id, relationship_type, citation_context)
-VALUES (1, 2, 'Cites', 'See Smith et al. for methodology details');
-
--- External citation to paper not in Ook
-INSERT INTO ResourceRelationship (source_resource_id, external_reference_id, relationship_type)
-VALUES (1, 5, 'References');
-
--- Version relationships
-INSERT INTO ResourceRelationship (source_resource_id, target_resource_id, relationship_type)
-VALUES (2, 1, 'IsNewVersionOf');
+-- Query documents by series
+SELECT r.title, d.series, d.handle, d.document_type
+FROM Resource r
+JOIN Document d ON r.id = d.resource_id
+WHERE d.series = 'DMTN'
+ORDER BY d.handle;
 ```
