@@ -83,6 +83,41 @@ The `url` of the Resource will point to the main page of the documentation.
 - `date_created`: Timestamp when added to system
 - `date_updated`: Timestamp of last update
 
+#### GitHubRelease
+
+Represents GitHub releases with specific metadata.
+
+**Attributes:**
+
+- `resource_id` (Primary Key, Foreign Key): References Resource
+- `tag`: Git tag name for the release (e.g., "v1.2.0")
+- `name`: Display name of the release (nullable, often same as tag)
+- `release_notes`: Markdown-formatted release notes/changelog (nullable)
+- `date_created`: Timestamp when added to system
+- `date_updated`: Timestamp of last update
+
+#### PyPIPackage
+
+Represents PyPI packages with specific metadata.
+
+**Attributes:**
+
+- `resource_id` (Primary Key, Foreign Key): References Resource
+- `name`: PyPI package name (e.g., "lsst-daf-butler")
+- `date_created`: Timestamp when added to system
+- `date_updated`: Timestamp of last update
+
+#### PyPIRelease
+
+Represents specific PyPI package releases with version-specific metadata.
+
+**Attributes:**
+
+- `resource_id` (Primary Key, Foreign Key): References Resource
+- `tag`: Version tag/identifier (e.g., "1.2.0", "2024.1.0")
+- `date_created`: Timestamp when added to system
+- `date_updated`: Timestamp of last update
+
 #### 3. ResourceRelationship
 
 Captures all types of relationships between resources, including citations, references, and other semantic connections. This unified approach aligns with DataCite's RelatedIdentifier model.
@@ -298,6 +333,29 @@ erDiagram
         timestamp date_updated
     }
 
+    GitHubRelease {
+        bigint resource_id PK,FK
+        string tag
+        string name
+        text release_notes
+        timestamp date_created
+        timestamp date_updated
+    }
+
+    PyPIPackage {
+        bigint resource_id PK,FK
+        string name
+        timestamp date_created
+        timestamp date_updated
+    }
+
+    PyPIRelease {
+        bigint resource_id PK,FK
+        string tag
+        timestamp date_created
+        timestamp date_updated
+    }
+
     Author {
         bigint id PK
         string internal_id
@@ -354,6 +412,9 @@ erDiagram
     Resource ||--o| GitHubRepository : "inheritance"
     Resource ||--o| Document : "inheritance"
     Resource ||--o| DocumentationWebsite : "inheritance"
+    Resource ||--o| GitHubRelease : "inheritance"
+    Resource ||--o| PyPIPackage : "inheritance"
+    Resource ||--o| PyPIRelease : "inheritance"
     Resource ||--o| LtdProject : "hosted_on"
 
     Resource ||--o{ ResourceAuthor : "has"
