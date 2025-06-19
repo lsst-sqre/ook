@@ -659,3 +659,684 @@ CREATE UNIQUE INDEX idx_resource_author_order ON ResourceAuthor (resource_id, au
 - **Query flexibility**: Can filter by author type or query all authors uniformly
 - **API simplicity**: Single endpoint can return mixed author lists with type indicators
 - **Citation compatibility**: Supports standard academic citation formats with mixed authorship
+
+## REST API design
+
+The Bibliography REST API provides comprehensive access to all bibliographic resources and their relationships. The API follows RESTful principles with consistent JSON responses and proper HTTP status codes.
+
+> **Implementation Note**: Ook already has existing APIs for authors and affiliations. The bibliography API will extend these existing endpoints rather than replace them, ensuring backward compatibility while adding bibliographic functionality.
+
+### Base URL
+
+```
+https://roundtable.lsst.cloud/ook
+```
+
+### Authentication
+
+Ook uses Gafaelfawr for authentication, although not all resources require authentication to access.
+Mixing authenticated and unauthenticated access needs to be determined.
+
+### Core Endpoints
+
+#### 1. Resources
+
+##### GET /resources
+
+List all bibliographic resources with filtering and pagination.
+
+**Query Parameters:**
+
+- `resource_type` (optional): Filter by resource type (github_repository, document, documentation_website)
+- `is_citable` (optional): Filter by citability (true/false)
+- `author` (optional): Filter by author name or ID
+- `collaboration` (optional): Filter by collaboration name or ID
+- `doi` (optional): Filter by DOI
+- `series` (optional): Filter documents by series (e.g., "DMTN")
+- `limit` (optional): Number of results per page (default: 50, max: 100)
+- `cursor` (optional): Keyset pagination cursor for next page
+- `include_versions` (optional): Include all versions or just default (default: false)
+
+**Response:**
+
+```json
+[
+  {
+    "self_url": "https://roundtable.lsst.cloud/ook/resources/1",
+    "title": "LSST Science Pipelines",
+    "description": "The LSST Science Pipelines enable optical and near-infrared astronomy",
+    "url": "https://github.com/lsst/science_pipelines",
+    "resource_type": "github_repository",
+    "date_created": "2024-01-15T10:30:00Z",
+    "date_updated": "2024-06-15T14:20:00Z",
+    "is_citable": true,
+    "doi": "10.5281/zenodo.12345678",
+    "version_identifier": null,
+    "version_type": null,
+    "is_default_version": true,
+    "date_released": null,
+    "authors": [
+      {
+        "type": "individual",
+        "order": 1,
+        "role": "author",
+        "author": {
+          "self_url": "https://roundtable.lsst.cloud/ook/authors/102",
+          "given_name": "John",
+          "surname": "Doe",
+          "orcid": "0000-0000-0000-0001"
+        }
+      },
+      {
+        "type": "collaboration",
+        "order": 2,
+        "role": "author",
+        "collaboration": {
+          "self_url": "https://roundtable.lsst.cloud/ook/authors/201",
+          "name": "LSST Data Management Team"
+        }
+      }
+    ],
+    "github_repository": {
+      "github_owner": "lsst",
+      "github_name": "science_pipelines",
+      "default_branch": "main",
+      "language": "Python",
+      "stars_count": 245,
+      "forks_count": 89
+    },
+    "ltd_project": null
+  }
+]
+```
+
+**Response Headers:**
+
+```
+Link: <https://roundtable.lsst.cloud/ook/resources?cursor=eyJpZCI6MTUwfQ&limit=50>; rel="next"
+X-Total-Count: 150
+```
+
+##### GET /resources/{id}
+
+Get a specific resource by ID with full details.
+
+**Response:**
+
+```json
+{
+  "self_url": "https://roundtable.lsst.cloud/ook/resources/2",
+  "title": "Data Management Test Plan",
+  "description": "Technical note describing the test approach for LSST Data Management",
+  "url": "https://dmtn-031.lsst.io",
+  "resource_type": "document",
+  "date_created": "2024-01-20T09:15:00Z",
+  "date_updated": "2024-03-10T16:45:00Z",
+  "is_citable": true,
+  "doi": "10.5281/zenodo.87654321",
+  "version_identifier": "v2.1",
+  "version_type": "semantic_version",
+  "is_default_version": true,
+  "date_released": "2024-03-10T16:45:00Z",
+  "authors_url": "https://roundtable.lsst.cloud/ook/resources/2/authors",
+  "versions_url": "https://roundtable.lsst.cloud/ook/resources/2/versions",
+  "relationships_url": "https://roundtable.lsst.cloud/ook/resources/2/relationships",
+  "citations_url": "https://roundtable.lsst.cloud/ook/resources/2/citations",
+  "document": {
+    "series": "DMTN",
+    "handle": "031",
+    "generator": "Documenteer 2.0.0",
+    "abstract": "This document describes the comprehensive testing approach..."
+  },
+  "ltd_project": {
+    "project_name": "dmtn-031",
+    "api_resource_url": "https://keeper.lsst.codes/projects/dmtn-031/",
+    "domain": "lsst.io"
+  }
+}
+```
+
+###### Export records with content negotiation
+
+A user can export bibliographic records in various formats using content negotiation. The `Accept` header specifies the desired format:
+
+- `Accept: application/json` for JSON (default)
+- `Accept: application/x-bibtex` for BibTeX
+- `Accept: application/vnd.citationstyles.csl+json` for Citation Style Language (CSL) JSON
+- `Accept: application/vnd.codemeta.ld+json` for CodeMeta JSON
+
+The content nogation is intended to be simmilar to how [Crossref](https://www.crossref.org/documentation/retrieve-metadata/content-negotiation/) and [DataCite](https://support.datacite.org/docs/datacite-content-resolver) handle content negotiation.
+
+##### GET /resources/{id}/versions
+
+Get all related versions of a specific resource.
+
+> ![NOTE] Could this be merged with the existing `/resources/{id}/relationships` endpoint?
+
+**Response:**
+
+```json
+[
+  {
+    "self_url": "https://roundtable.lsst.cloud/ook/resources/3",
+    "version_identifier": "v1.0",
+    "is_default_version": false,
+    "date_released": "2024-01-20T09:15:00Z",
+    "url": "https://dmtn-031.lsst.io/v/v1.0"
+  },
+  {
+    "self_url": "https://roundtable.lsst.cloud/ook/resources/5",
+    "version_identifier": "v2.1",
+    "is_default_version": true,
+    "date_released": "2024-03-10T16:45:00Z",
+    "url": "https://dmtn-031.lsst.io"
+  }
+]
+```
+
+##### GET /resources/{id}/authors
+
+Get all authors (individuals and collaborations) for a specific resource.
+
+**Query Parameters:**
+
+- `type` (optional): Filter by type ("person", "collaboration", or "all" - default: "all")
+- `role` (optional): Filter by authorship role (author, editor, contributor, etc.)
+- `limit` (optional): Number of results per page (default: 50)
+- `cursor` (optional): Keyset pagination cursor for next page
+
+**Response:**
+
+```json
+[
+  {
+    "type": "person",
+    "order": 1,
+    "role": "author",
+    "author": {
+      "id": 102,
+      "given_name": "Jane",
+      "surname": "Smith",
+      "orcid": "0000-0000-0000-0002",
+      "affiliations": [
+        {
+          "name": "Rubin Observatory",
+          "self_url": "https://roundtable.lsst.cloud/ook/affiliations/301",
+          "address": "950 N Cherry Ave, Tucson, AZ 85721"
+        }
+      ]
+    }
+  },
+  {
+    "type": "collaboration",
+    "order": 2,
+    "role": "author",
+    "collaboration": {
+      "self_url": "https://roundtable.lsst.cloud/ook/authors/201",
+      "name": "LSST Data Management Team"
+    }
+  }
+]
+```
+
+**Response Headers:**
+
+```
+Link: <https://roundtable.lsst.cloud/ook/resources/2/authors?cursor=eyJvcmRlciI6Mn0&limit=50>; rel="next"
+X-Total-Count: 3
+```
+
+##### GET /resources/{id}/relationships
+
+Get all relationships for a specific resource.
+
+**Query Parameters:**
+
+- `type` (optional): Filter by relationship type
+
+**Response:**
+
+```json
+[
+  {
+    "relationship_type": "References",
+    "resource": {
+      "title": "LSST System Requirements",
+      "url": "https://lse-029.lsst.io",
+      "resource_type": "document",
+      "self_url": "https://roundtable.lsst.cloud/ook/resources/5"
+    }
+  },
+  {
+    "relationship_type": "Cites",
+    "external_resource": {
+      "title": "Astronomical Data Analysis Software and Systems",
+      "doi": "10.48550/arXiv.astro-ph/0309692",
+      "authors": "Smith, J. et al.",
+      "resource_type": "journal_article"
+    }
+  },
+  {
+    "relationship_type": "IsCitedBy",
+    "resource": {
+      "self_url": "https://roundtable.lsst.cloud/ook/resources/6",
+      "title": "LSST Data Release Procedures",
+      "url": "https://dmtn-045.lsst.io",
+      "resource_type": "document"
+    }
+  }
+]
+```
+
+#### 2. Authors
+
+> **Note**: Ook already has an existing authors API implementation. The bibliography API will extend this existing API to include bibliographic resource relationships and coalesce individual authors and collaborations into a unified authorship model.
+
+##### GET /authors
+
+List all authors with keyset pagination.
+
+**Current Implementation:**
+
+- Endpoint: `GET /authors`
+- Pagination: Uses `cursor` and `limit` parameters
+- Response headers: `Link` header for pagination, `X-Total-Count` for total count
+- Returns: List of authors with basic information
+
+**Proposed Bibliography Extensions:**
+
+- Add `type` field to distinguish between "person" and "collaboration" (see unified approach in Collaborations section)
+- Add `resource_count` field showing number of associated bibliographic resources
+- Add optional `include_resources` parameter to include resource relationships
+- Add filtering by `affiliation`, `orcid`, `surname`, and `type`
+
+**Query Parameters:**
+
+- `type` (optional): Filter by type ("person", "collaboration", or "all" - default: "all")
+- `surname` (optional): Filter by surname (for persons) or name (for collaborations)
+- `orcid` (optional): Filter by ORCID ID (persons only)
+- `affiliation` (optional): Filter by affiliation name
+- `limit` (optional): Number of results per page (default: 50)
+- `cursor` (optional): Keyset pagination cursor for next page
+
+**Response:**
+
+```json
+[
+  {
+    "self_url": "https://roundtable.lsst.cloud/ook/authors/id/john-doe",
+    "type": "person",
+    "internal_id": "john-doe",
+    "given_name": "John",
+    "surname": "Doe",
+    "orcid": "0000-0000-0000-0001",
+    "affiliations": [
+      {
+        "self_url": "https://roundtable.lsst.cloud/ook/affiliations/301",
+        "name": "Rubin Observatory",
+        "address": "950 N Cherry Ave, Tucson, AZ 85721",
+        "position": 1
+      }
+    ],
+    "resource_count": 15
+  },
+  {
+    "self_url": "https://roundtable.lsst.cloud/ook/authors/id/dm-team",
+    "type": "collaboration",
+    "internal_id": "dm-team",
+    "name": "LSST Data Management Team",
+    "given_name": null,
+    "surname": null,
+    "orcid": null,
+    "affiliations": [],
+    "resource_count": 42
+  }
+]
+```
+
+**Response Headers:**
+
+```
+Link: <https://roundtable.lsst.cloud/ook/authors?cursor=eyJpZCI6MjAxfQ&limit=50>; rel="next"
+X-Total-Count: 178
+```
+
+##### GET /authors/id/{internal_id}
+
+Get detailed information about a specific author by their internal ID.
+
+**Current Implementation:**
+
+- Endpoint: `GET /authors/id/{internal_id}`
+- Path parameter: `internal_id` (from lsst-texmf authordb.yaml)
+- Returns: Author details including affiliations
+- Security: Excludes sensitive data like email addresses
+
+**Proposed Bibliography Extensions:**
+
+- Add `resources` endpoint showing authored bibliographic resources
+
+**Integration with Bibliography System:**
+
+The bibliography API will leverage the existing authors infrastructure and extend it with:
+
+1. **ResourceAuthor relationships**: Link existing authors to bibliographic resources
+2. **Mixed authorship support**: Handle both individual authors and collaborations
+3. **Resource metadata**: Include bibliographic context (author order, role, citation info)
+4. **Cross-references**: Enable navigation from authors to their resources and vice versa
+
+**Example Extended Response:**
+
+```json
+{
+  "self_url": "https://roundtable.lsst.cloud/ook/authors/id/john-doe",
+  "type": "person",
+  "internal_id": "john-doe",
+  "given_name": "John",
+  "surname": "Doe",
+  "orcid": "0000-0000-0000-0001",
+  "affiliations": [
+    {
+      "self_url": "https://roundtable.lsst.cloud/ook/affiliations/301",
+      "name": "Rubin Observatory",
+      "address": "950 N Cherry Ave, Tucson, AZ 85721",
+      "position": 1
+    }
+  ],
+  "resources_url": "https://roundtable.lsst.cloud/ook/authors/id/john-doe/resources"
+}
+```
+
+Extended to handle both individual authors and collaborations by internal ID.
+
+**Response for Individual Author:**
+
+```json
+{
+  "self_url": "https://roundtable.lsst.cloud/ook/authors/id/john-doe",
+  "type": "person",
+  "internal_id": "john-doe",
+  "given_name": "John",
+  "surname": "Doe",
+  "orcid": "0000-0000-0000-0001",
+  "affiliations": [
+    {
+      "id": 301,
+      "name": "Rubin Observatory",
+      "address": "950 N Cherry Ave, Tucson, AZ 85721",
+      "position": 1
+    }
+  ],
+  "resource_count": 15,
+  "resources_url": "https://roundtable.lsst.cloud/ook/authors/id/john-doe/resources"
+}
+```
+
+**Response for Collaboration:**
+
+```json
+{
+  "self_url": "https://roundtable.lsst.cloud/ook/authors/id/dm-team",
+  "type": "collaboration",
+  "internal_id": "dm-team",
+  "name": "LSST Data Management Team",
+  "given_name": null,
+  "surname": null,
+  "orcid": null,
+  "affiliations": [],
+  "resource_count": 42,
+  "resources_url": "https://roundtable.lsst.cloud/ook/authors/id/dm-team/resources"
+}
+```
+
+**Benefits of Unified Approach:**
+
+1. **Simplified Client Logic**: Single endpoint for all authorship queries
+2. **Consistent Pagination**: Same cursor-based pagination for both types
+3. **Unified Filtering**: Search across both persons and collaborations simultaneously
+4. **Type Safety**: Clear `type` field distinguishes between persons and collaborations
+5. **Backward Compatibility**: Existing author API consumers can filter by `type=person`
+6. **Future Extensibility**: Easy to add new authorship types (e.g., organizations, institutions)
+
+**Implementation Strategy:**
+
+1. **Phase 1**: Add `type` field to existing authors API responses
+2. **Phase 2**: Extend authors service to include collaborations
+3. **Phase 3**: Add `type` query parameter for filtering
+4. **Phase 4**: Optionally add legacy `/collaborations` endpoints as convenience wrappers
+5. **Phase 5**: Update ResourceAuthor relationships to work with unified model
+
+##### GET /authors/id/{internal_id}/resources
+
+Get all bibliographic resources authored by a specific author or collaboration.
+
+**Query Parameters:**
+
+- `type` (optional): Filter by resource type (github_repository, document, documentation_website)
+- `role` (optional): Filter by authorship role (author, editor, contributor, etc.)
+- `limit` (optional): Number of results per page (default: 50)
+- `cursor` (optional): Keyset pagination cursor for next page
+
+**Response:**
+
+```json
+[
+  {
+    "order": 1,
+    "role": "author",
+    "resource": {
+      "self_url": "https://roundtable.lsst.cloud/ook/resources/1",
+      "url": "https://github.com/lsst/science_pipelines",
+      "type": "github_repository",
+      "is_citable": true,
+      "doi": "10.5281/zenodo.12345678",
+      "date_created": "2024-01-15T10:30:00Z",
+      "date_updated": "2024-06-15T14:20:00Z"
+    }
+  },
+  {
+    "order": 2,
+    "role": "contributor",
+    "resource": {
+      "self_url": "https://roundtable.lsst.cloud/ook/resources/2",
+      "url": "https://dmtn-045.lsst.io",
+      "is_citable": true,
+      "title": "Observatory Control System Design",
+      "type": "document",
+      "doi": "10.5281/zenodo.87654322",
+      "date_created": "2024-02-20T11:15:00Z",
+      "date_updated": "2024-04-10T15:30:00Z"
+    }
+  }
+]
+```
+
+**Response Headers:**
+
+```
+Link: <https://roundtable.lsst.cloud/ook/authors/id/john-doe/resources?cursor=eyJpZCI6N30&limit=50>; rel="next"
+X-Total-Count: 15
+```
+
+#### 3. Search and Discovery
+
+##### GET /search
+
+Full-text search across all resources.
+
+**Query Parameters:**
+
+- `q` (required): Search query
+- `resource_type` (optional): Filter by resource type
+- `limit` (optional): Number of results (default: 20)
+- `cursor` (optional): Keyset pagination cursor for next page
+
+**Response:**
+
+```json
+[
+  {
+    "id": 2,
+    "title": "Data Management Test Plan",
+    "resource_type": "document",
+    "snippet": "This document describes the comprehensive testing approach for LSST <em>data management</em> systems...",
+    "score": 0.95,
+    "url": "https://dmtn-031.lsst.io"
+  }
+]
+```
+
+**Response Headers:**
+
+```
+Link: <https://roundtable.lsst.cloud/ook/search?q=data%20management&cursor=eyJzY29yZSI6MC45NSwiaWQiOjJ9&limit=20>; rel="next"
+X-Total-Count: 12
+X-Search-Query: data management
+```
+
+#### 5. Statistics and Metrics
+
+##### GET /stats
+
+Get bibliography statistics.
+
+**Response:**
+
+```json
+{
+  "resources": {
+    "total": 156,
+    "by_type": {
+      "github_repository": 45,
+      "document": 89,
+      "documentation_website": 22
+    },
+    "citable": 134,
+    "with_doi": 98
+  },
+  "authors": {
+    "total": 89,
+    "with_orcid": 67
+  },
+  "collaborations": {
+    "total": 8
+  },
+  "relationships": {
+    "total": 245,
+    "citations": 156,
+    "references": 89
+  }
+}
+```
+
+### Pagination
+
+The API uses keyset pagination (also known as cursor-based pagination) rather than offset-based pagination for better performance and consistency with large datasets.
+
+#### Keyset Pagination Implementation
+
+**Request Parameters:**
+
+- `limit`: Number of results per page (default: varies by endpoint, max: 100)
+- `cursor`: Opaque cursor token for the next page (optional for first page)
+
+**Response Headers:**
+
+- `Link`: Contains pagination URLs following RFC 5988 web linking standard
+- `X-Total-Count`: Total number of items available (optional, may be omitted for performance)
+
+**Link Header Format:**
+
+```
+Link: <https://roundtable.lsst.cloud/ook/resources?cursor=eyJpZCI6MTUwfQ&limit=50>; rel="next",
+      <https://roundtable.lsst.cloud/ook/resources?cursor=eyJpZCI6MX0&limit=50>; rel="prev",
+      <https://roundtable.lsst.cloud/ook/resources?limit=50>; rel="first"
+```
+
+**Cursor Implementation:**
+
+- Cursors are base64-encoded JSON objects containing sort keys
+- For resources: `{"id": 150}` (sorted by ID)
+- For search results: `{"score": 0.95, "id": 2}` (sorted by relevance score, then ID)
+- For authors: `{"surname": "Smith", "id": 101}` (sorted by surname, then ID)
+
+**Pagination Flow:**
+
+1. **First request**: `GET /resources?limit=50`
+2. **Next page**: Use `next` rel link from Link header
+3. **Previous page**: Use `prev` rel link from Link header
+4. **First page**: Use `first` rel link from Link header
+
+**Benefits over Offset Pagination:**
+
+- **Consistent results**: No duplicate or missing items when data changes during pagination
+- **Better performance**: Efficient database queries using indexed sort keys
+- **Scalability**: Performance doesn't degrade with large offsets
+- **Real-time safe**: Works correctly when items are added/removed during pagination
+
+**Client Implementation Example:**
+
+```javascript
+async function fetchAllResources() {
+  let nextUrl = "/resources?limit=50";
+  const allResources = [];
+
+  while (nextUrl) {
+    const response = await fetch(nextUrl);
+    const data = await response.json();
+    allResources.push(...data);
+
+    // Parse Link header for next page
+    const linkHeader = response.headers.get("Link");
+    nextUrl = parseLinkHeader(linkHeader)?.next || null;
+  }
+
+  return allResources;
+}
+```
+
+### Response Format Standards
+
+#### Success Responses
+
+- **200 OK**: Successful GET requests
+- **201 Created**: Successful POST requests
+- **204 No Content**: Successful DELETE requests
+
+#### Error Responses
+
+- **400 Bad Request**: Invalid request parameters
+- **401 Unauthorized**: Missing or invalid authentication
+- **403 Forbidden**: Insufficient permissions
+- **404 Not Found**: Resource not found
+- **422 Unprocessable Entity**: Validation errors
+- **500 Internal Server Error**: Server errors
+
+#### Error Response Format
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Invalid resource type specified",
+    "details": {
+      "field": "resource_type",
+      "allowed_values": [
+        "github_repository",
+        "document",
+        "documentation_website"
+      ]
+    }
+  }
+}
+```
+
+### API Design Principles
+
+1. **Consistency**: All endpoints follow similar patterns for parameters, responses, and error handling
+2. **Discoverability**: Include related resource links and relationship information
+3. **Performance**: Efficient keyset pagination and selective field inclusion
+4. **Extensibility**: JSON structure allows for future field additions without breaking changes
+5. **Standards Compliance**: Follows DataCite metadata standards, RFC 5988 web linking, and academic citation formats
+6. **Type Safety**: Clear typing for all resource types and relationships
+7. **Infrastructure Reuse**: Leverages existing Ook APIs (authors, affiliations) and extends them for bibliographic functionality
