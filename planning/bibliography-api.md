@@ -194,6 +194,19 @@ Represents research collaborations. This aligns with the existing `SqlCollaborat
 - `name`: Name of the collaboration (indexed)
 - `date_updated`: Timestamp of last update
 
+#### 10. LtdProject
+
+Represents projects hosted on LSST the Docs (LTD) for specific resource types like Document and DocumentationWebsite.
+
+**Attributes:**
+
+- `resource_id` (Primary Key, Foreign Key): References Resource
+- `project_name`: Name of the LTD project (unique, indexed)
+- `api_resource_url`: URL to the API resource for this project
+- `domain`: Domain of the LTD project (e.g., "lsst.io", "pipelines.lsst.io")
+- `date_created`: Timestamp when added to system
+- `date_updated`: Timestamp of last update
+
 ### Entity Relationships Summary
 
 1. **Resource** ↔ **ResourceRelationship** ↔ **Resource**: Many-to-many relationships including citations and versioning
@@ -204,6 +217,7 @@ Represents research collaborations. This aligns with the existing `SqlCollaborat
 6. **Author** ↔ **AuthorAffiliation**: One-to-many
 7. **Affiliation** ↔ **AuthorAffiliation**: One-to-many
 8. **Resource** ↔ **ResourceAuthor**: One-to-many
+9. **Resource** ↔ **LtdProject**: One-to-one (optional, for LTD-hosted resources)
 
 ### Design Considerations
 
@@ -310,3 +324,104 @@ JOIN Document d ON r.id = d.resource_id
 WHERE d.series = 'DMTN'
 ORDER BY d.handle;
 ```
+
+#### LTD Project Association Strategy
+
+For Document and DocumentationWebsite resources that are hosted on LSST the Docs (LTD), we need to capture specific LTD metadata including project name and API resource URL. Since only some resources of these types are LTD-hosted, we recommend a hybrid approach that aligns with the existing type-specific metadata strategy.
+
+**Recommended Approach: Dedicated LTD Table**
+
+Create a dedicated `LtdProject` table that can be optionally joined to Document and DocumentationWebsite resources:
+
+```sql
+CREATE TABLE LtdProject (
+    resource_id INTEGER PRIMARY KEY REFERENCES Resource(id),
+    project_name VARCHAR NOT NULL,
+    api_resource_url VARCHAR NOT NULL,
+    domain VARCHAR, -- e.g., 'lsst.io', 'pipelines.lsst.io'
+    date_created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    date_updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    -- Ensure project names are unique
+    UNIQUE(project_name)
+);
+
+-- Index for efficient querying by project name
+CREATE INDEX idx_ltd_project_name ON LtdProject(project_name);
+```
+
+**Alternative Approach: JSONB Metadata Field**
+
+For a more flexible approach, LTD metadata can be stored in the existing `type_metadata` JSONB field:
+
+```sql
+-- Example LTD metadata in type_metadata
+{
+    "ltd": {
+        "project_name": "pipelines",
+        "api_resource_url": "https://keeper.lsst.codes/projects/pipelines/",
+        "domain": "pipelines.lsst.io"
+    }
+}
+```
+
+**Recommendation: Use Dedicated LTD Table**
+
+The dedicated table approach is preferred because:
+
+1. **Query Performance**: Direct SQL joins are faster than JSONB queries for frequent LTD lookups
+2. **Data Integrity**: Foreign key constraints and unique constraints on project names
+3. **Indexing**: Better index support for LTD-specific queries
+4. **Clear Semantics**: Explicit relationship between resources and LTD projects
+5. **API Efficiency**: Simpler joins for endpoints that need LTD information
+
+**Usage Patterns:**
+
+```sql
+-- Find all LTD-hosted documents
+SELECT r.title, d.series, d.handle, ltd.project_name, ltd.api_resource_url
+FROM Resource r
+JOIN Document d ON r.id = d.resource_id
+JOIN LtdProject ltd ON r.id = ltd.resource_id
+WHERE r.resource_type = 'document'
+ORDER BY d.series, d.handle;
+
+-- Find all resources for a specific LTD project
+SELECT r.title, r.resource_type, r.url
+FROM Resource r
+JOIN LtdProject ltd ON r.id = ltd.resource_id
+WHERE ltd.project_name = 'pipelines';
+
+-- Find all LTD-hosted documentation websites
+SELECT r.title, r.url, dw.sitemap_url, ltd.project_name
+FROM Resource r
+JOIN DocumentationWebsite dw ON r.id = dw.resource_id
+JOIN LtdProject ltd ON r.id = ltd.resource_id
+WHERE r.resource_type = 'documentation_website';
+
+-- Check if a resource is LTD-hosted
+SELECT r.title,
+       CASE WHEN ltd.resource_id IS NOT NULL THEN 'LTD-hosted' ELSE 'External' END as hosting_type
+FROM Resource r
+LEFT JOIN LtdProject ltd ON r.id = ltd.resource_id
+WHERE r.resource_type IN ('document', 'documentation_website');
+```
+
+**Migration Strategy:**
+
+1. **Phase 1**: Create `LtdProject` table
+2. **Phase 2**: Populate with existing LTD project data
+3. **Phase 3**: Update API endpoints to include LTD information where available
+4. **Phase 4**: Add validation to ensure LTD resources have proper project associations
+
+**Benefits of This Approach:**
+
+- **Selective Association**: Only LTD-hosted resources need entries in LtdProject table
+- **Clean Queries**: Simple LEFT JOIN to determine LTD hosting status
+- **Performance**: Indexed queries for LTD-specific operations
+- **Consistency**: Aligns with existing joined-table inheritance pattern
+- **Extensibility**: Easy to add more LTD-specific fields (build status, deployment info, etc.)
+- **Data Integrity**: Unique constraints prevent duplicate project names
+- **API Clarity**: Clear distinction between LTD-hosted and external resources
+
+This approach maintains the flexibility of the hybrid metadata model while providing optimal performance and data integrity for the common use case of identifying and working with LTD-hosted resources.
