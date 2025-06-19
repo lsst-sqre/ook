@@ -219,6 +219,141 @@ Represents projects hosted on LSST the Docs (LTD) for specific resource types li
 8. **Resource** ↔ **ResourceAuthor**: One-to-many
 9. **Resource** ↔ **LtdProject**: One-to-one (optional, for LTD-hosted resources)
 
+```mermaid
+erDiagram
+    Resource {
+        bigint id PK
+        string title
+        text description
+        string url
+        enum resource_type
+        timestamp date_created
+        timestamp date_updated
+        boolean is_citable
+        string doi
+        string version_identifier
+        enum version_type
+        boolean is_default_version
+        timestamp date_released
+        jsonb type_metadata
+    }
+
+    ResourceRelationship {
+        bigint id PK
+        bigint source_resource_id FK
+        bigint target_resource_id FK
+        bigint external_reference_id FK
+        enum relationship_type
+        text citation_context
+        timestamp date_created
+    }
+
+    ExternalReference {
+        bigint id PK
+        string doi
+        string url
+        string title
+        json authors
+        timestamp date_published
+        enum resource_type
+        timestamp date_created
+    }
+
+    GitHubRepository {
+        bigint resource_id PK,FK
+        string github_owner
+        string github_name
+        string default_branch
+        string language
+        int stars_count
+        int forks_count
+        int watchers_count
+        timestamp date_created
+        timestamp date_updated
+    }
+
+    Document {
+        bigint resource_id PK,FK
+        string series
+        string handle
+        string generator
+        text abstract
+        timestamp date_created
+        timestamp date_updated
+    }
+
+    DocumentationWebsite {
+        bigint resource_id PK,FK
+        string sitemap_url
+        string generator
+        timestamp date_created
+        timestamp date_updated
+    }
+
+    Author {
+        bigint id PK
+        string internal_id
+        string surname
+        string given_name
+        string email
+        string orcid
+        string[] notes
+        timestamp date_updated
+    }
+
+    ResourceAuthor {
+        bigint resource_id PK,FK
+        bigint author_id PK,FK
+        int author_order
+        string role
+    }
+
+    Affiliation {
+        bigint id PK
+        string internal_id
+        string name
+        string address
+        timestamp date_updated
+    }
+
+    AuthorAffiliation {
+        bigint author_id PK,FK
+        bigint affiliation_id PK,FK
+        int position
+    }
+
+    Collaboration {
+        bigint id PK
+        string internal_id
+        string name
+        timestamp date_updated
+    }
+
+    LtdProject {
+        bigint resource_id PK,FK
+        string project_name
+        string api_resource_url
+        string domain
+        timestamp date_created
+        timestamp date_updated
+    }
+
+    Resource ||--o{ ResourceRelationship : "source"
+    Resource ||--o{ ResourceRelationship : "target"
+    ResourceRelationship }o--|| ExternalReference : "references"
+
+    Resource ||--o| GitHubRepository : "inheritance"
+    Resource ||--o| Document : "inheritance"
+    Resource ||--o| DocumentationWebsite : "inheritance"
+    Resource ||--o| LtdProject : "hosted_on"
+
+    Resource ||--o{ ResourceAuthor : "has"
+    Author ||--o{ ResourceAuthor : "authors"
+
+    Author ||--o{ AuthorAffiliation : "has"
+    Affiliation ||--o{ AuthorAffiliation : "employs"
+```
+
 ### Design Considerations
 
 #### Unified Model Benefits
