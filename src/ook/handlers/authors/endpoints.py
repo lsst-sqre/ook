@@ -61,7 +61,7 @@ async def get_authors(
 
 
 @router.get(
-    "/id/{internal_id}",
+    "/{internal_id}",
     summary="Get author by internal ID",
     responses={404: {"description": "Not found", "model": ErrorModel}},
 )
