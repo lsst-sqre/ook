@@ -28,7 +28,7 @@ __all__ = [
 class SqlAuthor(Base):
     """A SQLAlchemy model for authors."""
 
-    __tablename__ = "authors"
+    __tablename__ = "author"
 
     id: Mapped[int] = mapped_column(
         BigInteger, primary_key=True, autoincrement=True
@@ -83,7 +83,7 @@ class SqlAuthor(Base):
 class SqlCollaboration(Base):
     """A SQLAlchemy model for collaborations."""
 
-    __tablename__ = "collaborations"
+    __tablename__ = "collaboration"
 
     __table_args__ = (
         UniqueConstraint(
@@ -121,7 +121,7 @@ class SqlCollaboration(Base):
 class SqlAffiliation(Base):
     """A SQLAlchemy model for affiliations."""
 
-    __tablename__ = "affiliations"
+    __tablename__ = "affiliation"
 
     __table_args__ = (
         UniqueConstraint(
@@ -173,11 +173,11 @@ class SqlAuthorAffiliation(Base):
     __tablename__ = "author_affiliations"
 
     author_id: Mapped[int] = mapped_column(
-        ForeignKey("authors.id"), primary_key=True
+        ForeignKey("author.id"), primary_key=True
     )
 
     affiliation_id: Mapped[int] = mapped_column(
-        ForeignKey("affiliations.id"), primary_key=True
+        ForeignKey("affiliation.id"), primary_key=True
     )
 
     position: Mapped[int] = mapped_column(Integer, nullable=False)
