@@ -727,6 +727,16 @@ The Bibliography REST API provides comprehensive access to all bibliographic res
 
 > **Implementation Note**: Ook already has existing APIs for authors and affiliations. The bibliography API will extend these existing endpoints rather than replace them, ensuring backward compatibility while adding bibliographic functionality.
 
+### API Design Principles
+
+1. **Consistency**: All endpoints follow similar patterns for parameters, responses, and error handling
+2. **Discoverability**: Include related resource links and relationship information
+3. **Performance**: Efficient keyset pagination and selective field inclusion
+4. **Extensibility**: JSON structure allows for future field additions without breaking changes
+5. **Standards Compliance**: Follows DataCite metadata standards, RFC 5988 web linking, and academic citation formats
+6. **Type Safety**: Clear typing for all resource types and relationships
+7. **Infrastructure Reuse**: Leverages existing Ook APIs (authors, affiliations) and extends them for bibliographic functionality
+
 ### Base URL
 
 ```
@@ -738,7 +748,151 @@ https://roundtable.lsst.cloud/ook
 Ook uses Gafaelfawr for authentication, although not all resources require authentication to access.
 Mixing authenticated and unauthenticated access needs to be determined.
 
-### Core Endpoints
+### Resource ID Format
+
+The Bibliography API uses Crockford Base32 encoded IDs for all public resource identifiers. These IDs are designed to be human-readable, URL-safe, and include error detection capabilities.
+
+**ID Specification:**
+
+- **Format**: Crockford Base32 encoding with hyphen separators
+- **Length**: 13 characters total (formatted as XXXX-XXXX-XXXX-X)
+  - 12 characters: Resource identifier
+  - 1 character: Checksum for error detection
+- **Separator**: Hyphens every 4 characters for readability
+- **Implementation**: Uses the [base32-lib](https://base32-lib.readthedocs.io/en/latest/) Python library
+- **Example**: `01AR-YZ6S-3XQW-F` (12 chars + 1 char checksum with hyphens)
+
+**Database Storage:**
+
+- Resource IDs are stored as 8-byte BYTEA primary keys in PostgreSQL
+- The 12-character Crockford Base32 strings (without checksums) are decoded to bytes for storage
+- Checksums are calculated and appended dynamically by the API layer when serving responses
+- Checksums are validated and stripped by the API layer when processing incoming requests
+- This approach leverages PostgreSQL's optimization for binary data and maintains natural sort ordering
+
+**Benefits:**
+
+- **URL-safe**: No special characters that require encoding
+- **Human-readable**: Avoids ambiguous characters (0/O, 1/I/l)
+- **Error detection**: Built-in checksum prevents typos in manual entry
+- **Storage efficient**: 8 bytes vs 12+ bytes for string storage
+- **Natural ordering**: Crockford Base32 preserves lexicographic order, perfect for keyset pagination
+- **PostgreSQL optimized**: Binary primary keys are very fast for indexing and joins
+- **Collision resistance**: Low probability of ID conflicts
+
+**Usage in API:**
+
+- All `{id}` parameters in endpoints use Crockford Base32 IDs with checksums and hyphens
+- API layer validates incoming IDs by checking checksums, then strips checksums and decodes to bytes
+- API layer encodes database bytes to Base32, appends checksums, and formats with hyphens for responses
+- Database queries use binary comparisons for optimal performance
+- Keyset pagination uses natural byte ordering: `WHERE id > decode_base32($cursor) ORDER BY id`
+
+### Pagination
+
+The API uses keyset pagination (also known as cursor-based pagination) rather than offset-based pagination for better performance and consistency with large datasets.
+
+#### Keyset Pagination Implementation
+
+**Request Parameters:**
+
+- `limit`: Number of results per page (default: varies by endpoint, max: 100)
+- `cursor`: Opaque cursor token for the next page (optional for first page)
+
+**Response Headers:**
+
+- `Link`: Contains pagination URLs following RFC 5988 web linking standard
+- `X-Total-Count`: Total number of items available (optional, may be omitted for performance)
+
+**Link Header Format:**
+
+```
+Link: <https://roundtable.lsst.cloud/ook/resources?cursor=eyJpZCI6MTUwfQ&limit=50>; rel="next",
+      <https://roundtable.lsst.cloud/ook/resources?cursor=eyJpZCI6MX0&limit=50>; rel="prev",
+      <https://roundtable.lsst.cloud/ook/resources?limit=50>; rel="first"
+```
+
+**Cursor Implementation:**
+
+- Cursors are base64-encoded strings containing the last resource ID from the current page
+- For resources: Cursor contains the Crockford Base32 ID (e.g., `01AR-YZ6S-3XQW-F`)
+- Database queries use binary comparison: `WHERE id > decode_base32($cursor) ORDER BY id`
+- Natural ordering is maintained since Crockford Base32 preserves lexicographic sort order
+- For search results: `{"score": 0.95, "id": "01AR-YZ6S-3XQW-F"}` (sorted by relevance score, then ID)
+- For authors: `{"surname": "Smith", "id": 101}` (sorted by surname, then ID)
+
+**Pagination Flow:**
+
+1. **First request**: `GET /resources?limit=50`
+2. **Next page**: Use `next` rel link from Link header
+3. **Previous page**: Use `prev` rel link from Link header
+4. **First page**: Use `first` rel link from Link header
+
+**Benefits over Offset Pagination:**
+
+- **Consistent results**: No duplicate or missing items when data changes during pagination
+- **Better performance**: Efficient database queries using indexed sort keys
+- **Scalability**: Performance doesn't degrade with large offsets
+- **Real-time safe**: Works correctly when items are added/removed during pagination
+
+**Client Implementation Example:**
+
+```javascript
+async function fetchAllResources() {
+  let nextUrl = "/resources?limit=50";
+  const allResources = [];
+
+  while (nextUrl) {
+    const response = await fetch(nextUrl);
+    const data = await response.json();
+    allResources.push(...data);
+
+    // Parse Link header for next page
+    const linkHeader = response.headers.get("Link");
+    nextUrl = parseLinkHeader(linkHeader)?.next || null;
+  }
+
+  return allResources;
+}
+```
+
+### Response Format Standards
+
+#### Success Responses
+
+- **200 OK**: Successful GET requests
+- **201 Created**: Successful POST requests
+- **204 No Content**: Successful DELETE requests
+
+#### Error Responses
+
+- **400 Bad Request**: Invalid request parameters
+- **401 Unauthorized**: Missing or invalid authentication
+- **403 Forbidden**: Insufficient permissions
+- **404 Not Found**: Resource not found
+- **422 Unprocessable Entity**: Validation errors
+- **500 Internal Server Error**: Server errors
+
+#### Error Response Format
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Invalid resource type specified",
+    "details": {
+      "field": "resource_type",
+      "allowed_values": [
+        "github_repository",
+        "document",
+        "documentation_website"
+      ]
+    }
+  }
+}
+```
+
+### Endpoints
 
 #### 1. Resources
 
@@ -1291,157 +1445,3 @@ Get bibliography statistics.
   }
 }
 ```
-
-### Pagination
-
-The API uses keyset pagination (also known as cursor-based pagination) rather than offset-based pagination for better performance and consistency with large datasets.
-
-#### Keyset Pagination Implementation
-
-**Request Parameters:**
-
-- `limit`: Number of results per page (default: varies by endpoint, max: 100)
-- `cursor`: Opaque cursor token for the next page (optional for first page)
-
-**Response Headers:**
-
-- `Link`: Contains pagination URLs following RFC 5988 web linking standard
-- `X-Total-Count`: Total number of items available (optional, may be omitted for performance)
-
-**Link Header Format:**
-
-```
-Link: <https://roundtable.lsst.cloud/ook/resources?cursor=eyJpZCI6MTUwfQ&limit=50>; rel="next",
-      <https://roundtable.lsst.cloud/ook/resources?cursor=eyJpZCI6MX0&limit=50>; rel="prev",
-      <https://roundtable.lsst.cloud/ook/resources?limit=50>; rel="first"
-```
-
-**Cursor Implementation:**
-
-- Cursors are base64-encoded strings containing the last resource ID from the current page
-- For resources: Cursor contains the Crockford Base32 ID (e.g., `01AR-YZ6S-3XQW-F`)
-- Database queries use binary comparison: `WHERE id > decode_base32($cursor) ORDER BY id`
-- Natural ordering is maintained since Crockford Base32 preserves lexicographic sort order
-- For search results: `{"score": 0.95, "id": "01AR-YZ6S-3XQW-F"}` (sorted by relevance score, then ID)
-- For authors: `{"surname": "Smith", "id": 101}` (sorted by surname, then ID)
-
-**Pagination Flow:**
-
-1. **First request**: `GET /resources?limit=50`
-2. **Next page**: Use `next` rel link from Link header
-3. **Previous page**: Use `prev` rel link from Link header
-4. **First page**: Use `first` rel link from Link header
-
-**Benefits over Offset Pagination:**
-
-- **Consistent results**: No duplicate or missing items when data changes during pagination
-- **Better performance**: Efficient database queries using indexed sort keys
-- **Scalability**: Performance doesn't degrade with large offsets
-- **Real-time safe**: Works correctly when items are added/removed during pagination
-
-**Client Implementation Example:**
-
-```javascript
-async function fetchAllResources() {
-  let nextUrl = "/resources?limit=50";
-  const allResources = [];
-
-  while (nextUrl) {
-    const response = await fetch(nextUrl);
-    const data = await response.json();
-    allResources.push(...data);
-
-    // Parse Link header for next page
-    const linkHeader = response.headers.get("Link");
-    nextUrl = parseLinkHeader(linkHeader)?.next || null;
-  }
-
-  return allResources;
-}
-```
-
-### Response Format Standards
-
-#### Success Responses
-
-- **200 OK**: Successful GET requests
-- **201 Created**: Successful POST requests
-- **204 No Content**: Successful DELETE requests
-
-#### Error Responses
-
-- **400 Bad Request**: Invalid request parameters
-- **401 Unauthorized**: Missing or invalid authentication
-- **403 Forbidden**: Insufficient permissions
-- **404 Not Found**: Resource not found
-- **422 Unprocessable Entity**: Validation errors
-- **500 Internal Server Error**: Server errors
-
-#### Error Response Format
-
-```json
-{
-  "error": {
-    "code": "VALIDATION_ERROR",
-    "message": "Invalid resource type specified",
-    "details": {
-      "field": "resource_type",
-      "allowed_values": [
-        "github_repository",
-        "document",
-        "documentation_website"
-      ]
-    }
-  }
-}
-```
-
-### API Design Principles
-
-1. **Consistency**: All endpoints follow similar patterns for parameters, responses, and error handling
-2. **Discoverability**: Include related resource links and relationship information
-3. **Performance**: Efficient keyset pagination and selective field inclusion
-4. **Extensibility**: JSON structure allows for future field additions without breaking changes
-5. **Standards Compliance**: Follows DataCite metadata standards, RFC 5988 web linking, and academic citation formats
-6. **Type Safety**: Clear typing for all resource types and relationships
-7. **Infrastructure Reuse**: Leverages existing Ook APIs (authors, affiliations) and extends them for bibliographic functionality
-
-### Resource ID Format
-
-The Bibliography API uses Crockford Base32 encoded IDs for all public resource identifiers. These IDs are designed to be human-readable, URL-safe, and include error detection capabilities.
-
-**ID Specification:**
-
-- **Format**: Crockford Base32 encoding with hyphen separators
-- **Length**: 13 characters total (formatted as XXXX-XXXX-XXXX-X)
-  - 12 characters: Resource identifier
-  - 1 character: Checksum for error detection
-- **Separator**: Hyphens every 4 characters for readability
-- **Implementation**: Uses the [base32-lib](https://base32-lib.readthedocs.io/en/latest/) Python library
-- **Example**: `01AR-YZ6S-3XQW-F` (12 chars + 1 char checksum with hyphens)
-
-**Database Storage:**
-
-- Resource IDs are stored as 8-byte BYTEA primary keys in PostgreSQL
-- The 12-character Crockford Base32 strings (without checksums) are decoded to bytes for storage
-- Checksums are calculated and appended dynamically by the API layer when serving responses
-- Checksums are validated and stripped by the API layer when processing incoming requests
-- This approach leverages PostgreSQL's optimization for binary data and maintains natural sort ordering
-
-**Benefits:**
-
-- **URL-safe**: No special characters that require encoding
-- **Human-readable**: Avoids ambiguous characters (0/O, 1/I/l)
-- **Error detection**: Built-in checksum prevents typos in manual entry
-- **Storage efficient**: 8 bytes vs 12+ bytes for string storage
-- **Natural ordering**: Crockford Base32 preserves lexicographic order, perfect for keyset pagination
-- **PostgreSQL optimized**: Binary primary keys are very fast for indexing and joins
-- **Collision resistance**: Low probability of ID conflicts
-
-**Usage in API:**
-
-- All `{id}` parameters in endpoints use Crockford Base32 IDs with checksums and hyphens
-- API layer validates incoming IDs by checking checksums, then strips checksums and decodes to bytes
-- API layer encodes database bytes to Base32, appends checksums, and formats with hyphens for responses
-- Database queries use binary comparisons for optimal performance
-- Keyset pagination uses natural byte ordering: `WHERE id > decode_base32($cursor) ORDER BY id`
