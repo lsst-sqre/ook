@@ -14,7 +14,8 @@ The central entity representing any trackable item in the system. This unified a
 
 **Attributes:**
 
-- `id` (Primary Key): Unique identifier
+- `id` (Primary Key): Unique identifier (internal integer)
+- `public_id`: Public API identifier (Crockford Base32, 13 characters with hyphens, unique, indexed)
 - `title`: Display name/title of the resource
 - `description`: Optional description
 - `url`: Primary URL for the resource (if applicable)
@@ -266,6 +267,7 @@ Represents projects hosted on LSST the Docs (LTD) for specific resource types li
 erDiagram
     Resource {
         bigint id PK
+        string public_id UK
         string title
         text description
         string url
@@ -763,7 +765,8 @@ List all bibliographic resources with filtering and pagination.
 ```json
 [
   {
-    "self_url": "https://roundtable.lsst.cloud/ook/resources/1",
+    "id": "01AR-YZ6S-3XQW-F",
+    "self_url": "https://roundtable.lsst.cloud/ook/resources/01AR-YZ6S-3XQW-F",
     "title": "LSST Science Pipelines",
     "description": "The LSST Science Pipelines enable optical and near-infrared astronomy",
     "url": "https://github.com/lsst/science_pipelines",
@@ -826,7 +829,8 @@ Get a specific resource by ID with full details.
 
 ```json
 {
-  "self_url": "https://roundtable.lsst.cloud/ook/resources/2",
+  "id": "01BS-WQM7-Y8PD-C",
+  "self_url": "https://roundtable.lsst.cloud/ook/resources/01BS-WQM7-Y8PD-C",
   "title": "Data Management Test Plan",
   "description": "Technical note describing the test approach for LSST Data Management",
   "url": "https://dmtn-031.lsst.io",
@@ -839,10 +843,10 @@ Get a specific resource by ID with full details.
   "version_type": "semantic_version",
   "is_default_version": true,
   "date_released": "2024-03-10T16:45:00Z",
-  "authors_url": "https://roundtable.lsst.cloud/ook/resources/2/authors",
-  "versions_url": "https://roundtable.lsst.cloud/ook/resources/2/versions",
-  "relationships_url": "https://roundtable.lsst.cloud/ook/resources/2/relationships",
-  "citations_url": "https://roundtable.lsst.cloud/ook/resources/2/citations",
+  "authors_url": "https://roundtable.lsst.cloud/ook/resources/01BS-WQM7-Y8PD-C/authors",
+  "versions_url": "https://roundtable.lsst.cloud/ook/resources/01BS-WQM7-Y8PD-C/versions",
+  "relationships_url": "https://roundtable.lsst.cloud/ook/resources/01BS-WQM7-Y8PD-C/relationships",
+  "citations_url": "https://roundtable.lsst.cloud/ook/resources/01BS-WQM7-Y8PD-C/citations",
   "document": {
     "series": "DMTN",
     "handle": "031",
@@ -1401,3 +1405,37 @@ async function fetchAllResources() {
 5. **Standards Compliance**: Follows DataCite metadata standards, RFC 5988 web linking, and academic citation formats
 6. **Type Safety**: Clear typing for all resource types and relationships
 7. **Infrastructure Reuse**: Leverages existing Ook APIs (authors, affiliations) and extends them for bibliographic functionality
+
+### Resource ID Format
+
+The Bibliography API uses Crockford Base32 encoded IDs for all public resource identifiers. These IDs are designed to be human-readable, URL-safe, and include error detection capabilities.
+
+**ID Specification:**
+
+- **Format**: Crockford Base32 encoding with hyphen separators
+- **Length**: 13 characters total (formatted as XXXX-XXXX-XXXX-X)
+  - 12 characters: Resource identifier
+  - 1 character: Checksum for error detection
+- **Separator**: Hyphens every 4 characters for readability
+- **Implementation**: Uses the [base32-lib](https://base32-lib.readthedocs.io/en/latest/) Python library
+- **Example**: `01AR-YZ6S-3XQW-F` (12 chars + 1 char checksum with hyphens)
+
+**Database Storage:**
+
+- Public API IDs are stored as separate fields in database tables (e.g., `public_id`)
+- Internal database primary keys remain as auto-incrementing integers
+- This separation allows for stable public IDs independent of database implementation details
+
+**Benefits:**
+
+- **URL-safe**: No special characters that require encoding
+- **Human-readable**: Avoids ambiguous characters (0/O, 1/I/l)
+- **Error detection**: Built-in checksum prevents typos in manual entry
+- **Database independence**: Public IDs remain stable across database migrations
+- **Collision resistance**: Low probability of ID conflicts
+
+**Usage in API:**
+
+- All `{id}` parameters in endpoints use these Crockford Base32 IDs
+- Database queries internally map public IDs to integer primary keys
+- Response objects include public IDs in `id` fields and URLs
