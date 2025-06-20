@@ -14,8 +14,7 @@ The central entity representing any trackable item in the system. This unified a
 
 **Attributes:**
 
-- `id` (Primary Key): Unique identifier (internal integer)
-- `public_id`: Public API identifier (Crockford Base32, 13 characters with hyphens, unique, indexed)
+- `id` (Primary Key): Crockford Base32 identifier stored as bytes (8 bytes, decoded from 12-character Base32 string)
 - `title`: Display name/title of the resource
 - `description`: Optional description
 - `url`: Primary URL for the resource (if applicable)
@@ -266,8 +265,7 @@ Represents projects hosted on LSST the Docs (LTD) for specific resource types li
 ```mermaid
 erDiagram
     Resource {
-        bigint id PK
-        string public_id UK
+        bytea id PK
         string title
         text description
         string url
@@ -1320,9 +1318,11 @@ Link: <https://roundtable.lsst.cloud/ook/resources?cursor=eyJpZCI6MTUwfQ&limit=5
 
 **Cursor Implementation:**
 
-- Cursors are base64-encoded JSON objects containing sort keys
-- For resources: `{"id": 150}` (sorted by ID)
-- For search results: `{"score": 0.95, "id": 2}` (sorted by relevance score, then ID)
+- Cursors are base64-encoded strings containing the last resource ID from the current page
+- For resources: Cursor contains the Crockford Base32 ID (e.g., `01AR-YZ6S-3XQW-F`)
+- Database queries use binary comparison: `WHERE id > decode_base32($cursor) ORDER BY id`
+- Natural ordering is maintained since Crockford Base32 preserves lexicographic sort order
+- For search results: `{"score": 0.95, "id": "01AR-YZ6S-3XQW-F"}` (sorted by relevance score, then ID)
 - For authors: `{"surname": "Smith", "id": 101}` (sorted by surname, then ID)
 
 **Pagination Flow:**
@@ -1422,20 +1422,26 @@ The Bibliography API uses Crockford Base32 encoded IDs for all public resource i
 
 **Database Storage:**
 
-- Public API IDs are stored as separate fields in database tables (e.g., `public_id`)
-- Internal database primary keys remain as auto-incrementing integers
-- This separation allows for stable public IDs independent of database implementation details
+- Resource IDs are stored as 8-byte BYTEA primary keys in PostgreSQL
+- The 12-character Crockford Base32 strings (without checksums) are decoded to bytes for storage
+- Checksums are calculated and appended dynamically by the API layer when serving responses
+- Checksums are validated and stripped by the API layer when processing incoming requests
+- This approach leverages PostgreSQL's optimization for binary data and maintains natural sort ordering
 
 **Benefits:**
 
 - **URL-safe**: No special characters that require encoding
 - **Human-readable**: Avoids ambiguous characters (0/O, 1/I/l)
 - **Error detection**: Built-in checksum prevents typos in manual entry
-- **Database independence**: Public IDs remain stable across database migrations
+- **Storage efficient**: 8 bytes vs 12+ bytes for string storage
+- **Natural ordering**: Crockford Base32 preserves lexicographic order, perfect for keyset pagination
+- **PostgreSQL optimized**: Binary primary keys are very fast for indexing and joins
 - **Collision resistance**: Low probability of ID conflicts
 
 **Usage in API:**
 
-- All `{id}` parameters in endpoints use these Crockford Base32 IDs
-- Database queries internally map public IDs to integer primary keys
-- Response objects include public IDs in `id` fields and URLs
+- All `{id}` parameters in endpoints use Crockford Base32 IDs with checksums and hyphens
+- API layer validates incoming IDs by checking checksums, then strips checksums and decodes to bytes
+- API layer encodes database bytes to Base32, appends checksums, and formats with hyphens for responses
+- Database queries use binary comparisons for optimal performance
+- Keyset pagination uses natural byte ordering: `WHERE id > decode_base32($cursor) ORDER BY id`
