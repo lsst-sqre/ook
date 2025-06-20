@@ -29,7 +29,7 @@ class SqlSdmSchema(Base):
     as YAML files managed by Felis (https://felis.lsst.io).
     """
 
-    __tablename__ = "sdm_schemas"
+    __tablename__ = "sdm_schema"
 
     __table_args__ = (UniqueConstraint("name", name="uq_sdm_schema_name"),)
 
@@ -78,7 +78,7 @@ class SqlSdmSchema(Base):
 class SqlSdmTable(Base):
     """A SQLAlchemy model for a table in an SDM schema."""
 
-    __tablename__ = "sdm_tables"
+    __tablename__ = "sdm_table"
 
     __table_args__ = (
         UniqueConstraint("schema_id", "name", name="uq_sdm_table_schema_name"),
@@ -90,7 +90,7 @@ class SqlSdmTable(Base):
     """The primary key."""
 
     schema_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("sdm_schemas.id"), nullable=False, index=True
+        BigInteger, ForeignKey("sdm_schema.id"), nullable=False, index=True
     )
     """The ID of the schema to which this table belongs."""
 
@@ -132,7 +132,7 @@ class SqlSdmTable(Base):
 class SqlSdmColumn(Base):
     """A SQLAlchemy model for a column in an SDM table."""
 
-    __tablename__ = "sdm_columns"
+    __tablename__ = "sdm_column"
 
     __table_args__ = (
         UniqueConstraint("table_id", "name", name="uq_sdm_column_table_name"),
@@ -144,7 +144,7 @@ class SqlSdmColumn(Base):
     """The primary key."""
 
     table_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("sdm_tables.id"), nullable=False, index=True
+        BigInteger, ForeignKey("sdm_table.id"), nullable=False, index=True
     )
     """The ID of the table to which this column belongs."""
 

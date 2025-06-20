@@ -46,12 +46,12 @@ async def ingest_lsst_texmf(
 async def test_get_author_by_id(
     client: AsyncClient, ingest_lsst_texmf: None
 ) -> None:
-    """Test the /authors/id/{internal_id} endpoint.
+    """Test the /authors/{internal_id} endpoint.
 
     This fixture sets up the test data and yields the response data.
     """
     # Get author by internal ID
-    response = await client.get("/ook/authors/id/sickj")
+    response = await client.get("/ook/authors/sickj")
     assert response.status_code == 200
     data = response.json()
     assert data["internal_id"] == "sickj"
@@ -70,8 +70,8 @@ async def test_get_author_by_id(
 async def test_get_author_by_id_not_found(
     client: AsyncClient, ingest_lsst_texmf: None
 ) -> None:
-    """Test the /authors/id/{internal_id} endpoint with a non-existent ID."""
-    response = await client.get("/ook/authors/id/doesnotexist")
+    """Test the /authors/{internal_id} endpoint with a non-existent ID."""
+    response = await client.get("/ook/authors/doesnotexist")
     assert response.status_code == 404
     data = response.json()
     assert data["detail"][0] == {
