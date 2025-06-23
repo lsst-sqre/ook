@@ -214,6 +214,6 @@ class LtdTechnote:
         }
 
         for i, header in enumerate(section.headers):
-            record_args[f"h{i+1}"] = header
+            record_args[f"h{i + 1}"] = header
 
         return DocumentRecord.model_validate(record_args)

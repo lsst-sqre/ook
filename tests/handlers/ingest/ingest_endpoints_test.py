@@ -73,14 +73,18 @@ async def test_post_ingest_lsst_texmf(
     assert response.status_code == 200
 
     # Check that we got an author
-    response = await client.get("/ook/authors/id/sickj")
+    response = await client.get("/ook/authors/sickj")
     assert response.status_code == 200
     data = response.json()
     assert data["surname"] == "Sick"
     assert len(data["affiliations"]) == 2
 
+    # Check that collaborations are not in the authors endpoint
+    response = await client.get("/ook/authors/DMPipelines")
+    assert response.status_code == 404
+
     # Check that TeX is decoded to unicode
-    response = await client.get("/ook/authors/id/ivezicv")
+    response = await client.get("/ook/authors/ivezicv")
     assert response.status_code == 200
     data = response.json()
     assert data["surname"] == "Ivezić"

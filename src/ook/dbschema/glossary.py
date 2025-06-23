@@ -29,13 +29,13 @@ term_relationships = Table(
     Column(
         "source_term_id",
         Integer,
-        ForeignKey("terms.id", ondelete="CASCADE"),
+        ForeignKey("term.id", ondelete="CASCADE"),
         primary_key=True,
     ),
     Column(
         "related_term_id",
         Integer,
-        ForeignKey("terms.id", ondelete="CASCADE"),
+        ForeignKey("term.id", ondelete="CASCADE"),
         primary_key=True,
     ),
 )
@@ -49,7 +49,7 @@ class SqlTerm(Base):
     definitions. This allows the same term to have multiple definitions.
     """
 
-    __tablename__ = "terms"
+    __tablename__ = "term"
 
     __table_args__ = (
         UniqueConstraint(

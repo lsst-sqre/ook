@@ -102,6 +102,7 @@ async def post_ingest_lsst_texmf(
             git_ref=ingest_request.git_ref,
             ingest_authordb=ingest_request.ingest_authordb,
             ingest_glossary=ingest_request.ingest_glossary,
+            delete_stale_records=ingest_request.delete_stale_records,
         )
         await context.session.commit()
     return Response(status_code=200)

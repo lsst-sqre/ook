@@ -202,6 +202,7 @@ class AuthorDbYaml(BaseModel):
                 all_affiliations=affiliations,
             )
             for author_id, author in self.authors.items()
+            if author.is_collaboration is False
         }
 
     def _process_author(

@@ -24,7 +24,7 @@ __all__ = [
 class SqlLink(Base):
     """A SQLAlchemy model for documentation links."""
 
-    __tablename__ = "links"
+    __tablename__ = "link"
 
     __mapper_args__ = {  # noqa: RUF012
         "polymorphic_identity": "link",
@@ -73,13 +73,13 @@ class SqlSdmSchemaLink(SqlLink):
     }
 
     id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("links.id"), primary_key=True
+        BigInteger, ForeignKey("link.id"), primary_key=True
     )
     """The primary key."""
 
     schema_id: Mapped[BigInteger] = mapped_column(
         BigInteger,
-        ForeignKey("sdm_schemas.id"),
+        ForeignKey("sdm_schema.id"),
         nullable=False,
         index=True,
     )
@@ -101,13 +101,13 @@ class SqlSdmTableLink(SqlLink):
     }
 
     id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("links.id"), primary_key=True
+        BigInteger, ForeignKey("link.id"), primary_key=True
     )
     """The primary key."""
 
     table_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("sdm_tables.id"),
+        ForeignKey("sdm_table.id"),
         nullable=False,
         index=True,
     )
@@ -129,13 +129,13 @@ class SqlSdmColumnLink(SqlLink):
     }
 
     id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("links.id"), primary_key=True
+        BigInteger, ForeignKey("link.id"), primary_key=True
     )
     """The primary key."""
 
     column_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("sdm_columns.id"),
+        ForeignKey("sdm_column.id"),
         nullable=False,
         index=True,
     )

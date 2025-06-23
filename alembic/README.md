@@ -31,7 +31,7 @@ git add alembic/versions/<new_migration_file>
 After the migration has been committed, update the [schema_dump.sql](schema_dump.sql) file to reflect the new schema. Run the following command from the repo's root directory:
 
 ```bash
-nox -s db-dump-schema
+nox -s dump-db-schema
 git add alembic/schema_dump.sql
 ```
 
