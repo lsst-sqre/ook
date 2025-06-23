@@ -292,19 +292,17 @@ class GlossaryStore:
         # Delete all existing terms
         await self.clear_glossary()
 
-        # De-duplicate terms by term and contexts. Sometimes people
+        # De-duplicate terms by term and definition. Sometimes people
         # accidentally duplicate terms.
         original_length = len(terms)
-        seen = {}
+        seen: dict[tuple[str, str], GlossaryDef] = {}
         duplicates = []
         for term in terms:
-            key = TermMapKey(
-                term=term.term, contexts=tuple(sorted(term.contexts))
-            )
-            if key in seen:
+            dedup_key = (term.term, term.definition)
+            if dedup_key in seen:
                 duplicates.append(term)
             else:
-                seen[key] = term
+                seen[dedup_key] = term
         terms = list(seen.values())
         if duplicates:
             self._logger.warning(
@@ -338,11 +336,11 @@ class GlossaryStore:
             )
             self._session.add(sql_term)
 
-            key = TermMapKey(
+            term_map_key = TermMapKey(
                 term=term.term,
                 contexts=tuple(sorted_contexts),
             )
-            term_map[key] = TermMapValue(
+            term_map[term_map_key] = TermMapValue(
                 sql_term=sql_term,
                 domain_term=term,
             )
