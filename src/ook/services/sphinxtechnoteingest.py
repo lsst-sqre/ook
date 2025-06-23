@@ -94,11 +94,11 @@ class SphinxTechnoteIngestService:
             ) = self._github_service.parse_repo_from_github_url(
                 reduced_technote.github_url
             )
-            creation_date: datetime | None = (
-                await self._github_service.get_repo_first_commit_date(
-                    owner=repo_owner,
-                    repo=repo_name,
-                )
+            creation_date: (
+                datetime | None
+            ) = await self._github_service.get_repo_first_commit_date(
+                owner=repo_owner,
+                repo=repo_name,
             )
         else:
             self._logger.warning(
@@ -219,6 +219,6 @@ class SphinxTechnoteIngestService:
             "github_repo_url": technote.github_url,
         }
         for i, header in enumerate(section.headers):
-            record_args[f"h{i+1}"] = header
+            record_args[f"h{i + 1}"] = header
 
         return DocumentRecord.model_validate(record_args)
