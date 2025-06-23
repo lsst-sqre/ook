@@ -190,7 +190,10 @@ class AuthorStore:
         )
 
     async def upsert_affiliations(
-        self, affiliations: Sequence[Affiliation]
+        self,
+        affiliations: Sequence[Affiliation],
+        *,
+        delete_stale_records: bool = False,
     ) -> None:
         """Upsert affiliations into the database.
 
@@ -199,6 +202,8 @@ class AuthorStore:
         affiliations
             A sequence of Affiliation domain models to be upserted into the
             database.
+        delete_stale_records
+            If True, delete affiliations that are not in the provided list.
         """
         now = current_datetime(microseconds=False)
 
@@ -223,7 +228,16 @@ class AuthorStore:
         await self._session.execute(upsert_stmt)
         await self._session.flush()
 
-    async def upsert_authors(self, authors: Sequence[Author]) -> None:
+        if delete_stale_records:
+            delete_stmt = delete(SqlAffiliation).where(
+                SqlAffiliation.date_updated < now,
+            )
+            await self._session.execute(delete_stmt)
+            await self._session.flush()
+
+    async def upsert_authors(
+        self, authors: Sequence[Author], *, delete_stale_records: bool = False
+    ) -> None:
         """Upsert authors into the database.
 
         Parameters
@@ -231,6 +245,8 @@ class AuthorStore:
         authors
             A sequence of Author domain models to be upserted into the
             database.
+        delete_stale_records
+            If True, delete authors that are not in the provided list.
         """
         now = current_datetime(microseconds=False)
 
@@ -317,8 +333,19 @@ class AuthorStore:
 
         await self._session.flush()
 
+        # Optionally delete stale records based on having `date_updated < now`
+        if delete_stale_records:
+            delete_stmt = delete(SqlAuthor).where(
+                SqlAuthor.date_updated < now,
+            )
+            await self._session.execute(delete_stmt)
+            await self._session.flush()
+
     async def upsert_collaborations(
-        self, collaborations: Sequence[Collaboration]
+        self,
+        collaborations: Sequence[Collaboration],
+        *,
+        delete_stale_records: bool = False,
     ) -> None:
         """Upsert collaborations into the database.
 
@@ -327,6 +354,8 @@ class AuthorStore:
         collaborations
             A sequence of Collaboration domain models to be upserted into the
             database.
+        delete_stale_records
+            If True, delete collaborations that are not in the provided list.
         """
         now = current_datetime(microseconds=False)
 
@@ -348,6 +377,13 @@ class AuthorStore:
         )
         await self._session.execute(upsert_stmt)
         await self._session.flush()
+
+        if delete_stale_records:
+            delete_stmt = delete(SqlCollaboration).where(
+                SqlCollaboration.date_updated < now,
+            )
+            await self._session.execute(delete_stmt)
+            await self._session.flush()
 
 
 @dataclass(slots=True)

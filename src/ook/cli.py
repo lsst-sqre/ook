@@ -217,8 +217,14 @@ async def ingest_updated(*, window: str) -> None:
     default="main",
     help="Git ref (branch or tag) of the Git repository to use.",
 )
+@click.option(
+    "--delete-stale-records",
+    is_flag=True,
+)
 @run_with_asyncio
-async def ingest_lsst_texmf(*, git_ref: str) -> None:
+async def ingest_lsst_texmf(
+    *, git_ref: str, delete_stale_records: bool
+) -> None:
     """Update author and glossary data from GitHub."""
     logger = structlog.get_logger("ook")
     engine = create_database_engine(
@@ -228,7 +234,9 @@ async def ingest_lsst_texmf(*, git_ref: str) -> None:
         logger=logger, engine=engine
     ) as factory:
         ingest_service = await factory.create_lsst_texmf_ingest_service()
-        await ingest_service.ingest(git_ref=git_ref)
+        await ingest_service.ingest(
+            git_ref=git_ref, delete_stale_records=delete_stale_records
+        )
         await factory.db_session.commit()
     await engine.dispose()
     logger.info("Completed ingest of lsst/lsst-texmf", git_ref=git_ref)

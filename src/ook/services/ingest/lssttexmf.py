@@ -72,6 +72,7 @@ class LsstTexmfIngestService:
         *,
         ingest_authordb: bool = True,
         ingest_glossary: bool = True,
+        delete_stale_records: bool = False,
     ) -> None:
         """Ingest the lsst-texmf data.
 
@@ -80,6 +81,13 @@ class LsstTexmfIngestService:
         git_ref
             The git reference to use for the lsst-texmf repository. If not
             provided, the default branch will be used.
+        ingest_authordb
+            Whether to ingest the authordb.yaml file. Defaults to True.
+        ingest_glossary
+            Whether to ingest the glossarydefs.csv file. Defaults to True.
+        delete_stale_records
+            Whether to delete stale records in the author store. Defaults to
+            False.
         """
         if git_ref is None:
             repo_info = await self._gh_repo_store.get_repo(
@@ -97,23 +105,33 @@ class LsstTexmfIngestService:
         )
 
         if ingest_authordb:
-            await self._ingest_authordb(texmf_repo)
+            await self._ingest_authordb(
+                texmf_repo, delete_stale_records=delete_stale_records
+            )
 
         if ingest_glossary:
             await self._ingest_glossary(texmf_repo)
 
-    async def _ingest_authordb(self, repo: LsstTexmfGitHubRepo) -> None:
+    async def _ingest_authordb(
+        self, repo: LsstTexmfGitHubRepo, *, delete_stale_records: bool
+    ) -> None:
         """Ingest the authordb.yaml file."""
         author_db_data = await repo.load_authordb()
         await self._author_store.upsert_affiliations(
-            affiliations=list(author_db_data.affiliations_to_domain().values())
+            affiliations=list(
+                author_db_data.affiliations_to_domain().values()
+            ),
+            delete_stale_records=delete_stale_records,
         )
         authors = author_db_data.authors_to_domain()
-        await self._author_store.upsert_authors(list(authors.values()))
+        await self._author_store.upsert_authors(
+            list(authors.values()), delete_stale_records=delete_stale_records
+        )
         await self._author_store.upsert_collaborations(
             collaborations=list(
                 author_db_data.collaborations_to_domain().values()
-            )
+            ),
+            delete_stale_records=delete_stale_records,
         )
 
     async def _ingest_glossary(self, repo: LsstTexmfGitHubRepo) -> None:

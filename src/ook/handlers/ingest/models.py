@@ -102,3 +102,11 @@ class LsstTexmfIngestRequest(BaseModel):
             "Whether to ingest the glossary from the lsst-texmf repository."
         ),
     )
+
+    delete_stale_records: bool = Field(
+        False,
+        description=(
+            "Whether to delete stale records in the author store. "
+            "Defaults to False."
+        ),
+    )
