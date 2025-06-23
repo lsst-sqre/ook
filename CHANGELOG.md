@@ -2,7 +2,32 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.14.0'></a>
+
+## 0.14.0 (2025-06-23)
+
+### Backwards-incompatible changes
+
+- Changed the `GET /authors/id/{id}` endpoint to now be `GET /authors/{id}` to align with the other endpoints in the API.
+
+- Changed SQL table names to be singular instead of plural. This change requires a database migration (Alembic migration `fb5ed49d63d5`).
+
+### New features
+
+- The `POST /ingest/lsst-texmf` endpoint (and `ook ingest-lsst-texmf` command) provides an option to delete author records that are no longer present in `authordb.yaml`. This is not the default behavior.
+
+### Bug fixes
+
+- Collaborations are now filtered out from the `/authors` endpoint. We may add a new collaborations endpoint in the future.
+
+- Terms in `glossarydefs.csv` are deduplicated before being added to the database. This prevents duplicate terms in the CSV, a common typo, from preventing the ingestion of the glossary definitions.
+
+### Other changes
+
+- Dropped the `nox init`, `init-venv`, and `update-deps` sessions in favor of Makefile targets to reduce subtle issues about how `nox` depends on `uv` in the `nox` context.
+
 <a id='changelog-0.13.1'></a>
+
 ## 0.13.1 (2025-04-30)
 
 ### Bug fixes
