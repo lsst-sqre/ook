@@ -292,20 +292,33 @@ class GlossaryStore:
         # Delete all existing terms
         await self.clear_glossary()
 
-        # De-deplicate terms by term and contexts. Sometimes people
+        # De-duplicate terms by term and contexts. Sometimes people
         # accidentally duplicate terms.
         original_length = len(terms)
-        terms = list(
-            {
-                (term.term, tuple(sorted(term.contexts))): term
-                for term in terms
-            }.values()
-        )
-        if len(terms) < original_length:
+        seen = {}
+        duplicates = []
+        for term in terms:
+            key = TermMapKey(
+                term=term.term, contexts=tuple(sorted(term.contexts))
+            )
+            if key in seen:
+                duplicates.append(term)
+            else:
+                seen[key] = term
+        terms = list(seen.values())
+        if duplicates:
             self._logger.warning(
                 "Glossary terms were de-duplicated",
                 original_length=original_length,
                 new_length=len(terms),
+                duplicates=[
+                    {
+                        "term": t.term,
+                        "contexts": sorted(t.contexts),
+                        "definition": t.definition,
+                    }
+                    for t in duplicates
+                ],
             )
 
         # Map of term rows, keyed by (term, contexts)
