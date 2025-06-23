@@ -229,11 +229,36 @@ class AuthorStore:
         await self._session.flush()
 
         if delete_stale_records:
-            delete_stmt = delete(SqlAffiliation).where(
-                SqlAffiliation.date_updated < now,
-            )
-            await self._session.execute(delete_stmt)
-            await self._session.flush()
+            # First, find affiliation IDs and internal_ids to be deleted
+            subquery = select(
+                SqlAffiliation.id, SqlAffiliation.internal_id
+            ).where(SqlAffiliation.date_updated < now)
+            result = await self._session.execute(subquery)
+            to_delete = result.all()
+            affiliation_ids = [row.id for row in to_delete]
+            affiliation_internal_ids = [row.internal_id for row in to_delete]
+            if affiliation_internal_ids:
+                self._logger.info(
+                    "Deleting stale affiliations not in authordb.yaml",
+                    internal_ids=affiliation_internal_ids,
+                )
+
+            # Delete related author-affiliation rows
+            if affiliation_ids:
+                delete_author_affiliations_stmt = delete(
+                    SqlAuthorAffiliation
+                ).where(
+                    SqlAuthorAffiliation.affiliation_id.in_(affiliation_ids)
+                )
+                await self._session.execute(delete_author_affiliations_stmt)
+
+            # Now delete the affiliations
+            if affiliation_ids:
+                delete_stmt = delete(SqlAffiliation).where(
+                    SqlAffiliation.id.in_(affiliation_ids)
+                )
+                await self._session.execute(delete_stmt)
+                await self._session.flush()
 
     async def upsert_authors(
         self, authors: Sequence[Author], *, delete_stale_records: bool = False
@@ -335,11 +360,34 @@ class AuthorStore:
 
         # Optionally delete stale records based on having `date_updated < now`
         if delete_stale_records:
-            delete_stmt = delete(SqlAuthor).where(
-                SqlAuthor.date_updated < now,
+            # First, find author IDs and internal_ids to be deleted
+            subquery = select(SqlAuthor.id, SqlAuthor.internal_id).where(
+                SqlAuthor.date_updated < now
             )
-            await self._session.execute(delete_stmt)
-            await self._session.flush()
+            result = await self._session.execute(subquery)
+            to_delete = result.all()
+            author_ids = [row.id for row in to_delete]
+            author_internal_ids = [row.internal_id for row in to_delete]
+            if author_internal_ids:
+                self._logger.info(
+                    "Deleting stale authors not in authordb.yaml",
+                    internal_ids=author_internal_ids,
+                )
+
+            # Delete related author-affiliation rows
+            if author_ids:
+                delete_affiliations_stmt = delete(SqlAuthorAffiliation).where(
+                    SqlAuthorAffiliation.author_id.in_(author_ids)
+                )
+                await self._session.execute(delete_affiliations_stmt)
+
+            # Now delete the authors
+            if author_ids:
+                delete_stmt = delete(SqlAuthor).where(
+                    SqlAuthor.id.in_(author_ids)
+                )
+                await self._session.execute(delete_stmt)
+                await self._session.flush()
 
     async def upsert_collaborations(
         self,
