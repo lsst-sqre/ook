@@ -14,7 +14,7 @@ The central entity representing any trackable item in the system. This unified a
 
 **Attributes:**
 
-- `id` (Primary Key): Crockford Base32 identifier stored as bytes (8 bytes, decoded from 12-character Base32 string)
+- `id` (Primary Key): Crockford Base32 identifier stored as a 64-bit unsigned integer (uint64) in the database
 - `title`: Display name/title of the resource
 - `description`: Optional description
 - `url`: Primary URL for the resource (if applicable)
@@ -265,7 +265,7 @@ Represents projects hosted on LSST the Docs (LTD) for specific resource types li
 ```mermaid
 erDiagram
     Resource {
-        bytea id PK
+        bigint id PK
         string title
         text description
         string url
@@ -755,38 +755,38 @@ The Bibliography API uses Crockford Base32 encoded IDs for all public resource i
 **ID Specification:**
 
 - **Format**: Crockford Base32 encoding with hyphen separators
-- **Length**: 13 characters total (formatted as XXXX-XXXX-XXXX-X)
+- **Length**: 14 characters total (formatted as XXXX-XXXX-XXXX-XX)
   - 12 characters: Resource identifier
-  - 1 character: Checksum for error detection
+  - 2 characters: Checksum for error detection (as implemented by `base32-lib`)
 - **Separator**: Hyphens every 4 characters for readability
 - **Implementation**: Uses the [base32-lib](https://base32-lib.readthedocs.io/en/latest/) Python library
-- **Example**: `01AR-YZ6S-3XQW-F` (12 chars + 1 char checksum with hyphens)
+- **Example**: `01AR-YZ6S-3XQW-FG` (12 chars + 2 char checksum with hyphens)
 
 **Database Storage:**
 
-- Resource IDs are stored as 8-byte BYTEA primary keys in PostgreSQL
-- The 12-character Crockford Base32 strings (without checksums) are decoded to bytes for storage
+- Resource IDs are stored as 64-bit unsigned integer primary keys in PostgreSQL (decoded from the 12-character Crockford Base32 string)
+- The 12-character Crockford Base32 strings (without checksums) are decoded to an integer for storage
 - Checksums are calculated and appended dynamically by the API layer when serving responses
 - Checksums are validated and stripped by the API layer when processing incoming requests
-- This approach leverages PostgreSQL's optimization for binary data and maintains natural sort ordering
+- This approach leverages PostgreSQL's optimization for integer data and maintains natural sort ordering
 
 **Benefits:**
 
 - **URL-safe**: No special characters that require encoding
 - **Human-readable**: Avoids ambiguous characters (0/O, 1/I/l)
 - **Error detection**: Built-in checksum prevents typos in manual entry
-- **Storage efficient**: 8 bytes vs 12+ bytes for string storage
+- **Storage efficient**: 8 bytes (uint64) vs 12+ bytes for string storage
 - **Natural ordering**: Crockford Base32 preserves lexicographic order, perfect for keyset pagination
-- **PostgreSQL optimized**: Binary primary keys are very fast for indexing and joins
+- **PostgreSQL optimized**: Integer primary keys are very fast for indexing and joins
 - **Collision resistance**: Low probability of ID conflicts
 
 **Usage in API:**
 
 - All `{id}` parameters in endpoints use Crockford Base32 IDs with checksums and hyphens
-- API layer validates incoming IDs by checking checksums, then strips checksums and decodes to bytes
-- API layer encodes database bytes to Base32, appends checksums, and formats with hyphens for responses
-- Database queries use binary comparisons for optimal performance
-- Keyset pagination uses natural byte ordering: `WHERE id > decode_base32($cursor) ORDER BY id`
+- API layer validates incoming IDs by checking checksums, then strips checksums and decodes to an integer
+- API layer encodes database integers to Base32, appends checksums, and formats with hyphens for responses
+- Database queries use integer comparisons for optimal performance
+- Keyset pagination uses natural integer ordering: `WHERE id > decode_base32($cursor) ORDER BY id`
 
 ### Pagination
 
