@@ -1181,7 +1181,7 @@ List all authors with keyset pagination.
 ```json
 [
   {
-    "self_url": "https://roundtable.lsst.cloud/ook/authors/id/john-doe",
+    "self_url": "https://roundtable.lsst.cloud/ook/authors/john-doe",
     "type": "person",
     "internal_id": "john-doe",
     "given_name": "John",
@@ -1198,7 +1198,7 @@ List all authors with keyset pagination.
     "resource_count": 15
   },
   {
-    "self_url": "https://roundtable.lsst.cloud/ook/authors/id/dm-team",
+    "self_url": "https://roundtable.lsst.cloud/ook/authors/dm-team",
     "type": "collaboration",
     "internal_id": "dm-team",
     "name": "LSST Data Management Team",
@@ -1218,13 +1218,13 @@ Link: <https://roundtable.lsst.cloud/ook/authors?cursor=eyJpZCI6MjAxfQ&limit=50>
 X-Total-Count: 178
 ```
 
-##### GET /authors/id/{internal_id}
+##### GET /authors/{internal_id}
 
 Get detailed information about a specific author by their internal ID.
 
 **Current Implementation:**
 
-- Endpoint: `GET /authors/id/{internal_id}`
+- Endpoint: `GET /authors/{internal_id}`
 - Path parameter: `internal_id` (from lsst-texmf authordb.yaml)
 - Returns: Author details including affiliations
 - Security: Excludes sensitive data like email addresses
@@ -1246,7 +1246,7 @@ The bibliography API will leverage the existing authors infrastructure and exten
 
 ```json
 {
-  "self_url": "https://roundtable.lsst.cloud/ook/authors/id/john-doe",
+  "self_url": "https://roundtable.lsst.cloud/ook/authors/john-doe",
   "type": "person",
   "internal_id": "john-doe",
   "given_name": "John",
@@ -1260,7 +1260,7 @@ The bibliography API will leverage the existing authors infrastructure and exten
       "position": 1
     }
   ],
-  "resources_url": "https://roundtable.lsst.cloud/ook/authors/id/john-doe/resources"
+  "resources_url": "https://roundtable.lsst.cloud/ook/authors/john-doe/resources"
 }
 ```
 
@@ -1270,7 +1270,7 @@ Extended to handle both individual authors and collaborations by internal ID.
 
 ```json
 {
-  "self_url": "https://roundtable.lsst.cloud/ook/authors/id/john-doe",
+  "self_url": "https://roundtable.lsst.cloud/ook/authors/john-doe",
   "type": "person",
   "internal_id": "john-doe",
   "given_name": "John",
@@ -1285,7 +1285,7 @@ Extended to handle both individual authors and collaborations by internal ID.
     }
   ],
   "resource_count": 15,
-  "resources_url": "https://roundtable.lsst.cloud/ook/authors/id/john-doe/resources"
+  "resources_url": "https://roundtable.lsst.cloud/ook/authors/john-doe/resources"
 }
 ```
 
@@ -1293,7 +1293,7 @@ Extended to handle both individual authors and collaborations by internal ID.
 
 ```json
 {
-  "self_url": "https://roundtable.lsst.cloud/ook/authors/id/dm-team",
+  "self_url": "https://roundtable.lsst.cloud/ook/authors/dm-team",
   "type": "collaboration",
   "internal_id": "dm-team",
   "name": "LSST Data Management Team",
@@ -1302,7 +1302,7 @@ Extended to handle both individual authors and collaborations by internal ID.
   "orcid": null,
   "affiliations": [],
   "resource_count": 42,
-  "resources_url": "https://roundtable.lsst.cloud/ook/authors/id/dm-team/resources"
+  "resources_url": "https://roundtable.lsst.cloud/ook/authors/dm-team/resources"
 }
 ```
 
@@ -1323,7 +1323,7 @@ Extended to handle both individual authors and collaborations by internal ID.
 4. **Phase 4**: Optionally add legacy `/collaborations` endpoints as convenience wrappers
 5. **Phase 5**: Update ResourceAuthor relationships to work with unified model
 
-##### GET /authors/id/{internal_id}/resources
+##### GET /authors/{internal_id}/resources
 
 Get all bibliographic resources authored by a specific author or collaboration.
 
@@ -1371,7 +1371,7 @@ Get all bibliographic resources authored by a specific author or collaboration.
 **Response Headers:**
 
 ```
-Link: <https://roundtable.lsst.cloud/ook/authors/id/john-doe/resources?cursor=eyJpZCI6N30&limit=50>; rel="next"
+Link: <https://roundtable.lsst.cloud/ook/authors/john-doe/resources?cursor=eyJpZCI6N30&limit=50>; rel="next"
 X-Total-Count: 15
 ```
 
