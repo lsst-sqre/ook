@@ -277,6 +277,18 @@ wheels = [
 ]
 
 [[package]]
+name = "base32-lib"
+version = "1.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "six" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/04/ed/0752d75107d2ec3bb6a2f023f54fa81039f1062b913709b843205aee47ba/base32-lib-1.0.2.tar.gz", hash = "sha256:09663df621bbc454079a54c92fa25d3bc33ea4a191053a09dd1e05ea4c0fe47c", size = 12969, upload-time = "2020-05-07T14:46:12.518Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c3/c9/5a769cb6649f2fdf366e1c10db4cafd0e6c7f8b3575d6cb5917bb9298086/base32_lib-1.0.2-py2.py3-none-any.whl", hash = "sha256:f3cbc1c4b3df7af844c9b7ffc1638a688423db2b1e51082b2c014b3959b756ae", size = 6701, upload-time = "2020-05-07T14:46:11.153Z" },
+]
+
+[[package]]
 name = "beautifulsoup4"
 version = "4.13.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1533,6 +1545,7 @@ dependencies = [
     { name = "alembic", extra = ["tz"] },
     { name = "algoliasearch" },
     { name = "async-timeout" },
+    { name = "base32-lib" },
     { name = "click" },
     { name = "cssselect" },
     { name = "dataclasses-avroschema" },
@@ -1590,6 +1603,7 @@ requires-dist = [
     { name = "alembic", extras = ["tz"] },
     { name = "algoliasearch", specifier = ">=3.0,<4.0" },
     { name = "async-timeout", specifier = ">=2.0,<4.0" },
+    { name = "base32-lib", specifier = ">=1.0.2" },
     { name = "click" },
     { name = "cssselect" },
     { name = "dataclasses-avroschema" },
