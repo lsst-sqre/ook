@@ -9,6 +9,13 @@ from .authors import (
 from .base import Base
 from .glossary import SqlTerm, term_relationships
 from .links import SqlLink, SqlSdmColumnLink, SqlSdmSchemaLink, SqlSdmTableLink
+from .resources import (
+    SqlContributor,
+    SqlDocumentResource,
+    SqlExternalReference,
+    SqlResource,
+    SqlResourceRelation,
+)
 from .sdmschemas import SqlSdmColumn, SqlSdmSchema, SqlSdmTable
 
 __all__ = [
@@ -17,7 +24,12 @@ __all__ = [
     "SqlAuthor",
     "SqlAuthorAffiliation",
     "SqlCollaboration",
+    "SqlContributor",
+    "SqlDocumentResource",
+    "SqlExternalReference",
     "SqlLink",
+    "SqlResource",
+    "SqlResourceRelation",
     "SqlSdmColumn",
     "SqlSdmColumnLink",
     "SqlSdmSchema",
