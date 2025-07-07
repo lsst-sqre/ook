@@ -64,6 +64,7 @@ async def test_get_author_by_id(
         data["affiliations"][1]["name"]
         == "Vera C. Rubin Observatory Project Office"
     )
+    assert data["affiliations"][1]["ror"] == "https://ror.org/048g3cy84"
 
 
 @pytest.mark.asyncio

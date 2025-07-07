@@ -73,6 +73,7 @@ class Affiliation(BaseModel):
     ror: Annotated[str | None, BeforeValidator(format_ror_url)] = Field(
         default=None,
         description="ROR URL of the affiliation.",
+        validation_alias="ror_id",
     )
 
     address: Address | None = Field(
