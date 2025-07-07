@@ -76,7 +76,7 @@ async def test_post_ingest_lsst_texmf(
     response = await client.get("/ook/authors/sickj")
     assert response.status_code == 200
     data = response.json()
-    assert data["surname"] == "Sick"
+    assert data["family_name"] == "Sick"
     assert len(data["affiliations"]) == 2
 
     # Check that collaborations are not in the authors endpoint
@@ -87,7 +87,7 @@ async def test_post_ingest_lsst_texmf(
     response = await client.get("/ook/authors/ivezicv")
     assert response.status_code == 200
     data = response.json()
-    assert data["surname"] == "Ivezić"
+    assert data["family_name"] == "Ivezić"
     assert data["given_name"] == "Željko"
 
     # Check that we got a glossary term

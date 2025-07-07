@@ -87,7 +87,7 @@ class Author(BaseModel):
         description="Internal ID of the author.",
     )
 
-    surname: str = Field(description="Surname of the author.")
+    family_name: str = Field(description="Family name of the author.")
 
     given_name: str | None = Field(
         description="Given name of the author.",
@@ -113,4 +113,20 @@ class Author(BaseModel):
     @classmethod
     def from_domain(cls, author: AuthorDomain) -> Self:
         """Create an AuthorResponse from a domain Author."""
-        return cls.model_validate(author, from_attributes=True)
+        orcid_url = None
+        if author.orcid:
+            orcid_formatted = format_orcid_url(author.orcid)
+            if orcid_formatted:
+                orcid_url = HttpUrl(orcid_formatted)
+
+        return cls(
+            internal_id=author.internal_id,
+            family_name=author.surname,  # Map surname to family_name
+            given_name=author.given_name,
+            orcid=orcid_url,
+            notes=author.notes,
+            affiliations=[
+                Affiliation.model_validate(affil, from_attributes=True)
+                for affil in author.affiliations
+            ],
+        )

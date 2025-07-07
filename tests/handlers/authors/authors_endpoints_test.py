@@ -55,7 +55,7 @@ async def test_get_author_by_id(
     assert response.status_code == 200
     data = response.json()
     assert data["internal_id"] == "sickj"
-    assert data["surname"] == "Sick"
+    assert data["family_name"] == "Sick"
     assert data["given_name"] == "Jonathan"
     assert data["orcid"] == "https://orcid.org/0000-0003-3001-676X"
     assert "email" not in data
