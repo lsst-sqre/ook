@@ -20,6 +20,11 @@ class Affiliation(BaseModel):
         default=None, description="Address of the affiliation."
     )
 
+    email: str | None = Field(
+        default=None,
+        description="Email domain of the affiliation (e.g., 'example.edu').",
+    )
+
 
 class Collaboration(BaseModel):
     """A collaboration."""
