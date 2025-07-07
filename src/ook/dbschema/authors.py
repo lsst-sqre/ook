@@ -30,6 +30,8 @@ class SqlAuthor(Base):
 
     __tablename__ = "author"
 
+    __table_args__ = (UniqueConstraint("orcid", name="uq_author_orcid"),)
+
     id: Mapped[int] = mapped_column(
         BigInteger, primary_key=True, autoincrement=True
     )
@@ -69,10 +71,14 @@ class SqlAuthor(Base):
     email: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
     """The email address of the author."""
 
-    orcid: Mapped[str | None] = mapped_column(
-        UnicodeText, nullable=True, unique=True
-    )
-    """The ORCID of the author."""
+    orcid: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
+    """The ORCID of the author.
+
+    This is meant to be the ORCID identifier without its orcid.org domain.
+    For example, 0000-0003-3001-676X for https://orcid.org/0000-0003-3001-676X
+    This should be converted back to the full URL form when presenting
+    data to the user.
+    """
 
     date_updated: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
@@ -147,10 +153,47 @@ class SqlAffiliation(Base):
     )
     """The name of the affiliation (unicode)."""
 
-    address: Mapped[str | None] = mapped_column(
-        UnicodeText, nullable=True, index=True
+    department: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
+    """The department of the affiliation (unicode)."""
+
+    email_domain: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True
     )
-    """The address of the affiliation (unicode)."""
+    """The email domain of the affiliation (e.g., 'example.edu')."""
+
+    ror_id: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
+    """The ROR ID of the affiliation.
+
+    This is meant to be the ROR identifier without its ror.org domain.
+    For example, 048g3cy84 for https://ror.org/048g3cy84 (Rubin Observatory).
+    This should be converted back to the full URL form when presenting
+    data to the user.
+    """
+
+    address_street: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True
+    )
+    """The street address of the affiliation (unicode)."""
+
+    address_city: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True
+    )
+    """The city of the affiliation (unicode)."""
+
+    address_state: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True
+    )
+    """The state of the affiliation (unicode)."""
+
+    address_postal_code: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True
+    )
+    """The postal code of the affiliation (unicode)."""
+
+    address_country: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True
+    )
+    """The country code of the affiliation (unicode)."""
 
     authors: Mapped[list[SqlAuthorAffiliation]] = relationship(
         "SqlAuthorAffiliation",

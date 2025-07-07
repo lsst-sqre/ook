@@ -11,7 +11,7 @@ from pydantic import BaseModel, BeforeValidator, Field, ValidationError
 from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
 
-from ook.domain.authors import Affiliation, Author, Collaboration
+from ook.domain.authors import Address, Affiliation, Author, Collaboration
 from ook.domain.latex import Latex
 from ook.storage.github import GitHubRepoStore
 
@@ -256,14 +256,32 @@ class AuthorDbYaml(BaseModel):
 
     def affiliations_to_domain(self) -> dict[str, Affiliation]:
         """Convert the affiliations to a domain model."""
-        # TODO(jonathansick): Add structured address info to the domain
-        # TODO(jonathansick): Add more fields to the Affiliation domain model
         return {
             internal_id: Affiliation(
                 name=Latex(affiliation.institute).to_text(),
+                department=Latex(affiliation.department).to_text()
+                if affiliation.department
+                else None,
                 internal_id=internal_id,
-                address=None,
                 email=affiliation.email,
+                ror_id=affiliation.ror_id,
+                address=Address(
+                    street=Latex(affiliation.address.street).to_text()
+                    if affiliation.address and affiliation.address.street
+                    else None,
+                    city=Latex(affiliation.address.city).to_text()
+                    if affiliation.address and affiliation.address.city
+                    else None,
+                    state=Latex(affiliation.address.state).to_text()
+                    if affiliation.address and affiliation.address.state
+                    else None,
+                    postal_code=Latex(affiliation.address.postcode).to_text()
+                    if affiliation.address and affiliation.address.postcode
+                    else None,
+                    country=Latex(affiliation.address.country_code).to_text()
+                    if affiliation.address and affiliation.address.country_code
+                    else None,
+                ),
             )
             for internal_id, affiliation in self.affiliations.items()
         }
