@@ -28,7 +28,14 @@ CREATE TABLE public.affiliation (
     id bigint NOT NULL,
     internal_id text NOT NULL,
     name text NOT NULL,
-    address text,
+    department text,
+    email_domain text,
+    ror_id text,
+    address_street text,
+    address_city text,
+    address_state text,
+    address_postal_code text,
+    address_country text,
     date_updated timestamp with time zone NOT NULL
 );
 
@@ -459,7 +466,7 @@ ALTER TABLE ONLY public.term ALTER COLUMN id SET DEFAULT nextval('public.term_id
 -- Data for Name: affiliation; Type: TABLE DATA; Schema: public; Owner: test
 --
 
-COPY public.affiliation (id, internal_id, name, address, date_updated) FROM stdin;
+COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id, address_street, address_city, address_state, address_postal_code, address_country, date_updated) FROM stdin;
 \.
 
 
@@ -468,7 +475,7 @@ COPY public.affiliation (id, internal_id, name, address, date_updated) FROM stdi
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-fb5ed49d63d5
+176f421b2597
 \.
 
 
@@ -649,14 +656,6 @@ ALTER TABLE ONLY public.author_affiliations
 
 
 --
--- Name: author author_orcid_key; Type: CONSTRAINT; Schema: public; Owner: test
---
-
-ALTER TABLE ONLY public.author
-    ADD CONSTRAINT author_orcid_key UNIQUE (orcid);
-
-
---
 -- Name: author author_pkey; Type: CONSTRAINT; Schema: public; Owner: test
 --
 
@@ -753,6 +752,14 @@ ALTER TABLE ONLY public.affiliation
 
 
 --
+-- Name: author uq_author_orcid; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.author
+    ADD CONSTRAINT uq_author_orcid UNIQUE (orcid);
+
+
+--
 -- Name: collaboration uq_collaboration_internal_id_name; Type: CONSTRAINT; Schema: public; Owner: test
 --
 
@@ -790,13 +797,6 @@ ALTER TABLE ONLY public.sdm_table
 
 ALTER TABLE ONLY public.term
     ADD CONSTRAINT uq_term_definition UNIQUE (term, definition);
-
-
---
--- Name: ix_affiliation_address; Type: INDEX; Schema: public; Owner: test
---
-
-CREATE INDEX ix_affiliation_address ON public.affiliation USING btree (address);
 
 
 --

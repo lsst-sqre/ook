@@ -60,8 +60,37 @@ class AuthorStore:
                         SqlAffiliation.internal_id,
                         "name",
                         SqlAffiliation.name,
+                        "department",
+                        SqlAffiliation.department,
+                        "email",
+                        SqlAffiliation.email_domain,
+                        "ror_id",
+                        SqlAffiliation.ror_id,
                         "address",
-                        SqlAffiliation.address,
+                        case(
+                            (
+                                func.coalesce(
+                                    SqlAffiliation.address_street,
+                                    SqlAffiliation.address_city,
+                                    SqlAffiliation.address_state,
+                                    SqlAffiliation.address_postal_code,
+                                    SqlAffiliation.address_country,
+                                ).is_(None),
+                                None,
+                            ),
+                            else_=func.json_build_object(
+                                "street",
+                                SqlAffiliation.address_street,
+                                "city",
+                                SqlAffiliation.address_city,
+                                "state",
+                                SqlAffiliation.address_state,
+                                "postal_code",
+                                SqlAffiliation.address_postal_code,
+                                "country",
+                                SqlAffiliation.address_country,
+                            ),
+                        ),
                     ).cast(JSONB)
                 ).label("affiliations")
             )
@@ -131,8 +160,37 @@ class AuthorStore:
                         SqlAffiliation.internal_id,
                         "name",
                         SqlAffiliation.name,
+                        "department",
+                        SqlAffiliation.department,
+                        "email",
+                        SqlAffiliation.email_domain,
+                        "ror_id",
+                        SqlAffiliation.ror_id,
                         "address",
-                        SqlAffiliation.address,
+                        case(
+                            (
+                                func.coalesce(
+                                    SqlAffiliation.address_street,
+                                    SqlAffiliation.address_city,
+                                    SqlAffiliation.address_state,
+                                    SqlAffiliation.address_postal_code,
+                                    SqlAffiliation.address_country,
+                                ).is_(None),
+                                None,
+                            ),
+                            else_=func.json_build_object(
+                                "street",
+                                SqlAffiliation.address_street,
+                                "city",
+                                SqlAffiliation.address_city,
+                                "state",
+                                SqlAffiliation.address_state,
+                                "postal_code",
+                                SqlAffiliation.address_postal_code,
+                                "country",
+                                SqlAffiliation.address_country,
+                            ),
+                        ),
                     ).cast(JSONB)
                 ).label("affiliations"),
             )
@@ -211,7 +269,16 @@ class AuthorStore:
             {
                 "internal_id": a.internal_id,
                 "name": a.name,
-                "address": a.address,
+                "department": a.department,
+                "email_domain": a.email,
+                "ror_id": a.ror_id,
+                "address_street": a.address.street if a.address else None,
+                "address_city": a.address.city if a.address else None,
+                "address_state": a.address.state if a.address else None,
+                "address_postal_code": (
+                    a.address.postal_code if a.address else None
+                ),
+                "address_country": a.address.country if a.address else None,
                 "date_updated": now,
             }
             for a in affiliations
@@ -221,7 +288,16 @@ class AuthorStore:
             index_elements=["internal_id"],
             set_={
                 "name": insert_stmt.excluded.name,
-                "address": insert_stmt.excluded.address,
+                "department": insert_stmt.excluded.department,
+                "email_domain": insert_stmt.excluded.email_domain,
+                "ror_id": insert_stmt.excluded.ror_id,
+                "address_street": insert_stmt.excluded.address_street,
+                "address_city": insert_stmt.excluded.address_city,
+                "address_state": insert_stmt.excluded.address_state,
+                "address_postal_code": (
+                    insert_stmt.excluded.address_postal_code
+                ),
+                "address_country": insert_stmt.excluded.address_country,
                 "date_updated": insert_stmt.excluded.date_updated,
             },
         )

@@ -67,7 +67,6 @@ def test_authordb_models(
     authordb = AuthorDbYaml.model_validate(authordb_content)
     assert len(authordb.authors) > 0
     assert len(authordb.affiliations) > 0
-    assert len(authordb.emails) > 0
 
     assert authordb.authors["DMPipelines"].is_collaboration is True
     assert authordb.authors["sickj"].is_collaboration is False
@@ -103,7 +102,6 @@ async def test_repo_store(
     authordb = await texmf_repo.load_authordb()
     assert len(authordb.authors) > 0
     assert len(authordb.affiliations) > 0
-    assert len(authordb.emails) > 0
     assert authordb.authors["DMPipelines"].is_collaboration is True
 
 
@@ -116,7 +114,7 @@ def test_authordb_converstion_to_domain(
     authors = authordb.authors_to_domain()
     assert len(authors) > 0
     collaborations = authordb.collaborations_to_domain()
-    assert len(collaborations) == 1
+    assert len(collaborations) == 2
 
 
 def test_glossarydef_models(

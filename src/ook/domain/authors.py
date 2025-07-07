@@ -4,20 +4,58 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-__all__ = ["Affiliation", "Author", "Collaboration"]
+__all__ = ["Address", "Affiliation", "Author", "Collaboration"]
+
+
+class Address(BaseModel):
+    """An address for an affiliation."""
+
+    street: str | None = Field(
+        default=None, description="Street address of the affiliation."
+    )
+
+    city: str | None = Field(
+        default=None, description="City/town of the affiliation."
+    )
+
+    state: str | None = Field(
+        default=None, description="State or province of the affiliation."
+    )
+
+    postal_code: str | None = Field(
+        default=None, description="Postal code of the affiliation."
+    )
+
+    country: str | None = Field(
+        default=None, description="Country of the affiliation."
+    )
 
 
 class Affiliation(BaseModel):
     """An affiliation."""
 
-    name: str = Field(description="Name of the affiliation.")
+    name: str = Field(description="Organization name.")
+
+    department: str | None = Field(
+        default=None, description="Department within the organization."
+    )
 
     internal_id: str = Field(
         description="Internal ID of the affiliation.",
     )
 
-    address: str | None = Field(
+    address: Address | None = Field(
         default=None, description="Address of the affiliation."
+    )
+
+    email: str | None = Field(
+        default=None,
+        description="Email domain of the affiliation (e.g., 'example.edu').",
+    )
+
+    ror_id: str | None = Field(
+        default=None,
+        description="ROR ID of the affiliation (without ror.org domain).",
     )
 
 

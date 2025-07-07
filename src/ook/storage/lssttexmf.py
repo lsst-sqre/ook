@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import csv
 from io import StringIO
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 import yaml
 from pydantic import BaseModel, BeforeValidator, Field, ValidationError
 from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
 
-from ook.domain.authors import Affiliation, Author, Collaboration
+from ook.domain.authors import Address, Affiliation, Author, Collaboration
 from ook.domain.latex import Latex
 from ook.storage.github import GitHubRepoStore
 
@@ -109,53 +109,145 @@ class LsstTexmfGitHubRepo:
         return GlossaryDefEs.parse_csv(csv_content)
 
 
+def normalize_str(value: Any) -> str:
+    """Normalize a required string in authordb.yaml.
+
+    Strips leading/traiing whitespace and converts underscores to empty
+    strings.
+    """
+    if value is None:
+        raise ValueError(
+            "Value cannot be None. Use normalize_nullable_str() for nullable "
+            "strings."
+        )
+    value = str(value).strip()
+    if value == "_":
+        return ""
+    return value
+
+
+NormalizedStr = Annotated[str, BeforeValidator(normalize_str)]
+
+
+def normalize_nullable_str(value: Any) -> str | None:
+    """Normalize a nullable string in authordb.yaml.
+
+    - Strips leading/trailing whitespace
+    - Converts underscores to None.
+    - Converts empty strings to None.
+    """
+    if value is None:
+        return None
+    value = str(value).strip()
+    if value == "":
+        return None
+    if value == "_":
+        return None
+    return value
+
+
+OptionalStr = Annotated[str | None, BeforeValidator(normalize_nullable_str)]
+
+
 class AuthorDbAuthor(BaseModel):
     """Model for an author entry in the authordb.yaml file."""
 
-    name: str = Field(description="Author's surname.")
+    family_name: Annotated[
+        NormalizedStr, Field(description="Author's surname/family name.")
+    ]
 
-    initials: str = Field(description="Author's given name.")
+    given_name: Annotated[
+        OptionalStr, Field(description="Author's given name.")
+    ] = None
 
-    affil: list[str] = Field(
-        default_factory=list, description="Affiliation IDs"
-    )
+    affil: Annotated[
+        list[str], Field(default_factory=list, description="Affiliation IDs")
+    ]
 
-    alt_affil: list[str] = Field(
-        default_factory=list, description="Alternative affiliations / notes."
-    )
-
-    orcid: str | None = Field(
-        default=None,
-        description="Author's ORCiD identifier (optional)",
-    )
-
-    email: str | None = Field(
-        default=None,
-        description=(
-            "Author's email username (if using a known email provider given "
-            "their affiliation ID) or ``username@provider`` (to specify the "
-            "provider) or their full email address."
+    altaffil: Annotated[
+        list[str],
+        Field(
+            default_factory=list,
+            description="Alternative affiliations / notes.",
         ),
-    )
+    ]
+
+    orcid: Annotated[
+        OptionalStr,
+        Field(
+            description="Author's ORCiD identifier (optional)",
+        ),
+    ] = None
+
+    email: Annotated[
+        OptionalStr,
+        Field(
+            description=(
+                "Author's email username (if using a known email provider "
+                "given their affiliation ID) or ``username@provider`` (to "
+                "specify the provider) or their full email address."
+            ),
+        ),
+    ] = None
 
     @property
     def is_collaboration(self) -> bool:
         """Check if the author is a collaboration."""
-        return self.initials == "" and self.affil == ["_"]
+        return self.given_name is None and self.affil == ["_"]
+
+
+class AuthorDbAddress(BaseModel):
+    """Model for an address in authordb.yaml."""
+
+    street: Annotated[
+        OptionalStr, Field(description="Street name and number")
+    ] = None
+
+    city: Annotated[OptionalStr, Field(description="City/town name.")] = None
+
+    state: Annotated[
+        OptionalStr, Field(description="State/province/region name")
+    ] = None
+
+    postcode: Annotated[OptionalStr, Field(description="Postal/ZIP code")] = (
+        None
+    )
+
+    country_code: Annotated[
+        OptionalStr, Field(description="ISO country code")
+    ] = None
+
+
+class AuthorDbAffiliation(BaseModel):
+    """Representation of an affiliation."""
+
+    institute: Annotated[
+        NormalizedStr,
+        Field(description="Name of the institution/organization"),
+    ]
+
+    department: Annotated[
+        OptionalStr,
+        Field(description="Department or division within the institution"),
+    ] = None
+
+    ror_id: Annotated[
+        OptionalStr,
+        Field(description="Research Organization Registry (ROR) identifier"),
+    ] = None
+
+    email: Annotated[
+        OptionalStr, Field(description="Email domain for the institution")
+    ] = None
+
+    address: AuthorDbAddress | None = None
 
 
 class AuthorDbYaml(BaseModel):
     """Model for the authordb.yaml file in lsst/lsst-texmf."""
 
-    affiliations: dict[str, str] = Field(
-        description=(
-            "Mapping of affiliation IDs to affiliation info. Affiliations "
-            "are their name, a comma, and their address."
-        )
-    )
-
-    emails: dict[str, str] = Field(
-        description=("Mapping of affiliation IDs to email domains.")
+    affiliations: dict[str, AuthorDbAffiliation] = Field(
+        description=("Mapping of affiliation IDs to affiliation info.")
     )
 
     authors: dict[str, AuthorDbAuthor] = Field(
@@ -165,32 +257,34 @@ class AuthorDbYaml(BaseModel):
     def affiliations_to_domain(self) -> dict[str, Affiliation]:
         """Convert the affiliations to a domain model."""
         return {
-            internal_id: self._parse_affiliation_text(
+            internal_id: Affiliation(
+                name=Latex(affiliation.institute).to_text(),
+                department=Latex(affiliation.department).to_text()
+                if affiliation.department
+                else None,
                 internal_id=internal_id,
-                affiliation_text=affiliation_text,
+                email=affiliation.email,
+                ror_id=affiliation.ror_id,
+                address=Address(
+                    street=Latex(affiliation.address.street).to_text()
+                    if affiliation.address and affiliation.address.street
+                    else None,
+                    city=Latex(affiliation.address.city).to_text()
+                    if affiliation.address and affiliation.address.city
+                    else None,
+                    state=Latex(affiliation.address.state).to_text()
+                    if affiliation.address and affiliation.address.state
+                    else None,
+                    postal_code=Latex(affiliation.address.postcode).to_text()
+                    if affiliation.address and affiliation.address.postcode
+                    else None,
+                    country=Latex(affiliation.address.country_code).to_text()
+                    if affiliation.address and affiliation.address.country_code
+                    else None,
+                ),
             )
-            for internal_id, affiliation_text in self.affiliations.items()
+            for internal_id, affiliation in self.affiliations.items()
         }
-
-    def _parse_affiliation_text(
-        self, internal_id: str, affiliation_text: str
-    ) -> Affiliation:
-        parts = affiliation_text.split(",")
-
-        name = Latex(parts[0]).to_text()
-
-        if len(parts) > 1:
-            address_parts = [p.strip() for p in parts[1:]]
-            address = ", ".join(address_parts)
-            address = Latex(address).to_text()
-        else:
-            address = None
-
-        return Affiliation(
-            name=name,
-            internal_id=internal_id,
-            address=address,
-        )
 
     def authors_to_domain(self) -> dict[str, Author]:
         """Convert the authors to domain models."""
@@ -216,23 +310,31 @@ class AuthorDbYaml(BaseModel):
         if author.email is not None:
             email: str | None = self._resolve_email(
                 email_entry=author.email,
-                first_affiliation_id=author.affil[0] if author.affil else None,
+                first_affiliation=all_affiliations[author.affil[0]]
+                if author.affil
+                else None,
+                all_affiliations=all_affiliations,
             )
         else:
             email = None
 
         return Author(
             internal_id=internal_id,
-            surname=Latex(author.name).to_text(),
-            given_name=Latex(author.initials).to_text(),
+            surname=Latex(author.family_name).to_text(),
+            given_name=Latex(author.given_name).to_text()
+            if author.given_name
+            else None,
             orcid=author.orcid,
             email=email,
             affiliations=[all_affiliations[affil] for affil in author.affil],
-            notes=[Latex(note).to_text() for note in author.alt_affil],
+            notes=[Latex(note).to_text() for note in author.altaffil],
         )
 
     def _resolve_email(
-        self, email_entry: str | None, first_affiliation_id: str | None
+        self,
+        email_entry: str | None,
+        first_affiliation: Affiliation | None,
+        all_affiliations: dict[str, Affiliation] | None = None,
     ) -> str | None:
         """Resolve the email address for the author."""
         if email_entry is None:
@@ -246,15 +348,21 @@ class AuthorDbYaml(BaseModel):
 
         if "@" not in email_entry:
             # This is a username for an email provider
-            if first_affiliation_id is None:
+            if first_affiliation is None:
                 return None
-            return f"{email_entry}@{self.emails[first_affiliation_id]}"
+            if first_affiliation.email is None:
+                # No email domain specified for the affiliation
+                return None
+            return f"{email_entry}@{first_affiliation.email}"
 
         if "@" in email_entry:
             parts = email_entry.split("@", maxsplit=1)
-            if parts[1] in self.emails:
+            if all_affiliations is None:
+                # No affiliations provided, so we cannot resolve the email
+                return None
+            if parts[1] in all_affiliations:
                 # This is a username for an email provider
-                return f"{parts[0]}@{self.emails[parts[1]]}"
+                return f"{parts[0]}@{all_affiliations[parts[1]].email}"
             # This is a full email address
             return email_entry
 
@@ -264,7 +372,7 @@ class AuthorDbYaml(BaseModel):
         """Convert the collaborations to domain models."""
         return {
             author_id: Collaboration(
-                name=Latex(author.name).to_text(),
+                name=Latex(author.family_name).to_text(),
                 internal_id=author_id,
             )
             for author_id, author in self.authors.items()
