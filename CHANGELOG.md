@@ -2,6 +2,24 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.15.0'></a>
+
+## 0.15.0 (2025-07-07)
+
+### Backwards-incompatible changes
+
+- The author resources in the REST API have the following changes:
+
+  - The `surname` field is now `family_name` to better match common usage.
+
+  - The affiliation metadata is no longer a simple string, but instead a structured object with address components.
+
+- A database migration is required (Alembic migration `176f421b2597`).
+
+### New features
+
+- In addition to the backwards-incompatible changes related to the author `family_name` field and affiliation `address`, the authors API now includes the ROR ID for affiliations and the department name for an affiliation, where appropriate. Ook now reflects the structure of [lsst/lsst-texmf](https://github.com/lsst/lsst-texmf)'s `authordb.yaml` file as of 2025-07-05.
+
 <a id='changelog-0.14.0'></a>
 
 ## 0.14.0 (2025-06-23)
