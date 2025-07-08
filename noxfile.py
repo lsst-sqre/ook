@@ -6,6 +6,7 @@ from time import sleep
 
 import nox
 import sqlalchemy
+from nox_uv import session
 from testcontainers.kafka import KafkaContainer
 from testcontainers.postgres import PostgresContainer
 
@@ -17,44 +18,21 @@ nox.options.default_venv_backend = "uv"
 nox.options.reuse_existing_virtualenvs = True
 
 
-@nox.session
+@session(uv_only_groups=["lint"], uv_no_install_project=True)
 def lint(session: nox.Session) -> None:
     """Run pre-commit hooks."""
-    session.run_install(
-        "uv",
-        "sync",
-        "--only-group=lint",
-        "--frozen",
-        "--no-install-project",
-        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
-    )
     session.run("pre-commit", "run", "--all-files", *session.posargs)
 
 
-@nox.session
+@session(uv_groups=["typing", "dev"])
 def typing(session: nox.Session) -> None:
     """Run mypy."""
-    session.run_install(
-        "uv",
-        "sync",
-        "--group=typing",
-        "--no-default-groups",
-        "--frozen",
-        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
-    )
     session.run("mypy", "noxfile.py", "src", "tests")
 
 
-@nox.session
+@session(uv_groups=["dev"])
 def test(session: nox.Session) -> None:
     """Run pytest."""
-    session.run_install(
-        "uv",
-        "sync",
-        "--frozen",
-        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
-    )
-
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16") as postgres:
             _install_postgres_extensions(postgres)
@@ -77,16 +55,9 @@ def test(session: nox.Session) -> None:
             )
 
 
-@nox.session(name="dump-db-schema")
+@session(name="dump-db-schema")
 def dump_db_schema(session: nox.Session) -> None:
     """Initialize then dump the database schema."""
-    session.run_install(
-        "uv",
-        "sync",
-        "--frozen",
-        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
-    )
-
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16") as postgres:
             env_vars = _make_env_vars(
@@ -130,7 +101,7 @@ def dump_db_schema(session: nox.Session) -> None:
             session.log("Database schema dumped to alembic/schema_dump.sql")
 
 
-@nox.session(name="alembic")
+@session(name="alembic", uv_groups=["dev"])
 def alembic(session: nox.Session) -> None:
     """Run alembic commands."""
     sql_dump_path = Path(__file__).parent.joinpath("alembic/schema_dump.sql")
@@ -142,16 +113,9 @@ def alembic(session: nox.Session) -> None:
             "application first."
         )
 
-    session.run_install(
-        "uv",
-        "sync",
-        "--frozen",
-        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
-    )
-
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16").with_volume_mapping(
-            sql_dump_path, "/docker-entrypoint-initdb.d/schema.sql"
+            str(sql_dump_path), "/docker-entrypoint-initdb.d/schema.sql"
         ) as postgres:
             session.log(
                 "Postgres connection URL: "
@@ -213,17 +177,9 @@ def alembic(session: nox.Session) -> None:
             session.run("alembic", *session.posargs, env=env_vars)
 
 
-@nox.session(name="run")
+@session(name="run")
 def run(session: nox.Session) -> None:
     """Run the application in development mode."""
-    session.run_install(
-        "uv",
-        "sync",
-        "--no-default-groups",
-        "--frozen",
-        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
-    )
-
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer(
             "postgres:16", username="user", password="pass"
@@ -259,7 +215,7 @@ def run(session: nox.Session) -> None:
             )
 
 
-@nox.session(name="cli")
+@session(name="cli")
 def cli(session: nox.Session) -> None:
     """Run an ook CLI command.
 
@@ -267,14 +223,6 @@ def cli(session: nox.Session) -> None:
 
       op run --env-file="square.env" -- nox -s cli -- --help
     """
-    session.run_install(
-        "uv",
-        "sync",
-        "--no-default-groups",
-        "--frozen",
-        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
-    )
-
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer(
             "postgres:16", username="user", password="pass"
@@ -302,17 +250,9 @@ def cli(session: nox.Session) -> None:
             )
 
 
-@nox.session
+@session(uv_groups=["docs"])
 def docs(session: nox.Session) -> None:
     """Build the docs."""
-    session.run_install(
-        "uv",
-        "sync",
-        "--group=docs",
-        "--no-default-groups",
-        "--frozen",
-        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
-    )
     doctree_dir = (session.cache_dir / "doctrees").absolute()
 
     with KafkaContainer().with_kraft() as kafka:
@@ -343,17 +283,9 @@ def docs(session: nox.Session) -> None:
                 )
 
 
-@nox.session(name="docs-linkcheck")
+@session(name="docs-linkcheck", uv_groups=["docs"])
 def docs_linkcheck(session: nox.Session) -> None:
     """Linkcheck the docs."""
-    session.run_install(
-        "uv",
-        "sync",
-        "--group=docs",
-        "--no-default-groups",
-        "--frozen",
-        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
-    )
     doctree_dir = (session.cache_dir / "doctrees").absolute()
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16") as postgres:
