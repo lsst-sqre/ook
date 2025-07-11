@@ -139,7 +139,18 @@ class ReducedLtdLanderDocument:
             self._github_url = None
 
         if "articleBody" in self._metadata:
-            self._segment_article_body(self._metadata["articleBody"])
+            try:
+                self._segment_article_body(self._metadata["articleBody"])
+            except Exception:
+                self._logger.exception(
+                    "Failed to segment article body",
+                    handle=self._handle,
+                )
+                self._logger.debug(
+                    "Article body content",
+                    content=self._metadata["articleBody"],
+                    handle=self._handle,
+                )
         else:
             self._logger.debug("No article body", handle=self._handle)
 
