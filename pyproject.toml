@@ -78,6 +78,7 @@ nox = [
     "testcontainers[kafka,postgres]",
     "psycopg2",
     "sqlalchemy",
+    "nox-uv>=0.6.1",
 ]
 typing = [
     "mypy",

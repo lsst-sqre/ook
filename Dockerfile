@@ -4,9 +4,8 @@
 #   Updates the base Python image with security patches and common system
 #   packages. This image becomes the base of all other images.
 # install-image
-#   Installs third-party dependencies (requirements/main.txt) and the
-#   application into a virtual environment. This virtual environment is ideal
-#   for copying across build stages.
+#   Installs dependencies and the application into a virtual environment.
+#   This virtual environment is ideal for copying across build stages.
 # runtime-image
 #   - Copies the virtual environment into place.
 #   - Runs a non-root user.
@@ -25,7 +24,7 @@ FROM base-image AS install-image
 # Install uv.
 COPY --from=ghcr.io/astral-sh/uv:0.7.19 /uv /bin/uv
 
-# Install some additional packages required for building dependencies.
+# Install system packages only needed for building dependencies.
 COPY scripts/install-dependency-packages.sh .
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -49,15 +48,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM base-image AS runtime-image
 
-COPY scripts/start-service.sh /start-frontend.sh
-
 # Create a non-root user.
 RUN useradd --create-home appuser
 
 # Copy the virtualenv.
 COPY --from=install-image /app /app
-
-WORKDIR /app
 
 # Switch to the non-root user.
 USER appuser
@@ -66,6 +61,7 @@ USER appuser
 EXPOSE 8080
 
 # Make sure we use the virtualenv.
+WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Set environment variable for Alembic config; other variables are set
