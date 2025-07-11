@@ -2,6 +2,20 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.16.0'></a>
+
+## 0.16.0 (2025-07-11)
+
+### New features
+
+- Handle the parsing exception when a LaTeX (Lander) document's articleBody metadata is still LaTeX-formatted rather than the excepted Markdown conversion. The metadata parser still creates a content chunk for Algolia consisting of the title and description/abstract.
+
+- Handle parsing Technote (Sphinx) technotes where the abstract directive is missing. The metadata parser now returns a default message indicating that the abstract is not available.
+
+### Other changes
+
+- Adopt nox-uv for installing dependencies in `noxfile.py`.
+
 <a id='changelog-0.15.0'></a>
 
 ## 0.15.0 (2025-07-07)
