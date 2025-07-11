@@ -51,6 +51,10 @@ nitpick_ignore = [
     ["py:class", "starlette.routing.BaseRoute"],
     ["py:exc", "starlette.exceptions.HTTPException"],
     ["py:class", "pydantic_settings.sources.CliSettingsSource"],
+    ["py:class", "pathlib._local.Path"],
+]
+nitpick_ignore_regex = [
+    ["py:obj", '^pydantic_settings']
 ]
 
 [sphinx.intersphinx.projects]
