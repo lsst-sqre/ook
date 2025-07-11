@@ -60,8 +60,11 @@ class LtdTechnote:
             return self._html.cssselect(f"meta[name='{key}']")[-1].get(
                 "content"
             )
-        except Exception as e:
-            raise DocumentParsingError(f"Unable to parse {key}") from e
+        except Exception:
+            return (
+                "Summary not available. The abstract directive may be missing "
+                "from the document."
+            )
 
     @property
     def update_time(self) -> datetime:
