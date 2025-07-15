@@ -7,7 +7,7 @@
 First, the existing database schema should be reflected in the [schema_dump.sql](schema_dump.sql) file. Specifically, the `COPY public.alembic_version` line should have the ID of the latest existing migration. If the schema dump is not up-to-date, check out a version of Ook that has the schema for the last migration and run the following command from the repo's root directory:
 
 ```bash
-nox -s db-dump-schema
+nox -s dump-db-schema
 ```
 
 This updates [schema_dump.sql](schema_dump.sql).

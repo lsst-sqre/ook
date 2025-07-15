@@ -127,41 +127,6 @@ ALTER SEQUENCE public.author_id_seq OWNED BY public.author.id;
 
 
 --
--- Name: collaboration; Type: TABLE; Schema: public; Owner: test
---
-
-CREATE TABLE public.collaboration (
-    id bigint NOT NULL,
-    internal_id text NOT NULL,
-    name text NOT NULL,
-    date_updated timestamp with time zone NOT NULL
-);
-
-
-ALTER TABLE public.collaboration OWNER TO test;
-
---
--- Name: collaboration_id_seq; Type: SEQUENCE; Schema: public; Owner: test
---
-
-CREATE SEQUENCE public.collaboration_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.collaboration_id_seq OWNER TO test;
-
---
--- Name: collaboration_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: test
---
-
-ALTER SEQUENCE public.collaboration_id_seq OWNED BY public.collaboration.id;
-
-
---
 -- Name: link; Type: TABLE; Schema: public; Owner: test
 --
 
@@ -421,13 +386,6 @@ ALTER TABLE ONLY public.author ALTER COLUMN id SET DEFAULT nextval('public.autho
 
 
 --
--- Name: collaboration id; Type: DEFAULT; Schema: public; Owner: test
---
-
-ALTER TABLE ONLY public.collaboration ALTER COLUMN id SET DEFAULT nextval('public.collaboration_id_seq'::regclass);
-
-
---
 -- Name: link id; Type: DEFAULT; Schema: public; Owner: test
 --
 
@@ -475,7 +433,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-176f421b2597
+113ced7d2d29
 \.
 
 
@@ -492,14 +450,6 @@ COPY public.author (id, internal_id, surname, given_name, notes, email, orcid, d
 --
 
 COPY public.author_affiliations (author_id, affiliation_id, "position") FROM stdin;
-\.
-
-
---
--- Data for Name: collaboration; Type: TABLE DATA; Schema: public; Owner: test
---
-
-COPY public.collaboration (id, internal_id, name, date_updated) FROM stdin;
 \.
 
 
@@ -590,13 +540,6 @@ SELECT pg_catalog.setval('public.author_id_seq', 1, false);
 
 
 --
--- Name: collaboration_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
---
-
-SELECT pg_catalog.setval('public.collaboration_id_seq', 1, false);
-
-
---
 -- Name: link_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
 --
 
@@ -661,14 +604,6 @@ ALTER TABLE ONLY public.author_affiliations
 
 ALTER TABLE ONLY public.author
     ADD CONSTRAINT author_pkey PRIMARY KEY (id);
-
-
---
--- Name: collaboration collaboration_pkey; Type: CONSTRAINT; Schema: public; Owner: test
---
-
-ALTER TABLE ONLY public.collaboration
-    ADD CONSTRAINT collaboration_pkey PRIMARY KEY (id);
 
 
 --
@@ -760,14 +695,6 @@ ALTER TABLE ONLY public.author
 
 
 --
--- Name: collaboration uq_collaboration_internal_id_name; Type: CONSTRAINT; Schema: public; Owner: test
---
-
-ALTER TABLE ONLY public.collaboration
-    ADD CONSTRAINT uq_collaboration_internal_id_name UNIQUE (internal_id, name);
-
-
---
 -- Name: sdm_column uq_sdm_column_table_name; Type: CONSTRAINT; Schema: public; Owner: test
 --
 
@@ -832,20 +759,6 @@ CREATE UNIQUE INDEX ix_author_internal_id ON public.author USING btree (internal
 --
 
 CREATE INDEX ix_author_surname ON public.author USING btree (surname);
-
-
---
--- Name: ix_collaboration_internal_id; Type: INDEX; Schema: public; Owner: test
---
-
-CREATE UNIQUE INDEX ix_collaboration_internal_id ON public.collaboration USING btree (internal_id);
-
-
---
--- Name: ix_collaboration_name; Type: INDEX; Schema: public; Owner: test
---
-
-CREATE INDEX ix_collaboration_name ON public.collaboration USING btree (name);
 
 
 --

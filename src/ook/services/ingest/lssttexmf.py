@@ -127,12 +127,6 @@ class LsstTexmfIngestService:
         await self._author_store.upsert_authors(
             list(authors.values()), delete_stale_records=delete_stale_records
         )
-        await self._author_store.upsert_collaborations(
-            collaborations=list(
-                author_db_data.collaborations_to_domain().values()
-            ),
-            delete_stale_records=delete_stale_records,
-        )
 
     async def _ingest_glossary(self, repo: LsstTexmfGitHubRepo) -> None:
         """Ingest the glossarydefs.csv file."""

@@ -68,9 +68,6 @@ def test_authordb_models(
     assert len(authordb.authors) > 0
     assert len(authordb.affiliations) > 0
 
-    assert authordb.authors["DMPipelines"].is_collaboration is True
-    assert authordb.authors["sickj"].is_collaboration is False
-
 
 @pytest.mark.asyncio
 @pytest.mark.respx(base_url="https://api.github.com")
@@ -102,7 +99,6 @@ async def test_repo_store(
     authordb = await texmf_repo.load_authordb()
     assert len(authordb.authors) > 0
     assert len(authordb.affiliations) > 0
-    assert authordb.authors["DMPipelines"].is_collaboration is True
 
 
 def test_authordb_converstion_to_domain(
@@ -113,8 +109,6 @@ def test_authordb_converstion_to_domain(
     assert len(affiliations) > 0
     authors = authordb.authors_to_domain()
     assert len(authors) > 0
-    collaborations = authordb.collaborations_to_domain()
-    assert len(collaborations) == 2
 
 
 def test_glossarydef_models(

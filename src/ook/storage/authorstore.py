@@ -22,9 +22,8 @@ from ook.dbschema.authors import (
     SqlAffiliation,
     SqlAuthor,
     SqlAuthorAffiliation,
-    SqlCollaboration,
 )
-from ook.domain.authors import Affiliation, Author, Collaboration
+from ook.domain.authors import Affiliation, Author
 
 __all__ = ["AuthorStore"]
 
@@ -464,50 +463,6 @@ class AuthorStore:
                 )
                 await self._session.execute(delete_stmt)
                 await self._session.flush()
-
-    async def upsert_collaborations(
-        self,
-        collaborations: Sequence[Collaboration],
-        *,
-        delete_stale_records: bool = False,
-    ) -> None:
-        """Upsert collaborations into the database.
-
-        Parameters
-        ----------
-        collaborations
-            A sequence of Collaboration domain models to be upserted into the
-            database.
-        delete_stale_records
-            If True, delete collaborations that are not in the provided list.
-        """
-        now = current_datetime(microseconds=False)
-
-        collaboration_data = [
-            {
-                "internal_id": c.internal_id,
-                "name": c.name,
-                "date_updated": now,
-            }
-            for c in collaborations
-        ]
-        insert_stmt = pg_insert(SqlCollaboration).values(collaboration_data)
-        upsert_stmt = insert_stmt.on_conflict_do_update(
-            index_elements=["internal_id"],
-            set_={
-                "name": insert_stmt.excluded.name,
-                "date_updated": insert_stmt.excluded.date_updated,
-            },
-        )
-        await self._session.execute(upsert_stmt)
-        await self._session.flush()
-
-        if delete_stale_records:
-            delete_stmt = delete(SqlCollaboration).where(
-                SqlCollaboration.date_updated < now,
-            )
-            await self._session.execute(delete_stmt)
-            await self._session.flush()
 
 
 @dataclass(slots=True)

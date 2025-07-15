@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-__all__ = ["Address", "Affiliation", "Author", "Collaboration"]
+__all__ = ["Address", "Affiliation", "Author"]
 
 
 class Address(BaseModel):
@@ -56,16 +56,6 @@ class Affiliation(BaseModel):
     ror_id: str | None = Field(
         default=None,
         description="ROR ID of the affiliation (without ror.org domain).",
-    )
-
-
-class Collaboration(BaseModel):
-    """A collaboration."""
-
-    name: str = Field(description="Name of the collaboration.")
-
-    internal_id: str = Field(
-        description="Internal ID of the collaboration.",
     )
 
 

@@ -1,11 +1,6 @@
 """SQLAlchemy database schema."""
 
-from .authors import (
-    SqlAffiliation,
-    SqlAuthor,
-    SqlAuthorAffiliation,
-    SqlCollaboration,
-)
+from .authors import SqlAffiliation, SqlAuthor, SqlAuthorAffiliation
 from .base import Base
 from .glossary import SqlTerm, term_relationships
 from .links import SqlLink, SqlSdmColumnLink, SqlSdmSchemaLink, SqlSdmTableLink
@@ -16,7 +11,6 @@ __all__ = [
     "SqlAffiliation",
     "SqlAuthor",
     "SqlAuthorAffiliation",
-    "SqlCollaboration",
     "SqlLink",
     "SqlSdmColumn",
     "SqlSdmColumnLink",

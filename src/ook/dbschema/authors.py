@@ -21,7 +21,6 @@ __all__ = [
     "SqlAffiliation",
     "SqlAuthor",
     "SqlAuthorAffiliation",
-    "SqlCollaboration",
 ]
 
 
@@ -84,44 +83,6 @@ class SqlAuthor(Base):
         DateTime(timezone=True), nullable=False
     )
     """The date this record was last updated."""
-
-
-class SqlCollaboration(Base):
-    """A SQLAlchemy model for collaborations."""
-
-    __tablename__ = "collaboration"
-
-    __table_args__ = (
-        UniqueConstraint(
-            "internal_id", "name", name="uq_collaboration_internal_id_name"
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(
-        BigInteger, primary_key=True, autoincrement=True
-    )
-    """The primary key."""
-
-    internal_id: Mapped[str] = mapped_column(
-        UnicodeText, nullable=False, index=True, unique=True
-    )
-    """The internal ID of the collaboration.
-
-    This is the key for the collaboration in lsst-texmf's authordb.yaml file.
-    """
-
-    name: Mapped[str | None] = mapped_column(
-        UnicodeText, nullable=False, index=True
-    )
-    """The name of the collaboration (unicode)."""
-
-    date_updated: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    """The date this record was last updated."""
-
-    # TODO(jonathansick): consider adding an ordered many-to-many
-    # relationship to authors, but this is not needed for now.
 
 
 class SqlAffiliation(Base):

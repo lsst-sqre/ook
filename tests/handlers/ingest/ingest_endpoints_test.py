@@ -79,10 +79,6 @@ async def test_post_ingest_lsst_texmf(
     assert data["family_name"] == "Sick"
     assert len(data["affiliations"]) == 2
 
-    # Check that collaborations are not in the authors endpoint
-    response = await client.get("/ook/authors/DMPipelines")
-    assert response.status_code == 404
-
     # Check that TeX is decoded to unicode
     response = await client.get("/ook/authors/ivezicv")
     assert response.status_code == 200
