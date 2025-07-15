@@ -11,7 +11,7 @@ from pydantic import BaseModel, BeforeValidator, Field, ValidationError
 from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
 
-from ook.domain.authors import Address, Affiliation, Author, Collaboration
+from ook.domain.authors import Address, Affiliation, Author
 from ook.domain.latex import Latex
 from ook.storage.github import GitHubRepoStore
 
@@ -190,11 +190,6 @@ class AuthorDbAuthor(BaseModel):
         ),
     ] = None
 
-    @property
-    def is_collaboration(self) -> bool:
-        """Check if the author is a collaboration."""
-        return self.given_name is None and self.affil == ["_"]
-
 
 class AuthorDbAddress(BaseModel):
     """Model for an address in authordb.yaml."""
@@ -296,7 +291,6 @@ class AuthorDbYaml(BaseModel):
                 all_affiliations=affiliations,
             )
             for author_id, author in self.authors.items()
-            if author.is_collaboration is False
         }
 
     def _process_author(
@@ -367,17 +361,6 @@ class AuthorDbYaml(BaseModel):
             return email_entry
 
         return None
-
-    def collaborations_to_domain(self) -> dict[str, Collaboration]:
-        """Convert the collaborations to domain models."""
-        return {
-            author_id: Collaboration(
-                name=Latex(author.family_name).to_text(),
-                internal_id=author_id,
-            )
-            for author_id, author in self.authors.items()
-            if author.is_collaboration
-        }
 
 
 def split_list(
