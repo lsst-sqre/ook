@@ -2,6 +2,16 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.17.0'></a>
+
+## 0.17.0 (2025-07-15)
+
+### Backwards-incompatible changes
+
+- Dropped the `collaboration` table from the database schema and removed related code from the application. Originally in Ook we wanted to treat human authors separate from pseudo authors in order to make building out a staff directory easier. However, working against the grain of authordb.yaml (the canonical source for Rubin author data) has proven to be difficult. Now collaborations/collective authors will appear in the `/authors/` endpoints and in the `author` database table.
+
+- Requires database migration, `113ced7d2d29`.
+
 <a id='changelog-0.16.0'></a>
 
 ## 0.16.0 (2025-07-11)
