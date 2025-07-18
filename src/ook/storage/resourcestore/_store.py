@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Self, override
+from datetime import datetime
+from typing import Any, Self, override
 
 from pydantic import AnyHttpUrl
 from safir.database import (
@@ -11,12 +12,21 @@ from safir.database import (
     CountedPaginatedQueryRunner,
     PaginationCursor,
 )
-from sqlalchemy import Select, select
+from safir.datetime import current_datetime
+from sqlalchemy import Select, delete, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import async_scoped_session
 from sqlalchemy.orm import selectinload
 from structlog.stdlib import BoundLogger
 
-from ook.dbschema.resources import SqlDocumentResource, SqlResource
+from ook.dbschema.authors import SqlAuthor
+from ook.dbschema.resources import (
+    SqlContributor,
+    SqlDocumentResource,
+    SqlExternalReference,
+    SqlResource,
+    SqlResourceRelation,
+)
 from ook.domain.resources import (
     Contributor,
     Document,
@@ -27,6 +37,7 @@ from ook.domain.resources import (
     ResourceRelation,
     ResourceType,
 )
+from ook.domain.resources._externalref import ExternalReference
 
 from ._models import ResourceLoadOptions, ResourcePaginationModel
 
@@ -264,6 +275,363 @@ class ResourceStore:
                 resource_relations=resource_relations,
                 external_relations=external_relations,
             )
+
+    async def upsert_document(
+        self,
+        document: Document,
+        *,
+        delete_stale_relations: bool = True,
+    ) -> None:
+        """Upsert a document resource into the database.
+
+        Parameters
+        ----------
+        document
+            The document to upsert.
+        delete_stale_relations
+            If True, delete existing contributors and relations before
+            inserting new ones.
+        """
+        now = current_datetime(microseconds=False)
+
+        # Build document data with common resource fields plus
+        # document-specific fields
+        document_data = {
+            **self._build_common_resource_data(document, now),
+            "series": document.series,
+            "handle": document.handle,
+            "generator": document.generator,
+        }
+
+        # Upsert the document using PostgreSQL's ON CONFLICT
+        insert_stmt = pg_insert(SqlDocumentResource).values([document_data])
+        upsert_stmt = insert_stmt.on_conflict_do_update(
+            index_elements=["id"],
+            set_={
+                **self._get_common_resource_update_fields(insert_stmt),
+                "series": insert_stmt.excluded.series,
+                "handle": insert_stmt.excluded.handle,
+                "generator": insert_stmt.excluded.generator,
+            },
+        )
+        await self._session.execute(upsert_stmt)
+        await self._session.flush()
+
+        # Handle related data
+        if delete_stale_relations:
+            await self._delete_resource_relations(document.id)
+
+        await self._upsert_contributors(document.id, document.contributors)
+        await self._upsert_relations(
+            document.id,
+            document.resource_relations,
+            document.external_relations,
+        )
+
+    async def upsert_resource(
+        self,
+        resource: Resource,
+        *,
+        delete_stale_relations: bool = True,
+    ) -> None:
+        """Upsert a generic resource into the database.
+
+        Parameters
+        ----------
+        resource
+            The resource to upsert.
+        delete_stale_relations
+            If True, delete existing contributors and relations before
+            inserting new ones.
+        """
+        now = current_datetime(microseconds=False)
+
+        # Build resource data with common fields only
+        resource_data = self._build_common_resource_data(resource, now)
+
+        # Upsert the resource using PostgreSQL's ON CONFLICT
+        insert_stmt = pg_insert(SqlResource).values([resource_data])
+        upsert_stmt = insert_stmt.on_conflict_do_update(
+            index_elements=["id"],
+            set_=self._get_common_resource_update_fields(insert_stmt),
+        )
+        await self._session.execute(upsert_stmt)
+        await self._session.flush()
+
+        # Handle related data
+        if delete_stale_relations:
+            await self._delete_resource_relations(resource.id)
+
+        await self._upsert_contributors(resource.id, resource.contributors)
+        await self._upsert_relations(
+            resource.id,
+            resource.resource_relations,
+            resource.external_relations,
+        )
+
+    def _build_common_resource_data(
+        self, resource: Resource, timestamp: datetime
+    ) -> dict[str, Any]:
+        """Build common resource data dictionary for upserts.
+
+        This method should be synchronized with the fields in
+        `_get_common_resource_update_fields` and with the SqlResource model.
+
+        Parameters
+        ----------
+        resource
+            The resource domain model.
+        timestamp
+            The timestamp to use for date_updated.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary of common resource fields.
+        """
+        return {
+            "id": resource.id,
+            "resource_class": resource.resource_class.value,
+            "date_updated": timestamp,
+            "title": resource.title,
+            "description": resource.description,
+            "url": str(resource.url) if resource.url else None,
+            "doi": resource.doi,
+            "date_resource_published": resource.date_resource_published,
+            "date_resource_updated": resource.date_resource_updated,
+            "version": resource.version,
+            "type": resource.type.value if resource.type else None,
+        }
+
+    def _get_common_resource_update_fields(
+        self, insert_stmt: Any
+    ) -> dict[str, Any]:
+        """Get common resource fields for ON CONFLICT DO UPDATE.
+
+        This method should be synchronized with the fields in
+        `_build_common_resource_data` and with the SqlResource model.
+
+        Parameters
+        ----------
+        insert_stmt
+            The PostgreSQL insert statement.
+
+        Returns
+        -------
+        dict[str, Any]
+            Dictionary of field updates for common resource fields.
+        """
+        return {
+            "resource_class": insert_stmt.excluded.resource_class,
+            "date_updated": insert_stmt.excluded.date_updated,
+            "title": insert_stmt.excluded.title,
+            "description": insert_stmt.excluded.description,
+            "url": insert_stmt.excluded.url,
+            "doi": insert_stmt.excluded.doi,
+            "date_resource_published": (
+                insert_stmt.excluded.date_resource_published
+            ),
+            "date_resource_updated": (
+                insert_stmt.excluded.date_resource_updated
+            ),
+            "version": insert_stmt.excluded.version,
+            "type": insert_stmt.excluded.type,
+        }
+
+    async def _delete_resource_relations(self, resource_id: int) -> None:
+        """Delete all existing relations for a resource.
+
+        Parameters
+        ----------
+        resource_id
+            The ID of the resource whose relations to delete.
+        """
+        # Delete contributors
+        await self._session.execute(
+            delete(SqlContributor).where(
+                SqlContributor.resource_id == resource_id
+            )
+        )
+
+        # Delete resource relations
+        await self._session.execute(
+            delete(SqlResourceRelation).where(
+                SqlResourceRelation.source_resource_id == resource_id
+            )
+        )
+
+    async def _upsert_contributors(
+        self, resource_id: int, contributors: list[Contributor] | None
+    ) -> None:
+        """Upsert contributors for a resource.
+
+        Parameters
+        ----------
+        resource_id
+            The ID of the resource.
+        contributors
+            List of contributors to associate with the resource.
+        """
+        if not contributors:
+            return
+
+        # In order to upsert contributors, we need to resolve their database
+        # primary keys given the `internal_id` field on the Author domain
+        # model. This is done as a SQL query prior to the contributor upsert.
+
+        author_internal_ids = list(
+            {contributor.author.internal_id for contributor in contributors}
+        )
+
+        # Query to get the mapping from internal_id to database id
+        author_query = select(SqlAuthor.id, SqlAuthor.internal_id).where(
+            SqlAuthor.internal_id.in_(author_internal_ids)
+        )
+
+        author_result = await self._session.execute(author_query)
+        author_id_map = {
+            internal_id: db_id for db_id, internal_id in author_result
+        }
+
+        # Build contributor data using the resolved author IDs
+        contributor_data = []
+        for contributor in contributors:
+            author_db_id = author_id_map.get(contributor.author.internal_id)
+            if author_db_id is None:
+                # Log warning or raise error if author not found
+                self._logger.warning(
+                    "Author not found in database",
+                    internal_id=contributor.author.internal_id,
+                    resource_id=resource_id,
+                )
+                continue
+
+            contributor_data.append(
+                {
+                    "resource_id": resource_id,
+                    "order": contributor.order,
+                    "role": contributor.role.value,
+                    "author_id": author_db_id,
+                }
+            )
+
+        if contributor_data:
+            await self._session.execute(
+                pg_insert(SqlContributor).values(contributor_data)
+            )
+
+    async def _upsert_relations(
+        self,
+        resource_id: int,
+        resource_relations: list[ResourceRelation] | None,
+        external_relations: list[ExternalRelation] | None,
+    ) -> None:
+        """Upsert relations for a resource.
+
+        Parameters
+        ----------
+        resource_id
+            The ID of the resource.
+        resource_relations
+            List of resource relations.
+        external_relations
+            List of external relations.
+        """
+        relation_data = []
+
+        # Add resource relations
+        if resource_relations:
+            relation_data.extend(
+                [
+                    {
+                        "source_resource_id": resource_id,
+                        "related_resource_id": relation.resource_id,
+                        "related_external_ref_id": None,
+                        "relation_type": relation.relation_type.value,
+                    }
+                    for relation in resource_relations
+                ]
+            )
+
+        # Add external relations
+        if external_relations:
+            for relation in external_relations:
+                # Upsert the external reference first
+                ext_ref_id = await self._upsert_external_reference(
+                    relation.external_reference
+                )
+
+                relation_data.append(
+                    {
+                        "source_resource_id": resource_id,
+                        "related_resource_id": None,
+                        "related_external_ref_id": ext_ref_id,
+                        "relation_type": relation.relation_type.value,
+                    }
+                )
+
+        if relation_data:
+            await self._session.execute(
+                pg_insert(SqlResourceRelation).values(relation_data)
+            )
+
+    async def _upsert_external_reference(
+        self, external_ref: ExternalReference
+    ) -> int:
+        """Upsert an external reference and return its ID.
+
+        Parameters
+        ----------
+        external_ref
+            The external reference to upsert.
+
+        Returns
+        -------
+        int
+            The ID of the upserted external reference.
+        """
+        ext_ref_data = {
+            "url": external_ref.url,
+            "doi": external_ref.doi,
+            "arxiv_id": external_ref.arxiv_id,
+            "isbn": external_ref.isbn,
+            "issn": external_ref.issn,
+            "ads_bibcode": external_ref.ads_bibcode,
+            "type": external_ref.type.value if external_ref.type else None,
+            "title": external_ref.title,
+            "publication_year": external_ref.publication_year,
+            "volume": external_ref.volume,
+            "issue": external_ref.issue,
+            "number": external_ref.number,
+            "number_type": external_ref.number_type
+            if external_ref.number_type
+            else None,
+            "first_page": external_ref.first_page,
+            "last_page": external_ref.last_page,
+            "publisher": external_ref.publisher,
+            "edition": external_ref.edition,
+            "contributors": [c.model_dump() for c in external_ref.contributors]
+            if external_ref.contributors
+            else None,
+        }
+
+        insert_stmt = pg_insert(SqlExternalReference).values([ext_ref_data])
+
+        # Use DOI for conflict resolution if available, otherwise URL
+        if external_ref.doi:
+            upsert_stmt = insert_stmt.on_conflict_do_update(
+                index_elements=["doi"], set_=ext_ref_data
+            ).returning(SqlExternalReference.id)
+        elif external_ref.url:
+            upsert_stmt = insert_stmt.on_conflict_do_update(
+                index_elements=["url"], set_=ext_ref_data
+            ).returning(SqlExternalReference.id)
+        else:
+            # No unique identifier, just insert
+            upsert_stmt = insert_stmt.returning(SqlExternalReference.id)
+
+        result = await self._session.execute(upsert_stmt)
+        return result.scalar_one()
 
 
 @dataclass(slots=True)
