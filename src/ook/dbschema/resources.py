@@ -189,7 +189,7 @@ class SqlContributor(Base):
     __tablename__ = "contributor"
 
     id: Mapped[int] = mapped_column(
-        Integer, primary_key=True, autoincrement=True
+        BigInteger, primary_key=True, autoincrement=True
     )
     """The primary key."""
 
@@ -239,7 +239,7 @@ class SqlResourceRelation(Base):
     __tablename__ = "resource_relation"
 
     id: Mapped[int] = mapped_column(
-        Integer, primary_key=True, autoincrement=True
+        BigInteger, primary_key=True, autoincrement=True
     )
     """The primary key."""
 
