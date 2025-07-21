@@ -31,11 +31,13 @@ from .services.ingest.sdmschemas import SdmSchemasIngestService
 from .services.landerjsonldingest import LtdLanderJsonLdIngestService
 from .services.links import LinksService
 from .services.ltdmetadataservice import LtdMetadataService
+from .services.resources import ResourceService
 from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
 from .services.technoteingest import TechnoteIngestService
 from .storage.authorstore import AuthorStore
 from .storage.glossarystore import GlossaryStore
 from .storage.linkstore import LinkStore
+from .storage.resourcestore import ResourceStore
 from .storage.sdmschemastore import SdmSchemasStore
 
 
@@ -222,6 +224,13 @@ class Factory:
             logger=self._logger,
         )
 
+    def create_resource_store(self) -> ResourceStore:
+        """Create a ResourceStore."""
+        return ResourceStore(
+            session=self._session,
+            logger=self._logger,
+        )
+
     def create_algolia_doc_index_service(self) -> AlgoliaDocIndexService:
         """Create an Algolia document indexing service."""
         index = self._process_context.algolia_client.init_index(
@@ -339,5 +348,12 @@ class Factory:
         """Create a GlossaryService."""
         return GlossaryService(
             glossary_store=self.create_glossary_store(),
+            logger=self._logger,
+        )
+
+    def create_resource_service(self) -> ResourceService:
+        """Create a ResourceService."""
+        return ResourceService(
+            resource_store=self.create_resource_store(),
             logger=self._logger,
         )
