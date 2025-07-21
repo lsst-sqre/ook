@@ -12,8 +12,7 @@ from safir.database import (
     PaginationCursor,
 )
 from safir.datetime import current_datetime
-from sqlalchemy import Select, case, delete, func, select
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Select, delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import async_scoped_session
 from structlog.stdlib import BoundLogger
@@ -24,6 +23,11 @@ from ook.dbschema.authors import (
     SqlAuthorAffiliation,
 )
 from ook.domain.authors import Affiliation, Author
+
+from ._author_queries import (
+    create_all_authors_stmt,
+    create_author_by_internal_id_stmt,
+)
 
 __all__ = ["AuthorStore"]
 
@@ -50,77 +54,7 @@ class AuthorStore:
         Author or None
             The author with the specified internal ID, or None if not found.
         """
-        # Subquery to get affiliations as a JSON array
-        affiliations_subquery = (
-            select(
-                func.json_agg(
-                    func.json_build_object(
-                        "internal_id",
-                        SqlAffiliation.internal_id,
-                        "name",
-                        SqlAffiliation.name,
-                        "department",
-                        SqlAffiliation.department,
-                        "email",
-                        SqlAffiliation.email_domain,
-                        "ror_id",
-                        SqlAffiliation.ror_id,
-                        "address",
-                        case(
-                            (
-                                func.coalesce(
-                                    SqlAffiliation.address_street,
-                                    SqlAffiliation.address_city,
-                                    SqlAffiliation.address_state,
-                                    SqlAffiliation.address_postal_code,
-                                    SqlAffiliation.address_country,
-                                ).is_(None),
-                                None,
-                            ),
-                            else_=func.json_build_object(
-                                "street",
-                                SqlAffiliation.address_street,
-                                "city",
-                                SqlAffiliation.address_city,
-                                "state",
-                                SqlAffiliation.address_state,
-                                "postal_code",
-                                SqlAffiliation.address_postal_code,
-                                "country",
-                                SqlAffiliation.address_country,
-                            ),
-                        ),
-                    ).cast(JSONB)
-                ).label("affiliations")
-            )
-            .select_from(SqlAffiliation)
-            .join(
-                SqlAuthorAffiliation,
-                SqlAffiliation.id == SqlAuthorAffiliation.affiliation_id,
-            )
-            .join(SqlAuthor, SqlAuthor.id == SqlAuthorAffiliation.author_id)
-            .where(SqlAuthor.internal_id == internal_id)
-            .group_by(SqlAuthor.id)
-            .order_by(
-                # Order within json_agg
-                func.array_agg(SqlAuthorAffiliation.position)
-            )
-        ).scalar_subquery()
-
-        # Main query to get author with affiliations
-        stmt = select(
-            SqlAuthor.internal_id,
-            SqlAuthor.surname,
-            SqlAuthor.given_name,
-            SqlAuthor.orcid,
-            SqlAuthor.email,
-            SqlAuthor.notes,
-            case(
-                (affiliations_subquery.is_(None), func.json_build_array()),
-                else_=affiliations_subquery,
-            ).label("affiliations"),
-        ).where(SqlAuthor.internal_id == internal_id)
-
+        stmt = create_author_by_internal_id_stmt(internal_id)
         result = (await self._session.execute(stmt)).first()
 
         return (
@@ -149,91 +83,7 @@ class AuthorStore:
         CountedPaginatedList[Author]
             A paginated list of authors.
         """
-        # Subquery to get affiliations as a JSON array for each author
-        affiliations_subquery = (
-            select(
-                SqlAuthor.id.label("author_id"),
-                func.json_agg(
-                    func.json_build_object(
-                        "internal_id",
-                        SqlAffiliation.internal_id,
-                        "name",
-                        SqlAffiliation.name,
-                        "department",
-                        SqlAffiliation.department,
-                        "email",
-                        SqlAffiliation.email_domain,
-                        "ror_id",
-                        SqlAffiliation.ror_id,
-                        "address",
-                        case(
-                            (
-                                func.coalesce(
-                                    SqlAffiliation.address_street,
-                                    SqlAffiliation.address_city,
-                                    SqlAffiliation.address_state,
-                                    SqlAffiliation.address_postal_code,
-                                    SqlAffiliation.address_country,
-                                ).is_(None),
-                                None,
-                            ),
-                            else_=func.json_build_object(
-                                "street",
-                                SqlAffiliation.address_street,
-                                "city",
-                                SqlAffiliation.address_city,
-                                "state",
-                                SqlAffiliation.address_state,
-                                "postal_code",
-                                SqlAffiliation.address_postal_code,
-                                "country",
-                                SqlAffiliation.address_country,
-                            ),
-                        ),
-                    ).cast(JSONB)
-                ).label("affiliations"),
-            )
-            .select_from(SqlAuthor)
-            .join(
-                SqlAuthorAffiliation,
-                SqlAuthor.id == SqlAuthorAffiliation.author_id,
-                isouter=True,
-            )
-            .join(
-                SqlAffiliation,
-                SqlAffiliation.id == SqlAuthorAffiliation.affiliation_id,
-                isouter=True,
-            )
-            .group_by(SqlAuthor.id)
-            .order_by(
-                SqlAuthor.id, func.array_agg(SqlAuthorAffiliation.position)
-            )
-        ).alias("affiliations_subquery")
-
-        # Main query to get all authors with their affiliations
-        stmt = (
-            select(
-                SqlAuthor.internal_id,
-                SqlAuthor.surname,
-                SqlAuthor.given_name,
-                SqlAuthor.orcid,
-                SqlAuthor.email,
-                SqlAuthor.notes,
-                case(
-                    (
-                        affiliations_subquery.c.affiliations.is_(None),
-                        func.json_build_array(),
-                    ),
-                    else_=affiliations_subquery.c.affiliations,
-                ).label("affiliations"),
-            )
-            .select_from(SqlAuthor)
-            .join(
-                affiliations_subquery,
-                SqlAuthor.id == affiliations_subquery.c.author_id,
-                isouter=True,
-            )
-        )
+        stmt = create_all_authors_stmt()
 
         runner = CountedPaginatedQueryRunner(
             entry_type=Author,
