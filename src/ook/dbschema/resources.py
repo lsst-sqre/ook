@@ -49,10 +49,14 @@ class SqlResource(Base):
     resource_class: Mapped[str | None]
     """The descriminator for resource subclasses."""
 
-    date_created: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    date_created: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     """The date when the DB row was created."""
 
-    date_updated: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    date_updated: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     """The date when the DB row was last updated."""
 
     title: Mapped[str] = mapped_column(UnicodeText, nullable=False)
