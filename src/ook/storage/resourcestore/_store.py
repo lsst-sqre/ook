@@ -16,9 +16,11 @@ from safir.datetime import current_datetime
 from sqlalchemy import Select, delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import async_scoped_session
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, with_polymorphic
+from sqlalchemy.orm.util import AliasedClass
 from structlog.stdlib import BoundLogger
 
+from ook.dbschema import Base
 from ook.dbschema.authors import SqlAuthor
 from ook.dbschema.resources import (
     SqlContributor,
@@ -38,6 +40,7 @@ from ook.domain.resources import (
     ResourceType,
 )
 from ook.domain.resources._externalref import ExternalReference
+from ook.storage._author_queries import load_contributors_for_resources
 
 from ._models import ResourceLoadOptions, ResourcePaginationModel
 
@@ -78,17 +81,27 @@ class ResourceStore:
         if load_options is None:
             load_options = ResourceLoadOptions.none()
 
-        # Use SQLAlchemy's polymorphic loading
-        stmt = select(SqlResource).where(SqlResource.id == resource_id)
+        # Use polymorphic loading with explicit subclass inclusion to ensure
+        # child table data is eagerly loaded for joined table inheritance
+        # Add additional resource subclasses as they are needed, and keep in
+        # sync with get_resources.
+        poly_resource = self._create_poly_resource()
+        stmt = select(poly_resource).where(poly_resource.id == resource_id)
 
         # Add eager loading for relationships as needed
         if load_options.include_contributors:
-            stmt = stmt.options(selectinload(SqlResource.contributors))
+            # We'll load contributors separately using JSON aggregation
+            # to avoid async lazy loading issues
+            pass
         if (
             load_options.include_resource_relations
             or load_options.include_external_relations
         ):
-            stmt = stmt.options(selectinload(SqlResource.relations))
+            stmt = stmt.options(
+                selectinload(poly_resource.relations).selectinload(
+                    SqlResourceRelation.related_external_reference
+                )
+            )
 
         result = await self._session.execute(stmt)
         sql_resource = result.scalar_one_or_none()
@@ -96,7 +109,16 @@ class ResourceStore:
         if sql_resource is None:
             return None
 
-        return self._sql_to_domain(sql_resource)
+        # Load contributors separately using JSON aggregation if needed
+        contributors_by_resource = {}
+        if load_options.include_contributors:
+            contributors_by_resource = await load_contributors_for_resources(
+                self._session, [resource_id]
+            )
+
+        return self._sql_to_domain(
+            sql_resource, load_options, contributors_by_resource
+        )
 
     async def get_resources(
         self,
@@ -152,7 +174,11 @@ class ResourceStore:
                 prev_cursor=paginated_basic.prev_cursor,
             )
 
-        full_stmt = select(SqlResource).where(SqlResource.id.in_(resource_ids))
+        # Use polymorphic loading for the full resource queries
+        poly_resource = self._create_poly_resource()
+        full_stmt = select(poly_resource).where(
+            poly_resource.id.in_(resource_ids)
+        )
         result = await self._session.execute(full_stmt)
         sql_resources = result.scalars().all()
 
@@ -163,8 +189,11 @@ class ResourceStore:
         ]
 
         # Convert to domain models
+        # Don't attempt to load related data here; instead, use the
+        # core table data.
+        load_options = ResourceLoadOptions.none()
         domain_resources = [
-            self._sql_to_domain(sql_resource)
+            self._sql_to_domain(sql_resource, load_options, None)
             for sql_resource in ordered_sql_resources
         ]
 
@@ -175,13 +204,30 @@ class ResourceStore:
             prev_cursor=paginated_basic.prev_cursor,
         )
 
-    def _sql_to_domain(self, sql_resource: SqlResource) -> Resource:
+    def _create_poly_resource(self) -> AliasedClass[SqlResource]:
+        """Create a polymorphic resource class for SQLAlchemy.
+
+        This eaglerly loads columns from the resource subclasses in a regular
+        select query.
+
+        Add additional resource subclasses as they are developed.
+        """
+        return with_polymorphic(SqlResource, [SqlDocumentResource])
+
+    def _sql_to_domain(
+        self,
+        sql_resource: SqlResource,
+        load_options: ResourceLoadOptions,
+        contributors_by_resource: dict[int, list] | None = None,
+    ) -> Resource:
         """Convert a SQLAlchemy resource model to a domain model.
 
         Parameters
         ----------
         sql_resource
             The SQLAlchemy resource model to convert.
+        load_options
+            Options for loading related data.
 
         Returns
         -------
@@ -194,19 +240,19 @@ class ResourceStore:
         )
 
         # Convert contributors if loaded
-        if hasattr(sql_resource, "contributors") and sql_resource.contributors:
-            contributors = [
-                Contributor.model_validate(
-                    sql_contributor, from_attributes=True
-                )
-                for sql_contributor in sql_resource.contributors
-            ]
-        else:
-            contributors = None
+        contributors = None
+        if load_options.include_contributors and contributors_by_resource:
+            contributors = contributors_by_resource.get(sql_resource.id, [])
+            self._logger.debug(
+                "Loaded contributors for resource",
+                resource_id=sql_resource.id,
+                load_options=load_options.asdict(),
+                contributor_count=len(contributors),
+            )
 
         # Convert resource relations if loaded
         resource_relations: list[ResourceRelation] | None = None
-        if hasattr(sql_resource, "relations") and sql_resource.relations:
+        if load_options.include_resource_relations:
             resource_relations = []
             for relation in sql_resource.relations:
                 if relation.related_resource_id is not None:
@@ -219,7 +265,7 @@ class ResourceStore:
 
         # Convert external relations if loaded
         external_relations: list[ExternalRelation] | None = None
-        if hasattr(sql_resource, "relations") and sql_resource.relations:
+        if load_options.include_external_relations:
             external_relations = [
                 ExternalRelation(
                     relation_type=RelationType(relation.relation_type),
@@ -294,32 +340,49 @@ class ResourceStore:
         """
         now = current_datetime(microseconds=False)
 
-        # Build document data with common resource fields plus
-        # document-specific fields
-        document_data = {
-            **self._build_common_resource_data(document, now),
-            "series": document.series,
-            "handle": document.handle,
-            "generator": document.generator,
-        }
-
-        # Upsert the document using PostgreSQL's ON CONFLICT
-        insert_stmt = pg_insert(SqlDocumentResource).values([document_data])
-        upsert_stmt = insert_stmt.on_conflict_do_update(
-            index_elements=["id"],
-            set_={
-                **self._get_common_resource_update_fields(insert_stmt),
-                "series": insert_stmt.excluded.series,
-                "handle": insert_stmt.excluded.handle,
-                "generator": insert_stmt.excluded.generator,
-            },
-        )
-        await self._session.execute(upsert_stmt)
-        await self._session.flush()
-
-        # Handle related data
+        # Handle related data deletion first
         if delete_stale_relations:
             await self._delete_resource_relations(document.id)
+
+        # Use joined inheritance upsert for document resource
+        await self._upsert_joined_inheritance(
+            child_model=SqlDocumentResource,
+            parent_model=SqlResource,
+            join_conditions={
+                "id": document.id,
+            },
+            update_fields={
+                "date_updated": now,
+                "title": document.title,
+                "description": document.description,
+                "url": str(document.url) if document.url else None,
+                "doi": document.doi,
+                "date_resource_published": document.date_resource_published,
+                "date_resource_updated": document.date_resource_updated,
+                "version": document.version,
+                "type": document.type.value if document.type else None,
+                "series": document.series,
+                "handle": document.handle,
+                "generator": document.generator,
+            },
+            insert_fields={
+                "id": document.id,
+                "resource_class": document.resource_class.value,
+                "date_created": document.date_created,
+                "date_updated": now,
+                "title": document.title,
+                "description": document.description,
+                "url": str(document.url) if document.url else None,
+                "doi": document.doi,
+                "date_resource_published": document.date_resource_published,
+                "date_resource_updated": document.date_resource_updated,
+                "version": document.version,
+                "type": document.type.value if document.type else None,
+                "series": document.series,
+                "handle": document.handle,
+                "generator": document.generator,
+            },
+        )
 
         await self._upsert_contributors(document.id, document.contributors)
         await self._upsert_relations(
@@ -516,6 +579,12 @@ class ResourceStore:
             )
 
         if contributor_data:
+            self._logger.debug(
+                "Upserting contributors",
+                resource_id=resource_id,
+                contributor_count=len(contributor_data),
+                contributor_data=contributor_data,
+            )
             await self._session.execute(
                 pg_insert(SqlContributor).values(contributor_data)
             )
@@ -632,6 +701,49 @@ class ResourceStore:
 
         result = await self._session.execute(upsert_stmt)
         return result.scalar_one()
+
+    async def _upsert_joined_inheritance[T](
+        self,
+        *,
+        child_model: type[T],
+        parent_model: type[Base],
+        join_conditions: dict,
+        update_fields: dict,
+        insert_fields: dict,
+    ) -> T:
+        """Upsert a joined-table inheritance row by joining parent and child
+        tables.
+        """
+        # SQLAlchemy automatically handles the joined table inheritance
+        join_stmt = select(child_model)
+
+        # Add where conditions
+        for key, value in join_conditions.items():
+            parent_col = getattr(parent_model, key, None)
+            child_col = getattr(child_model, key, None)
+            if parent_col is not None:
+                join_stmt = join_stmt.where(parent_col == value)
+            elif child_col is not None:
+                join_stmt = join_stmt.where(child_col == value)
+            else:
+                raise ValueError(
+                    f"Field {key} not found in parent or child model."
+                )
+
+        existing = (
+            await self._session.execute(join_stmt)
+        ).scalar_one_or_none()
+
+        if existing:
+            for field, value in update_fields.items():
+                setattr(existing, field, value)
+            instance = existing
+        else:
+            instance = child_model(**insert_fields)
+            self._session.add(instance)
+
+        await self._session.flush()
+        return instance
 
 
 @dataclass(slots=True)
