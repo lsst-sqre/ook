@@ -188,8 +188,13 @@ class SqlContributor(Base):
 
     __tablename__ = "contributor"
 
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    """The primary key."""
+
     resource_id: Mapped[int] = mapped_column(
-        ForeignKey("resource.id"), primary_key=True
+        ForeignKey("resource.id"), nullable=False
     )
     """The resource ID."""
 
@@ -233,8 +238,13 @@ class SqlResourceRelation(Base):
 
     __tablename__ = "resource_relation"
 
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    """The primary key."""
+
     source_resource_id: Mapped[int] = mapped_column(
-        ForeignKey("resource.id"), primary_key=True
+        ForeignKey("resource.id"), nullable=False
     )
     """The source resource ID."""
 

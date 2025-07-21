@@ -67,6 +67,7 @@ def upgrade() -> None:
     )
     op.create_table(
         "contributor",
+        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
         sa.Column("resource_id", sa.BigInteger(), nullable=False),
         sa.Column("order", sa.Integer(), nullable=False),
         sa.Column("role", sa.UnicodeText(), nullable=False),
@@ -79,7 +80,7 @@ def upgrade() -> None:
             ["resource_id"],
             ["resource.id"],
         ),
-        sa.PrimaryKeyConstraint("resource_id"),
+        sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "resource_id",
             "order",
@@ -104,6 +105,7 @@ def upgrade() -> None:
     )
     op.create_table(
         "resource_relation",
+        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
         sa.Column("source_resource_id", sa.BigInteger(), nullable=False),
         sa.Column("related_resource_id", sa.BigInteger(), nullable=True),
         sa.Column("related_external_ref_id", sa.BigInteger(), nullable=True),
@@ -120,7 +122,7 @@ def upgrade() -> None:
             ["source_resource_id"],
             ["resource.id"],
         ),
-        sa.PrimaryKeyConstraint("source_resource_id"),
+        sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "source_resource_id",
             "related_resource_id",
