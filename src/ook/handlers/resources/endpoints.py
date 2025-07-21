@@ -8,7 +8,7 @@ from safir.models import ErrorModel
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 from ook.domain.base32id import Base32Id
-from ook.domain.resources import Resource
+from ook.domain.resources import Document, Resource
 from ook.exceptions import NotFoundError
 from ook.storage.resourcestore import ResourceLoadOptions
 
@@ -34,7 +34,7 @@ async def get_resource_by_id(
         ),
     ],
     context: Annotated[RequestContext, Depends(context_dependency)],
-) -> Resource:
+) -> Resource | Document:
     """Get a resource by its ID.
 
     Returns the resource with the specified ID, which can be any subclass
