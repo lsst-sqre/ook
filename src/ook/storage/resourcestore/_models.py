@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
@@ -49,6 +49,10 @@ class ResourceLoadOptions:
             include_resource_relations=True,
             include_external_relations=True,
         )
+
+    def asdict(self) -> dict[str, bool]:
+        """Convert to a dictionary representation."""
+        return asdict(self)
 
 
 class ResourcePaginationModel(BaseModel):

@@ -35,6 +35,7 @@ class ResourceService:
     async def get_resource_by_id(
         self,
         resource_id: int,
+        *,
         load_options: ResourceLoadOptions | None = None,
     ) -> Resource | None:
         """Get a resource by its ID.
