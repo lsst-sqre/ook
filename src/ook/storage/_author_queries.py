@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy import Select, case, func, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import async_scoped_session
@@ -16,11 +18,62 @@ from ook.domain.authors import Author
 from ook.domain.resources import Contributor, ContributorRole
 
 __all__ = [
+    "create_affiliations_json_object",
     "create_all_authors_stmt",
     "create_author_by_internal_id_stmt",
     "create_author_with_affiliations_columns",
     "load_contributors_for_resources",
 ]
+
+
+def create_affiliations_json_object() -> Any:
+    """Create the JSON object expression for affiliation data.
+
+    This creates the standardized JSON structure for affiliation data
+    that's used consistently across different query builders.
+
+    Returns
+    -------
+    Any
+        SQLAlchemy JSON object expression for affiliation data.
+    """
+    return func.json_build_object(
+        "internal_id",
+        SqlAffiliation.internal_id,
+        "name",
+        SqlAffiliation.name,
+        "department",
+        SqlAffiliation.department,
+        "email",
+        SqlAffiliation.email_domain,
+        "ror_id",
+        SqlAffiliation.ror_id,
+        "address",
+        case(
+            (
+                func.coalesce(
+                    SqlAffiliation.address_street,
+                    SqlAffiliation.address_city,
+                    SqlAffiliation.address_state,
+                    SqlAffiliation.address_postal_code,
+                    SqlAffiliation.address_country,
+                ).is_(None),
+                None,
+            ),
+            else_=func.json_build_object(
+                "street",
+                SqlAffiliation.address_street,
+                "city",
+                SqlAffiliation.address_city,
+                "state",
+                SqlAffiliation.address_state,
+                "postal_code",
+                SqlAffiliation.address_postal_code,
+                "country",
+                SqlAffiliation.address_country,
+            ),
+        ),
+    )
 
 
 def create_author_with_affiliations_columns(
@@ -48,45 +101,9 @@ def create_author_with_affiliations_columns(
     # Use PostgreSQL's json_agg with ORDER BY for proper ordering
     affiliations_subquery = (
         select(
-            func.json_agg(
-                func.json_build_object(
-                    "internal_id",
-                    SqlAffiliation.internal_id,
-                    "name",
-                    SqlAffiliation.name,
-                    "department",
-                    SqlAffiliation.department,
-                    "email",
-                    SqlAffiliation.email_domain,
-                    "ror_id",
-                    SqlAffiliation.ror_id,
-                    "address",
-                    case(
-                        (
-                            func.coalesce(
-                                SqlAffiliation.address_street,
-                                SqlAffiliation.address_city,
-                                SqlAffiliation.address_state,
-                                SqlAffiliation.address_postal_code,
-                                SqlAffiliation.address_country,
-                            ).is_(None),
-                            None,
-                        ),
-                        else_=func.json_build_object(
-                            "street",
-                            SqlAffiliation.address_street,
-                            "city",
-                            SqlAffiliation.address_city,
-                            "state",
-                            SqlAffiliation.address_state,
-                            "postal_code",
-                            SqlAffiliation.address_postal_code,
-                            "country",
-                            SqlAffiliation.address_country,
-                        ),
-                    ),
-                ).cast(JSONB)
-            ).label("affiliations")
+            func.json_agg(create_affiliations_json_object().cast(JSONB)).label(
+                "affiliations"
+            )
         )
         .select_from(SqlAffiliation)
         .join(
@@ -140,45 +157,9 @@ def create_all_authors_stmt() -> Select:
     affiliations_subquery = (
         select(
             SqlAuthor.id.label("author_id"),
-            func.json_agg(
-                func.json_build_object(
-                    "internal_id",
-                    SqlAffiliation.internal_id,
-                    "name",
-                    SqlAffiliation.name,
-                    "department",
-                    SqlAffiliation.department,
-                    "email",
-                    SqlAffiliation.email_domain,
-                    "ror_id",
-                    SqlAffiliation.ror_id,
-                    "address",
-                    case(
-                        (
-                            func.coalesce(
-                                SqlAffiliation.address_street,
-                                SqlAffiliation.address_city,
-                                SqlAffiliation.address_state,
-                                SqlAffiliation.address_postal_code,
-                                SqlAffiliation.address_country,
-                            ).is_(None),
-                            None,
-                        ),
-                        else_=func.json_build_object(
-                            "street",
-                            SqlAffiliation.address_street,
-                            "city",
-                            SqlAffiliation.address_city,
-                            "state",
-                            SqlAffiliation.address_state,
-                            "postal_code",
-                            SqlAffiliation.address_postal_code,
-                            "country",
-                            SqlAffiliation.address_country,
-                        ),
-                    ),
-                ).cast(JSONB)
-            ).label("affiliations"),
+            func.json_agg(create_affiliations_json_object().cast(JSONB)).label(
+                "affiliations"
+            ),
         )
         .select_from(SqlAuthor)
         .join(
