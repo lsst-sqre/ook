@@ -73,8 +73,6 @@ async def test_get_resource_by_id(
                         "order": 2,
                     },
                 ],
-                "resource_relations": None,
-                "external_relations": None,
             }
         ]
     }
@@ -103,9 +101,6 @@ async def test_get_resource_by_id(
     assert ingested_doc["handle"] == "TEST-001"
     assert ingested_doc["generator"] == "Documenteer 2.0.0"
     assert ingested_doc["resource_class"] == "document"
-
-    # Verify contributors are not present in this response
-    assert ingested_doc["contributors"] is None
 
     # Now test the GET /resources/{id} endpoint
     response = await client.get(f"/ook/resources/{document_id}")
@@ -150,6 +145,10 @@ async def test_get_resource_by_id(
     # TODO(jonathansick) This is the ORCID ID not URL because we're returning
     # the Author domain object directly.
     assert retrieved_creator["author"]["orcid"] == "0000-0002-8333-7615"
+    assert (
+        retrieved_creator["author"]["affiliations"][0]["internal_id"]
+        == "RubinObs"
+    )
 
     # Verify editor details match
     assert retrieved_editor["author"]["surname"] == "Sick"

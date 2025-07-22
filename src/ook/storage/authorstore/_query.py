@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import Select, case, func, select
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, aggregate_order_by
 
 from ook.dbschema.authors import (
     SqlAffiliation,
@@ -16,9 +16,38 @@ from ook.dbschema.authors import (
 __all__ = [
     "create_affiliations_json_object",
     "create_all_authors_stmt",
+    "create_author_affiliations_subquery",
     "create_author_by_internal_id_stmt",
+    "create_author_json_object",
     "create_author_with_affiliations_columns",
 ]
+
+
+def create_author_json_object() -> Any:
+    """Create the JSON object expression for an Author domain model, including
+    affiliations as a JSON array.
+
+    Returns
+    -------
+    Any
+        SQLAlchemy JSON object expression for author data.
+    """
+    return func.json_build_object(
+        "internal_id",
+        SqlAuthor.internal_id,
+        "surname",
+        SqlAuthor.surname,
+        "given_name",
+        SqlAuthor.given_name,
+        "orcid",
+        SqlAuthor.orcid,
+        "email",
+        SqlAuthor.email,
+        "notes",
+        SqlAuthor.notes,
+        "affiliations",
+        create_author_affiliations_subquery(),
+    )
 
 
 def create_affiliations_json_object() -> Any:
@@ -71,6 +100,37 @@ def create_affiliations_json_object() -> Any:
     )
 
 
+def create_author_affiliations_subquery() -> Any:
+    """Create a subquery for author affiliations as JSON array.
+
+    Returns
+    -------
+    Any
+        SQLAlchemy subquery expression for affiliations.
+    """
+    affiliations_subquery = (
+        select(
+            func.json_agg(
+                aggregate_order_by(
+                    create_affiliations_json_object().cast(JSONB),
+                    SqlAuthorAffiliation.position,
+                )
+            ).label("affiliations")
+        )
+        .select_from(SqlAffiliation)
+        .join(
+            SqlAuthorAffiliation,
+            SqlAffiliation.id == SqlAuthorAffiliation.affiliation_id,
+        )
+        .where(SqlAuthorAffiliation.author_id == SqlAuthor.id)
+    ).scalar_subquery()
+
+    return case(
+        (affiliations_subquery.is_(None), func.json_build_array()),
+        else_=affiliations_subquery,
+    )
+
+
 def create_author_with_affiliations_columns(
     author_table: type[SqlAuthor] | None = None,
 ) -> list:
@@ -92,22 +152,6 @@ def create_author_with_affiliations_columns(
     if author_table is None:
         author_table = SqlAuthor
 
-    # Subquery to get affiliations as a JSON array for this author
-    # Use PostgreSQL's json_agg with ORDER BY for proper ordering
-    affiliations_subquery = (
-        select(
-            func.json_agg(create_affiliations_json_object().cast(JSONB)).label(
-                "affiliations"
-            )
-        )
-        .select_from(SqlAffiliation)
-        .join(
-            SqlAuthorAffiliation,
-            SqlAffiliation.id == SqlAuthorAffiliation.affiliation_id,
-        )
-        .where(SqlAuthorAffiliation.author_id == author_table.id)
-    ).scalar_subquery()
-
     return [
         author_table.internal_id,
         author_table.surname,
@@ -115,10 +159,7 @@ def create_author_with_affiliations_columns(
         author_table.orcid,
         author_table.email,
         author_table.notes,
-        case(
-            (affiliations_subquery.is_(None), func.json_build_array()),
-            else_=affiliations_subquery,
-        ).label("affiliations"),
+        create_author_affiliations_subquery().label("affiliations"),
     ]
 
 

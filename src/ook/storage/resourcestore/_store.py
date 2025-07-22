@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Self, override
 
-from pydantic import AnyHttpUrl
 from safir.database import (
     CountedPaginatedList,
     CountedPaginatedQueryRunner,
@@ -16,8 +15,6 @@ from safir.datetime import current_datetime
 from sqlalchemy import Select, delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import async_scoped_session
-from sqlalchemy.orm import selectinload, with_polymorphic
-from sqlalchemy.orm.util import AliasedClass
 from structlog.stdlib import BoundLogger
 
 from ook.dbschema import Base
@@ -29,22 +26,17 @@ from ook.dbschema.resources import (
     SqlResource,
     SqlResourceRelation,
 )
-from ook.domain.authors import Author
 from ook.domain.resources import (
     Contributor,
-    ContributorRole,
     Document,
     ExternalReference,
     ExternalRelation,
-    RelationType,
     Resource,
-    ResourceClass,
     ResourceRelation,
-    ResourceType,
 )
 
-from ..authorstore import create_author_with_affiliations_columns
-from ._models import ResourceLoadOptions, ResourcePaginationModel
+from ._models import ResourcePaginationModel
+from ._queryutils import create_resource_with_relations_stmt
 
 __all__ = ["ResourceStore", "ResourcesCursor"]
 
@@ -63,64 +55,66 @@ class ResourceStore:
     async def get_resource_by_id(
         self,
         resource_id: int,
-        load_options: ResourceLoadOptions | None = None,
     ) -> Resource | None:
-        """Get a resource by its ID.
+        """Get a resource by its ID with all related data loaded.
 
         Parameters
         ----------
         resource_id
             The ID of the resource to retrieve.
-        load_options
-            Options for loading related data. Defaults to loading no related
-            data.
 
         Returns
         -------
         Resource or None
             The resource with the specified ID, or None if not found.
         """
-        if load_options is None:
-            load_options = ResourceLoadOptions.none()
+        stmt = create_resource_with_relations_stmt(resource_id)
+        result = (await self._session.execute(stmt)).first()
 
-        # Use polymorphic loading with explicit subclass inclusion to ensure
-        # child table data is eagerly loaded for joined table inheritance
-        # Add additional resource subclasses as they are needed, and keep in
-        # sync with get_resources.
-        poly_resource = self._create_poly_resource()
-        stmt = select(poly_resource).where(poly_resource.id == resource_id)
-
-        # Add eager loading for relationships as needed
-        if load_options.include_contributors:
-            # We'll load contributors separately using JSON aggregation
-            # to avoid async lazy loading issues
-            pass
-        if (
-            load_options.include_resource_relations
-            or load_options.include_external_relations
-        ):
-            stmt = stmt.options(
-                selectinload(poly_resource.relations).selectinload(
-                    SqlResourceRelation.related_external_reference
-                )
-            )
-
-        result = await self._session.execute(stmt)
-        sql_resource = result.scalar_one_or_none()
-
-        if sql_resource is None:
+        if result is None:
             return None
 
-        # Load contributors separately using JSON aggregation if needed
-        contributors_by_resource = {}
-        if load_options.include_contributors:
-            contributors_by_resource = (
-                await self._load_contributors_for_resources([resource_id])
-            )
-
-        return self._sql_to_domain(
-            sql_resource, load_options, contributors_by_resource
+        self._logger.debug(
+            "Fetched resource by ID",
+            resource_id=resource_id,
+            result=result,
         )
+
+        # Use Pydantic's from_attributes to directly validate the result
+        sql_resource = result[0]
+        contributors = result[1] if result[1] else []
+        resource_relations = result[2] if result[2] else []
+        external_relations = result[3] if result[3] else []
+
+        self._logger.debug(
+            "Resource query result",
+            sql_resource=sql_resource,
+            contributors_count=len(contributors),
+            contributors=contributors,
+            resource_relations_count=len(resource_relations),
+            external_relations_count=len(external_relations),
+        )
+
+        # Create a combined data structure for Pydantic validation
+        # First get all attributes from the base resource table
+        combined_data = {
+            key: value
+            for key, value in sql_resource.__dict__.items()
+            if not key.startswith("_")  # Skip private attributes
+        }
+        # Second, add the aggregated fields
+        combined_data.update(
+            {
+                "contributors": contributors,
+                "resource_relations": resource_relations,
+                "external_relations": external_relations,
+            }
+        )
+
+        if isinstance(sql_resource, SqlDocumentResource):
+            return Document.model_validate(combined_data, from_attributes=True)
+        else:
+            return Resource.model_validate(combined_data, from_attributes=True)
 
     async def get_resources(
         self,
@@ -176,225 +170,19 @@ class ResourceStore:
                 prev_cursor=paginated_basic.prev_cursor,
             )
 
-        # Use polymorphic loading for the full resource queries
-        poly_resource = self._create_poly_resource()
-        full_stmt = select(poly_resource).where(
-            poly_resource.id.in_(resource_ids)
-        )
-        result = await self._session.execute(full_stmt)
-        sql_resources = result.scalars().all()
-
-        # Maintain order from pagination
-        sql_resource_map = {r.id: r for r in sql_resources}
-        ordered_sql_resources = [
-            sql_resource_map[resource_id] for resource_id in resource_ids
-        ]
-
-        # Convert to domain models
-        # Don't attempt to load related data here; instead, use the
-        # core table data.
-        load_options = ResourceLoadOptions.none()
-        domain_resources = [
-            self._sql_to_domain(sql_resource, load_options, None)
-            for sql_resource in ordered_sql_resources
-        ]
+        # Fetch full resources with all related data for each ID
+        resources = []
+        for resource_id in resource_ids:
+            resource = await self.get_resource_by_id(resource_id)
+            if resource:
+                resources.append(resource)
 
         return CountedPaginatedList(
-            entries=domain_resources,
+            entries=resources,
             count=paginated_basic.count,
             next_cursor=paginated_basic.next_cursor,
             prev_cursor=paginated_basic.prev_cursor,
         )
-
-    def _create_poly_resource(self) -> AliasedClass[SqlResource]:
-        """Create a polymorphic resource class for SQLAlchemy.
-
-        This eaglerly loads columns from the resource subclasses in a regular
-        select query.
-
-        Add additional resource subclasses as they are developed.
-        """
-        return with_polymorphic(SqlResource, [SqlDocumentResource])
-
-    async def _load_contributors_for_resources(
-        self, resource_ids: list[int]
-    ) -> dict[int, list]:
-        """Load contributors for multiple resources using JSON aggregation.
-
-        This avoids the N+1 query problem and async lazy loading issues by
-        fetching all contributor data in a single query with JSON aggregation.
-
-        Parameters
-        ----------
-        resource_ids
-            List of resource IDs to load contributors for.
-
-        Returns
-        -------
-        dict[int, list]
-            Dictionary mapping resource_id to list of Contributor domain
-            objects.
-        """
-        if not resource_ids:
-            return {}
-
-        # Query to get all contributors with their authors and affiliations
-        # using JSON aggregation to avoid lazy loading
-        stmt = (
-            select(
-                SqlContributor.resource_id,
-                SqlContributor.order,
-                SqlContributor.role,
-                *create_author_with_affiliations_columns(SqlAuthor),
-            )
-            .select_from(SqlContributor)
-            .join(SqlAuthor, SqlContributor.author_id == SqlAuthor.id)
-            .where(SqlContributor.resource_id.in_(resource_ids))
-            .order_by(SqlContributor.resource_id, SqlContributor.order)
-        )
-
-        result = await self._session.execute(stmt)
-        rows = result.all()
-
-        # Group contributors by resource_id
-        contributors_by_resource: dict[int, list[Contributor]] = {}
-        for row in rows:
-            resource_id = row.resource_id
-            if resource_id not in contributors_by_resource:
-                contributors_by_resource[resource_id] = []
-
-            # Create Author domain object from the row data
-            author = Author.model_validate(row, from_attributes=True)
-
-            # Create Contributor domain object
-            # Find the enum member by its value since we store the enum value
-            # in DB
-            role = None
-            for member in ContributorRole:
-                if member.value == row.role:
-                    role = member
-                    break
-            if role is None:
-                # Fallback - try direct construction
-                role = ContributorRole(row.role)
-
-            contributor = Contributor(
-                resource_id=resource_id,
-                author=author,
-                role=role,
-                order=row.order,
-            )
-            contributors_by_resource[resource_id].append(contributor)
-
-        return contributors_by_resource
-
-    def _sql_to_domain(
-        self,
-        sql_resource: SqlResource,
-        load_options: ResourceLoadOptions,
-        contributors_by_resource: dict[int, list] | None = None,
-    ) -> Resource:
-        """Convert a SQLAlchemy resource model to a domain model.
-
-        Parameters
-        ----------
-        sql_resource
-            The SQLAlchemy resource model to convert.
-        load_options
-            Options for loading related data.
-
-        Returns
-        -------
-        Resource
-            The converted domain resource.
-        """
-        # Convert basic fields common to all resources
-        resource_type = (
-            ResourceType(sql_resource.type) if sql_resource.type else None
-        )
-
-        # Convert contributors if loaded
-        contributors = None
-        if load_options.include_contributors and contributors_by_resource:
-            contributors = contributors_by_resource.get(sql_resource.id, [])
-            self._logger.debug(
-                "Loaded contributors for resource",
-                resource_id=sql_resource.id,
-                load_options=load_options.asdict(),
-                contributor_count=len(contributors),
-            )
-
-        # Convert resource relations if loaded
-        resource_relations: list[ResourceRelation] | None = None
-        if load_options.include_resource_relations:
-            resource_relations = []
-            for relation in sql_resource.relations:
-                if relation.related_resource_id is not None:
-                    resource_relations.append(
-                        ResourceRelation(
-                            relation_type=RelationType(relation.relation_type),
-                            resource_id=relation.related_resource_id,
-                        )
-                    )
-
-        # Convert external relations if loaded
-        external_relations: list[ExternalRelation] | None = None
-        if load_options.include_external_relations:
-            external_relations = [
-                ExternalRelation(
-                    relation_type=RelationType(relation.relation_type),
-                    external_reference=ExternalReference.model_validate(
-                        relation.related_external_reference,
-                        from_attributes=True,
-                    ),
-                )
-                for relation in sql_resource.relations
-                if relation.related_external_ref_id is not None
-            ]
-
-        # Polymorphic conversion based on the actual SQL model type
-        if isinstance(sql_resource, SqlDocumentResource):
-            return Document(
-                id=sql_resource.id,
-                date_created=sql_resource.date_created,
-                date_updated=sql_resource.date_updated,
-                title=sql_resource.title,
-                description=sql_resource.description,
-                url=AnyHttpUrl(sql_resource.url) if sql_resource.url else None,
-                doi=sql_resource.doi,
-                date_resource_published=sql_resource.date_resource_published,
-                date_resource_updated=sql_resource.date_resource_updated,
-                version=sql_resource.version,
-                type=resource_type,
-                series=sql_resource.series,
-                handle=sql_resource.handle,
-                generator=sql_resource.generator,
-                contributors=contributors,
-                resource_relations=resource_relations,
-                external_relations=external_relations,
-            )
-        else:
-            # Generic resource
-            resource_class = ResourceClass(
-                sql_resource.resource_class or "generic"
-            )
-            return Resource(
-                id=sql_resource.id,
-                resource_class=resource_class,
-                date_created=sql_resource.date_created,
-                date_updated=sql_resource.date_updated,
-                title=sql_resource.title,
-                description=sql_resource.description,
-                url=AnyHttpUrl(sql_resource.url) if sql_resource.url else None,
-                doi=sql_resource.doi,
-                date_resource_published=sql_resource.date_resource_published,
-                date_resource_updated=sql_resource.date_resource_updated,
-                version=sql_resource.version,
-                type=resource_type,
-                contributors=contributors,
-                resource_relations=resource_relations,
-                external_relations=external_relations,
-            )
 
     async def upsert_document(
         self,

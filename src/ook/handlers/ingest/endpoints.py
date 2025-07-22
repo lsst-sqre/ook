@@ -152,7 +152,9 @@ async def post_ingest_documents(
     # fields populated
     retrieved_documents = []
     for document in documents:
-        retrieved_doc = await resource_service.get_resource_by_id(document.id)
+        retrieved_doc = await resource_service.get_resource_by_id(
+            document.id,
+        )
         if retrieved_doc is not None:
             if not isinstance(retrieved_doc, Document):
                 logger.warning(

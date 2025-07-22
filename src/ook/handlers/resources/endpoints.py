@@ -10,7 +10,6 @@ from ook.dependencies.context import RequestContext, context_dependency
 from ook.domain.base32id import Base32Id
 from ook.domain.resources import Document, Resource
 from ook.exceptions import NotFoundError
-from ook.storage.resourcestore import ResourceLoadOptions
 
 router = APIRouter(
     prefix=f"{config.path_prefix}/resources",
@@ -41,12 +40,9 @@ async def get_resource_by_id(
     of Resource (e.g., Document). The response will include the appropriate
     resource_class field to indicate the specific type.
     """
-    load_options = ResourceLoadOptions.all()
     async with context.session.begin():
         resource_service = context.factory.create_resource_service()
-        resource = await resource_service.get_resource_by_id(
-            id, load_options=load_options
-        )
+        resource = await resource_service.get_resource_by_id(id)
         if resource is None:
             raise NotFoundError(
                 message=f"Resource {id!r} not found",

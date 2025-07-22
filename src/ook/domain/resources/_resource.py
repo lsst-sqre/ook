@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import AnyHttpUrl, BaseModel, Field
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field
 
 from ..base32id import Base32Id
 from ._class import ResourceClass
@@ -25,6 +25,8 @@ __all__ = [
 
 class Resource(BaseModel):
     """A base class for bibliographic resources."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[Base32Id, Field(description="Resource identifier.")]
 
@@ -113,36 +115,32 @@ class Resource(BaseModel):
     ] = None
 
     contributors: Annotated[
-        list[Contributor] | None,
+        list[Contributor],
         Field(
             description=(
                 "List of contributors to the resource. Contributors of "
-                "type `Creator` are considered the authors of the resource. "
-                "May be None if not loaded from storage."
+                "type `Creator` are considered the authors of the resource."
             ),
-            default=None,
+            default_factory=list,
         ),
     ]
 
     resource_relations: Annotated[
-        list[ResourceRelation] | None,
+        list[ResourceRelation],
         Field(
-            description=(
-                "List of relations to other internal Ook resources. "
-                "May be None if not loaded from storage."
-            ),
-            default=None,
+            description="List of relations to other internal Ook resources.",
+            default_factory=list,
         ),
     ]
 
     external_relations: Annotated[
-        list[ExternalRelation] | None,
+        list[ExternalRelation],
         Field(
             description=(
                 "List of relations to external resources not in the Ook "
-                "database. May be None if not loaded from storage."
+                "database."
             ),
-            default=None,
+            default_factory=list,
         ),
     ]
 

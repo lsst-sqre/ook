@@ -37,8 +37,11 @@ async def ingest_lsst_texmf(
     """
     mock_github.mock_lsst_texmf_ingest()
 
-    # Ingest the lsst/lsst-texmf repo (authordb.yaml and glossary)
-    response = await client.post("/ook/ingest/lsst-texmf", json={})
+    # Ingest the lsst/lsst-texmf repo to bootstrap from authordb.yaml
+    response = await client.post(
+        "/ook/ingest/lsst-texmf",
+        json={"ingest_authordb": True, "ingest_glossary": False},
+    )
     assert response.status_code == 200
 
 

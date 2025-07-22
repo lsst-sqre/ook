@@ -6,11 +6,7 @@ from safir.database import CountedPaginatedList
 from structlog.stdlib import BoundLogger
 
 from ook.domain.resources import Document, Resource
-from ook.storage.resourcestore import (
-    ResourceLoadOptions,
-    ResourcesCursor,
-    ResourceStore,
-)
+from ook.storage.resourcestore import ResourcesCursor, ResourceStore
 
 __all__ = ["ResourceService"]
 
@@ -35,8 +31,6 @@ class ResourceService:
     async def get_resource_by_id(
         self,
         resource_id: int,
-        *,
-        load_options: ResourceLoadOptions | None = None,
     ) -> Resource | None:
         """Get a resource by its ID.
 
@@ -44,18 +38,13 @@ class ResourceService:
         ----------
         resource_id
             The ID of the resource to retrieve.
-        load_options
-            Options for loading related data. Defaults to loading no related
-            data.
 
         Returns
         -------
         Resource or None
             The resource with the specified ID, or None if not found.
         """
-        return await self._resource_store.get_resource_by_id(
-            resource_id, load_options
-        )
+        return await self._resource_store.get_resource_by_id(resource_id)
 
     async def get_resources(
         self,
