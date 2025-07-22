@@ -29,9 +29,12 @@ from ook.dbschema.resources import (
     SqlResource,
     SqlResourceRelation,
 )
+from ook.domain.authors import Author
 from ook.domain.resources import (
     Contributor,
+    ContributorRole,
     Document,
+    ExternalReference,
     ExternalRelation,
     RelationType,
     Resource,
@@ -39,9 +42,8 @@ from ook.domain.resources import (
     ResourceRelation,
     ResourceType,
 )
-from ook.domain.resources._externalref import ExternalReference
-from ook.storage._author_queries import load_contributors_for_resources
 
+from ..authorstore import create_author_with_affiliations_columns
 from ._models import ResourceLoadOptions, ResourcePaginationModel
 
 __all__ = ["ResourceStore", "ResourcesCursor"]
@@ -112,8 +114,8 @@ class ResourceStore:
         # Load contributors separately using JSON aggregation if needed
         contributors_by_resource = {}
         if load_options.include_contributors:
-            contributors_by_resource = await load_contributors_for_resources(
-                self._session, [resource_id]
+            contributors_by_resource = (
+                await self._load_contributors_for_resources([resource_id])
             )
 
         return self._sql_to_domain(
@@ -213,6 +215,78 @@ class ResourceStore:
         Add additional resource subclasses as they are developed.
         """
         return with_polymorphic(SqlResource, [SqlDocumentResource])
+
+    async def _load_contributors_for_resources(
+        self, resource_ids: list[int]
+    ) -> dict[int, list]:
+        """Load contributors for multiple resources using JSON aggregation.
+
+        This avoids the N+1 query problem and async lazy loading issues by
+        fetching all contributor data in a single query with JSON aggregation.
+
+        Parameters
+        ----------
+        resource_ids
+            List of resource IDs to load contributors for.
+
+        Returns
+        -------
+        dict[int, list]
+            Dictionary mapping resource_id to list of Contributor domain
+            objects.
+        """
+        if not resource_ids:
+            return {}
+
+        # Query to get all contributors with their authors and affiliations
+        # using JSON aggregation to avoid lazy loading
+        stmt = (
+            select(
+                SqlContributor.resource_id,
+                SqlContributor.order,
+                SqlContributor.role,
+                *create_author_with_affiliations_columns(SqlAuthor),
+            )
+            .select_from(SqlContributor)
+            .join(SqlAuthor, SqlContributor.author_id == SqlAuthor.id)
+            .where(SqlContributor.resource_id.in_(resource_ids))
+            .order_by(SqlContributor.resource_id, SqlContributor.order)
+        )
+
+        result = await self._session.execute(stmt)
+        rows = result.all()
+
+        # Group contributors by resource_id
+        contributors_by_resource: dict[int, list[Contributor]] = {}
+        for row in rows:
+            resource_id = row.resource_id
+            if resource_id not in contributors_by_resource:
+                contributors_by_resource[resource_id] = []
+
+            # Create Author domain object from the row data
+            author = Author.model_validate(row, from_attributes=True)
+
+            # Create Contributor domain object
+            # Find the enum member by its value since we store the enum value
+            # in DB
+            role = None
+            for member in ContributorRole:
+                if member.value == row.role:
+                    role = member
+                    break
+            if role is None:
+                # Fallback - try direct construction
+                role = ContributorRole(row.role)
+
+            contributor = Contributor(
+                resource_id=resource_id,
+                author=author,
+                role=role,
+                order=row.order,
+            )
+            contributors_by_resource[resource_id].append(contributor)
+
+        return contributors_by_resource
 
     def _sql_to_domain(
         self,

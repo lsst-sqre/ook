@@ -24,10 +24,7 @@ from ook.dbschema.authors import (
 )
 from ook.domain.authors import Affiliation, Author
 
-from ._author_queries import (
-    create_all_authors_stmt,
-    create_author_by_internal_id_stmt,
-)
+from ._query import create_all_authors_stmt, create_author_by_internal_id_stmt
 
 __all__ = ["AuthorStore"]
 

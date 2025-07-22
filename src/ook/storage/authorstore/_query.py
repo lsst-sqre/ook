@@ -6,23 +6,18 @@ from typing import Any
 
 from sqlalchemy import Select, case, func, select
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.ext.asyncio import async_scoped_session
 
 from ook.dbschema.authors import (
     SqlAffiliation,
     SqlAuthor,
     SqlAuthorAffiliation,
 )
-from ook.dbschema.resources import SqlContributor
-from ook.domain.authors import Author
-from ook.domain.resources import Contributor, ContributorRole
 
 __all__ = [
     "create_affiliations_json_object",
     "create_all_authors_stmt",
     "create_author_by_internal_id_stmt",
     "create_author_with_affiliations_columns",
-    "load_contributors_for_resources",
 ]
 
 
@@ -145,7 +140,7 @@ def create_author_by_internal_id_stmt(internal_id: str) -> Select:
 
 
 def create_all_authors_stmt() -> Select:
-    """Create a complete statement to get all authors with affiliations.
+    """Create a select statement to get all authors with affiliations.
 
     Returns
     -------
@@ -200,76 +195,3 @@ def create_all_authors_stmt() -> Select:
             isouter=True,
         )
     )
-
-
-async def load_contributors_for_resources(
-    session: async_scoped_session, resource_ids: list[int]
-) -> dict[int, list]:
-    """Load contributors for multiple resources using JSON aggregation.
-
-    This avoids the N+1 query problem and async lazy loading issues by
-    fetching all contributor data in a single query with JSON aggregation.
-
-    Parameters
-    ----------
-    session
-        The SQLAlchemy async session.
-    resource_ids
-        List of resource IDs to load contributors for.
-
-    Returns
-    -------
-    dict[int, list]
-        Dictionary mapping resource_id to list of Contributor domain objects.
-    """
-    if not resource_ids:
-        return {}
-
-    # Query to get all contributors with their authors and affiliations
-    # using JSON aggregation to avoid lazy loading
-    stmt = (
-        select(
-            SqlContributor.resource_id,
-            SqlContributor.order,
-            SqlContributor.role,
-            *create_author_with_affiliations_columns(SqlAuthor),
-        )
-        .select_from(SqlContributor)
-        .join(SqlAuthor, SqlContributor.author_id == SqlAuthor.id)
-        .where(SqlContributor.resource_id.in_(resource_ids))
-        .order_by(SqlContributor.resource_id, SqlContributor.order)
-    )
-
-    result = await session.execute(stmt)
-    rows = result.all()
-
-    # Group contributors by resource_id
-    contributors_by_resource: dict[int, list[Contributor]] = {}
-    for row in rows:
-        resource_id = row.resource_id
-        if resource_id not in contributors_by_resource:
-            contributors_by_resource[resource_id] = []
-
-        # Create Author domain object from the row data
-        author = Author.model_validate(row, from_attributes=True)
-
-        # Create Contributor domain object
-        # Find the enum member by its value since we store the enum value in DB
-        role = None
-        for member in ContributorRole:
-            if member.value == row.role:
-                role = member
-                break
-        if role is None:
-            # Fallback - try direct construction
-            role = ContributorRole(row.role)
-
-        contributor = Contributor(
-            resource_id=resource_id,
-            author=author,
-            role=role,
-            order=row.order,
-        )
-        contributors_by_resource[resource_id].append(contributor)
-
-    return contributors_by_resource
