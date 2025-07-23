@@ -8,8 +8,13 @@ from safir.models import ErrorModel
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 from ook.domain.base32id import Base32Id
-from ook.domain.resources import Document, Resource
 from ook.exceptions import NotFoundError
+
+from .models import (
+    DocumentResource,
+    GenericResource,
+    create_resource_from_domain,
+)
 
 router = APIRouter(
     prefix=f"{config.path_prefix}/resources",
@@ -33,7 +38,7 @@ async def get_resource_by_id(
         ),
     ],
     context: Annotated[RequestContext, Depends(context_dependency)],
-) -> Resource | Document:
+) -> GenericResource | DocumentResource:
     """Get a resource by its ID.
 
     Returns the resource with the specified ID, which can be any subclass
@@ -47,4 +52,4 @@ async def get_resource_by_id(
             raise NotFoundError(
                 message=f"Resource {id!r} not found",
             )
-        return resource
+        return create_resource_from_domain(resource, request=context.request)

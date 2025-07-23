@@ -9,6 +9,7 @@ from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 from ook.domain.resources import Document
 
+from ..resources.models import DocumentResource
 from .models import (
     DocumentIngestRequest,
     LsstTexmfIngestRequest,
@@ -117,7 +118,7 @@ async def post_ingest_lsst_texmf(
 async def post_ingest_documents(
     ingest_request: DocumentIngestRequest,
     context: Annotated[RequestContext, Depends(context_dependency)],
-) -> list[Document]:
+) -> list[DocumentResource]:
     """Ingest document resources into the bibliography database.
 
     This endpoint accepts a list of documents to ingest. Each document
@@ -175,4 +176,7 @@ async def post_ingest_documents(
         ingested_count=len(retrieved_documents),
     )
 
-    return retrieved_documents
+    return [
+        DocumentResource.from_domain(doc, request=context.request)
+        for doc in retrieved_documents
+    ]

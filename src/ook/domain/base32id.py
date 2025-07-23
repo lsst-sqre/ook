@@ -35,13 +35,23 @@ import base32_lib
 from pydantic import PlainSerializer, PlainValidator
 
 __all__ = [
+    "BASE32_ID_LENGTH",
+    "BASE32_ID_SPLIT_EVERY",
     "Base32Id",
     "Base32IdNoHyphens",
     "Base32IdShort",
     "generate_base32_id",
     "serialize_base32_id",
+    "serialize_ook_base32_id",
     "validate_base32_id",
 ]
+
+# Constants for Base32Id formatting to ensure consistency
+BASE32_ID_LENGTH = 12
+"""Default length for Base32Id before checksum."""
+
+BASE32_ID_SPLIT_EVERY = 4
+"""Default number of characters between hyphens for Base32Id."""
 
 
 def validate_base32_id(value: Any) -> int:
@@ -115,11 +125,21 @@ def serialize_base32_id(
     return encoded
 
 
+def serialize_ook_base32_id(
+    value: int,
+    *,
+    split_every: int = BASE32_ID_SPLIT_EVERY,
+    length: int = BASE32_ID_LENGTH,
+) -> str:
+    """Serialize a `Base32Id` to a string following Ook's conventions."""
+    return serialize_base32_id(value, split_every=split_every, length=length)
+
+
 type Base32Id = Annotated[
     int,
     PlainValidator(validate_base32_id),
     PlainSerializer(
-        lambda value: serialize_base32_id(value, split_every=4, length=12),
+        lambda value: serialize_ook_base32_id(value),
         return_type=str,
         when_used="json",
     ),

@@ -121,41 +121,43 @@ async def test_get_resource_by_id(
     assert retrieved_doc["generator"] == "Documenteer 2.0.0"
     assert retrieved_doc["resource_class"] == "document"
 
-    # Verify timestamps are present
-    assert "date_created" in retrieved_doc
+    # Verify timestamps are present in new schema format
+    assert "date_published" in retrieved_doc
     assert "date_updated" in retrieved_doc
-    assert "date_resource_published" in retrieved_doc
-    assert "date_resource_updated" in retrieved_doc
+    assert "metadata" in retrieved_doc
+    assert "date_created" in retrieved_doc["metadata"]
+    assert "date_updated" in retrieved_doc["metadata"]
 
-    # Verify contributors match
-    assert retrieved_doc["contributors"] is not None
-    assert len(retrieved_doc["contributors"]) == 2
+    # Verify self_url is present
+    assert "self_url" in retrieved_doc
+    assert f"/ook/resources/{document_id}" in retrieved_doc["self_url"]
 
-    # Find the creator and editor in the retrieved document
-    retrieved_creator = next(
-        c for c in retrieved_doc["contributors"] if c["role"] == "Creator"
-    )
-    retrieved_editor = next(
-        c for c in retrieved_doc["contributors"] if c["role"] == "Editor"
-    )
+    # Verify contributors match new schema (creators separate from others)
+    assert "creators" in retrieved_doc
+    assert "contributors" in retrieved_doc
+    assert len(retrieved_doc["creators"]) == 1  # One creator
 
     # Verify creator details match
-    assert retrieved_creator["author"]["surname"] == "Economou"
-    assert retrieved_creator["author"]["given_name"] == "Frossie"
+    retrieved_creator = retrieved_doc["creators"][0]
+    assert retrieved_creator["family_name"] == "Economou"
+    assert retrieved_creator["given_name"] == "Frossie"
     # TODO(jonathansick) This is the ORCID ID not URL because we're returning
     # the Author domain object directly.
-    assert retrieved_creator["author"]["orcid"] == "0000-0002-8333-7615"
     assert (
-        retrieved_creator["author"]["affiliations"][0]["internal_id"]
-        == "RubinObs"
+        retrieved_creator["orcid"] == "https://orcid.org/0000-0002-8333-7615"
     )
+    assert retrieved_creator["affiliations"][0]["internal_id"] == "RubinObs"
 
-    # Verify editor details match
-    assert retrieved_editor["author"]["surname"] == "Sick"
-    assert retrieved_editor["author"]["given_name"] == "Jonathan"
+    # Verify editor is in contributors dict under Editor role
+    assert "Editor" in retrieved_doc["contributors"]
+    assert len(retrieved_doc["contributors"]["Editor"]) == 1
+
+    retrieved_editor = retrieved_doc["contributors"]["Editor"][0]
+    assert retrieved_editor["family_name"] == "Sick"
+    assert retrieved_editor["given_name"] == "Jonathan"
     # TODO(jonathansick) This is the ORCID ID not URL because we're returning
     # the Author domain object directly.
-    assert retrieved_editor["author"]["orcid"] == "0000-0003-3001-676X"
+    assert retrieved_editor["orcid"] == "https://orcid.org/0000-0003-3001-676X"
 
 
 @pytest.mark.asyncio
