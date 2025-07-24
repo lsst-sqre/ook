@@ -74,6 +74,11 @@ def create_resource_with_relations_stmt(resource_id: int) -> Select:
         .where(SqlContributor.resource_id == resource_id)
     ).scalar_subquery()
 
+    # Create an alias for the related resource to avoid naming conflicts
+    RelatedSqlResource = with_polymorphic(  # noqa: N806
+        SqlResource, [SqlDocumentResource], aliased=True
+    )
+
     resource_relations_subquery = (
         select(
             func.coalesce(
@@ -81,14 +86,29 @@ def create_resource_with_relations_stmt(resource_id: int) -> Select:
                     func.json_build_object(
                         "relation_type",
                         SqlResourceRelation.relation_type,
-                        "resource_id",
-                        SqlResourceRelation.related_resource_id,
+                        "resource",
+                        func.json_build_object(
+                            "id",
+                            RelatedSqlResource.id,
+                            "title",
+                            RelatedSqlResource.title,
+                            "description",
+                            RelatedSqlResource.description,
+                            "url",
+                            RelatedSqlResource.url,
+                            "doi",
+                            RelatedSqlResource.doi,
+                        ),
                     )
                 ),
                 func.json_build_array(),
             ).label("resource_relations")
         )
         .select_from(SqlResourceRelation)
+        .join(
+            RelatedSqlResource,
+            SqlResourceRelation.related_resource_id == RelatedSqlResource.id,
+        )
         .where(
             (SqlResourceRelation.source_resource_id == resource_id)
             & (SqlResourceRelation.related_resource_id.is_not(None))

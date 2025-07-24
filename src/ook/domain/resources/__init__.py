@@ -9,7 +9,14 @@ from ._externalref import (
     ExternalReference,
 )
 from ._relation import RelationType
-from ._resource import ExternalRelation, Resource, ResourceRelation
+from ._resource import (
+    ExternalRelation,
+    RelatedExternalReference,
+    RelatedResourceSummary,
+    Resource,
+    ResourceRelation,
+    ResourceSummary,
+)
 from ._type import ResourceType
 
 __all__ = [
@@ -20,9 +27,12 @@ __all__ = [
     "ExternalContributorAffiliation",
     "ExternalReference",
     "ExternalRelation",
+    "RelatedExternalReference",
+    "RelatedResourceSummary",
     "RelationType",
     "Resource",
     "ResourceClass",
     "ResourceRelation",
+    "ResourceSummary",
     "ResourceType",
 ]

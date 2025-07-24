@@ -3,17 +3,134 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Literal, Self
 
 from fastapi import Request
 from pydantic import AnyHttpUrl, BaseModel, Field
 
 from ook.domain.base32id import Base32Id, serialize_ook_base32_id
-from ook.domain.resources import ContributorRole, ResourceClass, ResourceType
+from ook.domain.resources import (
+    ContributorRole,
+    ExternalReference,
+    RelatedExternalReference,
+    RelatedResourceSummary,
+    RelationType,
+    ResourceClass,
+    ResourceSummary,
+    ResourceType,
+)
 from ook.domain.resources import Document as DocumentDomain
 from ook.domain.resources import Resource as ResourceDomain
 
 from ..authors.models import Author
+
+
+class ResourceSummaryAPI(BaseModel):
+    """A summary representation of a resource for API responses."""
+
+    id: Annotated[Base32Id, Field(description="Resource identifier.")]
+
+    title: Annotated[
+        str,
+        Field(
+            description="Title of the resource. Should be plain text.",
+            examples=["My Resource"],
+        ),
+    ]
+
+    description: Annotated[
+        str | None, Field(description="Description as plain text or Markdown.")
+    ] = None
+
+    url: Annotated[AnyHttpUrl | None, Field(description="Resource URL")] = None
+
+    doi: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Digital Object Identifier (DOI) for the resource, if "
+                "available."
+            ),
+            examples=["10.1000/xyz123", "10.1109/5.771073"],
+        ),
+    ] = None
+
+    self_url: Annotated[
+        str,
+        Field(description=("URL to access this resource record in the API")),
+    ]
+
+    @classmethod
+    def from_domain(
+        cls, resource: ResourceSummary, request: Request
+    ) -> ResourceSummaryAPI:
+        """Create a ResourceSummaryAPI from a domain ResourceSummary."""
+        return cls(
+            id=resource.id,
+            title=resource.title,
+            description=resource.description,
+            url=resource.url,
+            doi=resource.doi,
+            self_url=str(
+                request.url_for(
+                    "get_resource_by_id",
+                    id=serialize_ook_base32_id(resource.id),
+                )
+            ),
+        )
+
+
+class RelatedResourceAPI(BaseModel):
+    """A related resource in the API response."""
+
+    relation_type: Annotated[
+        RelationType,
+        Field(
+            description="Type of the relation between resources.",
+            examples=["IsCitedBy", "Cites", "IsPartOf"],
+        ),
+    ]
+
+    resource_type: Annotated[
+        Literal["resource", "external"],
+        Field(
+            description="Type of the related resource, either 'resource' for "
+            "internal resources or 'external' for external references.",
+            examples=["resource", "external"],
+        ),
+    ]
+
+    resource: Annotated[
+        ResourceSummaryAPI | ExternalReference,
+        Field(
+            description=(
+                "The related resource. Internal resources are provided as "
+                "summaries, while external resources include full metadata."
+            )
+        ),
+    ]
+
+    @classmethod
+    def from_domain(
+        cls,
+        related: RelatedResourceSummary | RelatedExternalReference,
+        request: Request,
+    ) -> RelatedResourceAPI:
+        """Create a RelatedResourceAPI from domain models."""
+        if isinstance(related, RelatedResourceSummary):
+            return cls(
+                relation_type=related.relation_type,
+                resource_type="resource",
+                resource=ResourceSummaryAPI.from_domain(
+                    related.resource, request
+                ),
+            )
+        else:  # RelatedExternalReference
+            return cls(
+                relation_type=related.relation_type,
+                resource_type="external",
+                resource=related.external_reference,
+            )
 
 
 class ResourceMetadata(BaseModel):
@@ -127,6 +244,18 @@ class GenericResource[ResourceDomainT: ResourceDomain](BaseModel):
         ),
     ]
 
+    related: Annotated[
+        list[RelatedResourceAPI],
+        Field(
+            description=(
+                "Related resources with their relation types. Internal "
+                "resources are provided as summaries to avoid recursive "
+                "loading, while external resources include full metadata."
+            ),
+            default_factory=list,
+        ),
+    ]
+
     @classmethod
     def from_domain(cls, resource: ResourceDomainT, request: Request) -> Self:
         """Create a `GenericResource` from a `ResourceDomain`."""
@@ -161,6 +290,12 @@ class GenericResource[ResourceDomainT: ResourceDomain](BaseModel):
             for role in roles
         }
 
+        # Convert related resources to API format
+        related = [
+            RelatedResourceAPI.from_domain(rel, request)
+            for rel in resource.related_resources
+        ]
+
         return {
             "id": resource.id,
             "resource_class": resource.resource_class,
@@ -186,6 +321,7 @@ class GenericResource[ResourceDomainT: ResourceDomain](BaseModel):
             ),
             "creators": creators,
             "contributors": contributors,
+            "related": related,
         }
 
 

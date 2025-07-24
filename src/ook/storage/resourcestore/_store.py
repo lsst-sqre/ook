@@ -31,8 +31,11 @@ from ook.domain.resources import (
     Document,
     ExternalReference,
     ExternalRelation,
+    RelatedExternalReference,
+    RelatedResourceSummary,
     Resource,
     ResourceRelation,
+    ResourceSummary,
 )
 
 from ._models import ResourcePaginationModel
@@ -83,7 +86,7 @@ class ResourceStore:
         # Use Pydantic's from_attributes to directly validate the result
         sql_resource = result[0]
         contributors = result[1] if result[1] else []
-        resource_relations = result[2] if result[2] else []
+        resource_relations_json = result[2] if result[2] else []
         external_relations = result[3] if result[3] else []
 
         self._logger.debug(
@@ -91,9 +94,40 @@ class ResourceStore:
             sql_resource=sql_resource,
             contributors_count=len(contributors),
             contributors=contributors,
-            resource_relations_count=len(resource_relations),
+            resource_relations_count=len(resource_relations_json),
             external_relations_count=len(external_relations),
         )
+
+        # Process related resources for the API response format
+        related_resources: list[
+            RelatedResourceSummary | RelatedExternalReference
+        ] = []
+
+        # Process internal resource relations
+        for rel_data in resource_relations_json:
+            resource_summary = ResourceSummary.model_validate(
+                rel_data["resource"]
+            )
+            related_resource = RelatedResourceSummary(
+                relation_type=rel_data["relation_type"],
+                resource=resource_summary,
+            )
+            related_resources.append(related_resource)
+
+        # Process external relations
+        for ext_rel in external_relations:
+            related_external = RelatedExternalReference.model_validate(ext_rel)
+            related_resources.append(related_external)
+
+        # Create resource_relations and external_relations for
+        # backward compatibility
+        resource_relations = [
+            ResourceRelation(
+                relation_type=rel_data["relation_type"],
+                resource_id=rel_data["resource"]["id"],
+            )
+            for rel_data in resource_relations_json
+        ]
 
         # Create a combined data structure for Pydantic validation
         # First get all attributes from the base resource table
@@ -108,6 +142,7 @@ class ResourceStore:
                 "contributors": contributors,
                 "resource_relations": resource_relations,
                 "external_relations": external_relations,
+                "related_resources": related_resources,
             }
         )
 

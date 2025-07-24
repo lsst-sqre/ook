@@ -17,9 +17,11 @@ __all__ = [
     "RelatedExternalReference",
     "RelatedResource",
     "RelatedResourceBase",
-    "RelatedResourceUnion",
+    "RelatedResourceSummary",
+    "RelatedResourceSummaryUnion",
     "Resource",
     "ResourceRelation",
+    "ResourceSummary",
 ]
 
 
@@ -144,6 +146,55 @@ class Resource(BaseModel):
         ),
     ]
 
+    related_resources: Annotated[
+        list[RelatedResourceSummary | RelatedExternalReference],
+        Field(
+            description=(
+                "List of related resources with their relation types. "
+                "Internal resources are represented as summaries, while "
+                "external resources include full metadata."
+            ),
+            default_factory=list,
+        ),
+    ]
+
+
+class ResourceSummary(BaseModel):
+    """A summary representation of a resource with core metadata only.
+
+    This model is used for related resources to avoid recursive loading
+    of full resource details.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: Annotated[Base32Id, Field(description="Resource identifier.")]
+
+    title: Annotated[
+        str,
+        Field(
+            description="Title of the resource. Should be plain text.",
+            examples=["My Resource"],
+        ),
+    ]
+
+    description: Annotated[
+        str | None, Field(description="Description as plain text or Markdown.")
+    ] = None
+
+    url: Annotated[AnyHttpUrl | None, Field(description="Resource URL")] = None
+
+    doi: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Digital Object Identifier (DOI) for the resource, if "
+                "available."
+            ),
+            examples=["10.1000/xyz123", "10.1109/5.771073"],
+        ),
+    ] = None
+
 
 class RelatedResourceBase(BaseModel):
     """Base class for related resources."""
@@ -179,6 +230,21 @@ class RelatedExternalReference(RelatedResourceBase):
                 "database."
             )
         ),
+    ]
+
+
+class RelatedResourceSummary(RelatedResourceBase):
+    """A related resource summary for internal Ook resources.
+
+    This model uses ResourceSummary instead of the full Resource model
+    to avoid recursive loading of related resources.
+    """
+
+    type: Literal["resource_summary"] = "resource_summary"
+
+    resource: Annotated[
+        ResourceSummary,
+        Field(description="Summary of the related internal resource."),
     ]
 
 
@@ -222,9 +288,9 @@ class ExternalRelation(BaseModel):
     ]
 
 
-# Union type with discriminator
-RelatedResourceUnion = Annotated[
-    RelatedResource | RelatedExternalReference,
+# Union type for API responses with summary resources
+RelatedResourceSummaryUnion = Annotated[
+    RelatedResourceSummary | RelatedExternalReference,
     Field(discriminator="type"),
 ]
 """Union type for related resources, which can be either internal resources

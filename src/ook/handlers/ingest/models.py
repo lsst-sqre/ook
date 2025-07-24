@@ -166,6 +166,7 @@ class DocumentRequest(BaseModel):
             contributors=self.contributors,
             resource_relations=self.resource_relations,
             external_relations=self.external_relations,
+            related_resources=[],  # Empty for ingested documents
         )
 
 
