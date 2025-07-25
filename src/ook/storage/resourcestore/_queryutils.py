@@ -38,8 +38,6 @@ def create_resource_with_relations_stmt(resource_id: int) -> Select:
                 func.json_agg(
                     aggregate_order_by(
                         func.json_build_object(
-                            "resource_id",
-                            SqlContributor.resource_id,
                             "author",
                             # Use author columns directly and construct JSON
                             func.json_build_object(

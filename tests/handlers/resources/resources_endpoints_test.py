@@ -61,13 +61,11 @@ async def test_get_resource_by_id(
                 "generator": "Documenteer 2.0.0",
                 "contributors": [
                     {
-                        "resource_id": 0,  # Will be updated after creation
                         "author": author1.model_dump(),
                         "role": "Creator",
                         "order": 1,
                     },
                     {
-                        "resource_id": 0,  # Will be updated after creation
                         "author": author2.model_dump(),
                         "role": "Editor",
                         "order": 2,
@@ -212,7 +210,6 @@ async def test_get_resource_with_related_resources(
                 "generator": "Documenteer 2.0.0",
                 "contributors": [
                     {
-                        "resource_id": 0,  # Will be updated after creation
                         "author": author2.model_dump(),
                         "role": "Creator",
                         "order": 1,
@@ -250,7 +247,6 @@ async def test_get_resource_with_related_resources(
                 "generator": "Documenteer 2.0.0",
                 "contributors": [
                     {
-                        "resource_id": 0,  # Will be updated after creation
                         "author": author1.model_dump(),
                         "role": "Creator",
                         "order": 1,

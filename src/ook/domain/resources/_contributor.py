@@ -6,7 +6,6 @@ from typing import Annotated
 from pydantic import BaseModel, Field
 
 from ..authors import Author
-from ..base32id import Base32Id
 
 __all__ = [
     "Contributor",
@@ -58,9 +57,6 @@ class Contributor(BaseModel):
 
     Contributors are authors who have a specific role in the resource.
     """
-
-    # TODO(jonathansick): is this neceessary?
-    resource_id: Annotated[Base32Id, Field(description="Resource identifier.")]
 
     author: Annotated[
         Author,
