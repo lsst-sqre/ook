@@ -123,19 +123,29 @@ class SqlExternalReference(Base):
     url: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
     """URL of the external resource."""
 
-    doi: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
+    doi: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True, unique=True
+    )
     """Digital Object Identifier (DOI) of the external resource."""
 
-    arxiv_id: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
+    arxiv_id: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True, unique=True
+    )
     """arXiv identifier of the external resource."""
 
-    isbn: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
+    isbn: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True, unique=True
+    )
     """International Standard Book Number (ISBN) of the external resource."""
 
-    issn: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
+    issn: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True, unique=True
+    )
     """International Standard Serial Number (ISSN) of the external resource."""
 
-    ads_bibcode: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
+    ads_bibcode: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True, unique=True
+    )
     """Astrophysics Data System (ADS) Bibcode of the external resource."""
 
     type: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)

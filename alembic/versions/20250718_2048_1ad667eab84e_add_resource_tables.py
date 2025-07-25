@@ -41,6 +41,11 @@ def upgrade() -> None:
         sa.Column("edition", sa.UnicodeText(), nullable=True),
         sa.Column("contributors", sa.JSON(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("doi"),
+        sa.UniqueConstraint("arxiv_id"),
+        sa.UniqueConstraint("isbn"),
+        sa.UniqueConstraint("issn"),
+        sa.UniqueConstraint("ads_bibcode"),
     )
     op.create_table(
         "resource",
