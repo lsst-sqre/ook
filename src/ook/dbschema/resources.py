@@ -335,16 +335,10 @@ class SqlDocumentResource(SqlResource):
     series: Mapped[str] = mapped_column(UnicodeText, nullable=False)
     """Series name of the document (e.g., "DMTN", "LDM")."""
 
-    handle: Mapped[str] = mapped_column(UnicodeText, nullable=False)
-    """Handle identifier (e.g., "031")."""
+    handle: Mapped[str] = mapped_column(
+        UnicodeText, nullable=False, unique=True
+    )
+    """Handle identifier (e.g., "SQR-000")."""
 
     generator: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
     """Document generator used (e.g., "Documenteer 2.0.0", "Lander 2.0.0")."""
-
-    __table_args__ = (  # type: ignore[assignment]
-        UniqueConstraint(
-            "series",
-            "handle",
-            name="uq_document_series_handle",
-        ),
-    )

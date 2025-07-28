@@ -104,9 +104,7 @@ def upgrade() -> None:
             ["resource.id"],
         ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "series", "handle", name="uq_document_series_handle"
-        ),
+        sa.UniqueConstraint("handle"),
     )
     op.create_table(
         "resource_relation",
