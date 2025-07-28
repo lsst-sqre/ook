@@ -10,6 +10,7 @@ from sqlalchemy import (
     BigInteger,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     UnicodeText,
     UniqueConstraint,
@@ -104,6 +105,12 @@ class SqlResource(Base):
         foreign_keys="SqlResourceRelation.source_resource_id",
     )
     """All relations to other resources (both internal and external)."""
+
+    __table_args__ = (
+        Index("idx_resource_class", "resource_class"),
+        Index("idx_resource_date_published", "date_resource_published"),
+        Index("idx_resource_date_updated", "date_resource_updated"),
+    )
 
 
 class SqlExternalReference(Base):
@@ -302,6 +309,8 @@ class SqlResourceRelation(Base):
             "relation_type",
             name="uq_resource_relation",
         ),
+        Index("idx_resource_relation_source", "source_resource_id"),
+        Index("idx_resource_relation_type", "relation_type"),
     )
 
 
@@ -332,7 +341,7 @@ class SqlDocumentResource(SqlResource):
     generator: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
     """Document generator used (e.g., "Documenteer 2.0.0", "Lander 2.0.0")."""
 
-    __table_args__ = (
+    __table_args__ = (  # type: ignore[assignment]
         UniqueConstraint(
             "series",
             "handle",

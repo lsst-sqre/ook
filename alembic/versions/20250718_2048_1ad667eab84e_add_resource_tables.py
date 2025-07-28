@@ -137,8 +137,47 @@ def upgrade() -> None:
         ),
     )
 
+    # Add indexes for query optimization
+    op.create_index(
+        "idx_resource_class", "resource", ["resource_class"], unique=False
+    )
+    op.create_index(
+        "idx_resource_date_published",
+        "resource",
+        ["date_resource_published"],
+        unique=False,
+    )
+    op.create_index(
+        "idx_resource_date_updated",
+        "resource",
+        ["date_resource_updated"],
+        unique=False,
+    )
+    op.create_index(
+        "idx_resource_relation_source",
+        "resource_relation",
+        ["source_resource_id"],
+        unique=False,
+    )
+    op.create_index(
+        "idx_resource_relation_type",
+        "resource_relation",
+        ["relation_type"],
+        unique=False,
+    )
+
 
 def downgrade() -> None:
+    # Drop indexes first
+    op.drop_index("idx_resource_relation_type", table_name="resource_relation")
+    op.drop_index(
+        "idx_resource_relation_source", table_name="resource_relation"
+    )
+    op.drop_index("idx_resource_date_updated", table_name="resource")
+    op.drop_index("idx_resource_date_published", table_name="resource")
+    op.drop_index("idx_resource_class", table_name="resource")
+
+    # Drop tables
     op.drop_table("resource_relation")
     op.drop_table("document_resource")
     op.drop_table("contributor")
