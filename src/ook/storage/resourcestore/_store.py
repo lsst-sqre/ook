@@ -261,6 +261,7 @@ class ResourceStore:
                 "series": document.series,
                 "handle": document.handle,
                 "generator": document.generator,
+                "number": document.number,
             },
             insert_fields={
                 "id": document.id,
@@ -278,6 +279,7 @@ class ResourceStore:
                 "series": document.series,
                 "handle": document.handle,
                 "generator": document.generator,
+                "number": document.number,
             },
         )
 

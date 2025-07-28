@@ -58,6 +58,7 @@ async def test_get_resource_by_id(
                 "type": "Dataset",
                 "series": "Technical Notes",
                 "handle": "TEST-001",
+                "number": 1,
                 "generator": "Documenteer 2.0.0",
                 "contributors": [
                     {
@@ -207,6 +208,7 @@ async def test_get_resource_with_related_resources(
                 "type": "Book",
                 "series": "Research Guides",
                 "handle": "RG-001",
+                "number": 1,
                 "generator": "Documenteer 2.0.0",
                 "contributors": [
                     {
@@ -244,6 +246,7 @@ async def test_get_resource_with_related_resources(
                 "type": "Report",
                 "series": "Applied Research",
                 "handle": "AR-042",
+                "number": 42,
                 "generator": "Documenteer 2.0.0",
                 "contributors": [
                     {

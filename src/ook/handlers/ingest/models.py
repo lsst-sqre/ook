@@ -98,6 +98,16 @@ class DocumentRequest(BaseModel):
         Field(description="Project document identifier", examples=["SQR-000"]),
     ]
 
+    number: Annotated[
+        int,
+        Field(
+            description=(
+                "Numeric component of handle for sorting within series"
+            ),
+            examples=[50, 123, 1],
+        ),
+    ]
+
     generator: Annotated[
         str | None,
         Field(
@@ -162,6 +172,7 @@ class DocumentRequest(BaseModel):
             type=self.type,
             series=self.series,
             handle=self.handle,
+            number=self.number,
             generator=self.generator,
             contributors=self.contributors,
             resource_relations=self.resource_relations,

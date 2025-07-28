@@ -99,12 +99,16 @@ def upgrade() -> None:
         sa.Column("series", sa.UnicodeText(), nullable=False),
         sa.Column("handle", sa.UnicodeText(), nullable=False),
         sa.Column("generator", sa.UnicodeText(), nullable=True),
+        sa.Column("number", sa.Integer(), nullable=False),
         sa.ForeignKeyConstraint(
             ["id"],
             ["resource.id"],
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("handle"),
+        sa.UniqueConstraint(
+            "series", "number", name="uq_document_series_number"
+        ),
     )
     op.create_table(
         "resource_relation",
@@ -163,10 +167,17 @@ def upgrade() -> None:
         ["relation_type"],
         unique=False,
     )
+    op.create_index(
+        "idx_document_series_number",
+        "document_resource",
+        ["series", "number"],
+        unique=False,
+    )
 
 
 def downgrade() -> None:
     # Drop indexes first
+    op.drop_index("idx_document_series_number", table_name="document_resource")
     op.drop_index("idx_resource_relation_type", table_name="resource_relation")
     op.drop_index(
         "idx_resource_relation_source", table_name="resource_relation"

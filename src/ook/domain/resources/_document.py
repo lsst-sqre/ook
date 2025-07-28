@@ -40,6 +40,16 @@ class Document(Resource):
         ),
     ] = None
 
+    number: Annotated[
+        int,
+        Field(
+            description=(
+                "Numeric component of handle for sorting within series"
+            ),
+            examples=[50, 123, 1],
+        ),
+    ]
+
 
 # Rebuild the model to ensure all fields are correctly set up
 Document.model_rebuild()

@@ -342,3 +342,11 @@ class SqlDocumentResource(SqlResource):
 
     generator: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
     """Document generator used (e.g., "Documenteer 2.0.0", "Lander 2.0.0")."""
+
+    number: Mapped[int] = mapped_column(Integer, nullable=False)
+    """Numeric component of the handle for sorting (e.g., 50 for 'SQR-050')."""
+
+    __table_args__ = (  # type: ignore[assignment]
+        Index("idx_document_series_number", "series", "number"),
+        UniqueConstraint("series", "number", name="uq_document_series_number"),
+    )

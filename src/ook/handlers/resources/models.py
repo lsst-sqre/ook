@@ -344,6 +344,16 @@ class DocumentResource(GenericResource[DocumentDomain]):
         ),
     ] = None
 
+    number: Annotated[
+        int,
+        Field(
+            description=(
+                "Numeric component of handle for sorting within series"
+            ),
+            examples=[50, 123, 1],
+        ),
+    ]
+
     @classmethod
     def from_domain(cls, resource: DocumentDomain, request: Request) -> Self:
         """Create a `DocumentResource` from a `ResourceDomain`."""
@@ -351,6 +361,7 @@ class DocumentResource(GenericResource[DocumentDomain]):
         fields["handle"] = resource.handle
         fields["series"] = resource.series
         fields["generator"] = resource.generator
+        fields["number"] = resource.number
 
         return cls.model_validate(fields, from_attributes=True)
 
