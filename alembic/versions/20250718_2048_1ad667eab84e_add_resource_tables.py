@@ -130,6 +130,13 @@ def upgrade() -> None:
             ["resource.id"],
         ),
         sa.PrimaryKeyConstraint("id"),
+        sa.CheckConstraint(
+            "(related_resource_id IS NOT NULL AND "
+            "related_external_ref_id IS NULL) OR "
+            "(related_resource_id IS NULL AND "
+            "related_external_ref_id IS NOT NULL)",
+            name="chk_exactly_one_related",
+        ),
         sa.UniqueConstraint(
             "source_resource_id",
             "related_resource_id",

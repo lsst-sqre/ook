@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import (
     JSON,
     BigInteger,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -301,7 +302,14 @@ class SqlResourceRelation(Base):
 
     __table_args__ = (
         # Ensure exactly one of related_resource_id or related_external_ref_id
-        # is set. This constraint will be enforced at the application level
+        # is set
+        CheckConstraint(
+            "(related_resource_id IS NOT NULL AND "
+            "related_external_ref_id IS NULL) OR "
+            "(related_resource_id IS NULL AND "
+            "related_external_ref_id IS NOT NULL)",
+            name="chk_exactly_one_related",
+        ),
         UniqueConstraint(
             "source_resource_id",
             "related_resource_id",
