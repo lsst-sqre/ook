@@ -34,6 +34,7 @@ from .handlers.internal import internal_router
 # Import kafka router and also load the handler functions.
 from .handlers.kafka import kafka_router  # type: ignore [attr-defined]
 from .handlers.links import links_router
+from .handlers.resources import resources_router
 from .handlers.root import root_router
 
 __all__ = ["app", "create_openapi"]
@@ -105,6 +106,10 @@ app = FastAPI(
             "description": "Author information.",
         },
         {
+            "name": "resources",
+            "description": "Bibliographic resources.",
+        },
+        {
             "name": "ingest",
             "description": "Ingest services.",
         },
@@ -123,6 +128,7 @@ app.include_router(authors_router)
 app.include_router(glossary_router)
 app.include_router(ingest_router)
 app.include_router(links_router)
+app.include_router(resources_router)
 app.include_router(kafka_router)
 
 # Set up middleware

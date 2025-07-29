@@ -3,15 +3,194 @@
 from __future__ import annotations
 
 import re
-from typing import Self
+from datetime import datetime
+from typing import Annotated, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AnyHttpUrl, BaseModel, Field, model_validator
+
+from ook.domain.base32id import generate_base32_id, validate_base32_id
+from ook.domain.resources import (
+    Contributor,
+    Document,
+    ExternalRelation,
+    ResourceRelation,
+    ResourceType,
+)
 
 __all__ = [
+    "DocumentIngestRequest",
+    "DocumentRequest",
     "LsstTexmfIngestRequest",
     "LtdIngestRequest",
     "SdmSchemasIngestRequest",
 ]
+
+
+class DocumentRequest(BaseModel):
+    """Schema for a single document in a document ingest request.
+
+    This model mirrors the Document domain model but excludes fields that
+    are managed by the system (id, date_created, date_updated).
+    """
+
+    title: Annotated[
+        str,
+        Field(
+            description="Title of the document. Should be plain text.",
+            examples=["My Document"],
+        ),
+    ]
+
+    description: Annotated[
+        str | None, Field(description="Description as plain text or Markdown.")
+    ] = None
+
+    url: Annotated[AnyHttpUrl | None, Field(description="Document URL")] = None
+
+    doi: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Digital Object Identifier (DOI) for the document, if "
+                "available."
+            ),
+            examples=["10.1000/xyz123", "10.1109/5.771073"],
+        ),
+    ] = None
+
+    date_resource_published: Annotated[
+        datetime | None,
+        Field(
+            description=(
+                "Date when the document was first published, if applicable."
+            )
+        ),
+    ] = None
+
+    date_resource_updated: Annotated[
+        datetime | None,
+        Field(
+            description=(
+                "Date when the document was last updated, if applicable."
+            )
+        ),
+    ] = None
+
+    version: Annotated[
+        str | None,
+        Field(
+            description="Version of the document, if applicable.",
+            examples=["1.0", "2.1", "3.0-beta"],
+        ),
+    ] = None
+
+    type: Annotated[
+        ResourceType | None,
+        Field(
+            description="Type of the document (DataCite vocabulary).",
+        ),
+    ] = None
+
+    series: Annotated[str, Field(description="Series name of the document.")]
+
+    handle: Annotated[
+        str,
+        Field(description="Project document identifier", examples=["SQR-000"]),
+    ]
+
+    number: Annotated[
+        int,
+        Field(
+            description=(
+                "Numeric component of handle for sorting within series"
+            ),
+            examples=[50, 123, 1],
+        ),
+    ]
+
+    generator: Annotated[
+        str | None,
+        Field(
+            description="Document generator used to create the document",
+            examples=["Documenteer 2.0.0", "Lander 2.0.0"],
+        ),
+    ] = None
+
+    contributors: Annotated[
+        list[Contributor],
+        Field(
+            description=(
+                "List of contributors to the document. Contributors of "
+                "type `Creator` are considered the authors of the document."
+            ),
+            default_factory=list,
+        ),
+    ]
+
+    resource_relations: Annotated[
+        list[ResourceRelation],
+        Field(
+            description=("List of relations to other internal Ook resources."),
+            default_factory=list,
+        ),
+    ]
+
+    external_relations: Annotated[
+        list[ExternalRelation],
+        Field(
+            description=(
+                "List of relations to external resources not in the Ook "
+                "database."
+            ),
+            default_factory=list,
+        ),
+    ]
+
+    def to_domain(self) -> Document:
+        """Convert this request model to a Document domain model.
+
+        Returns
+        -------
+        Document
+            The Document domain model with a generated ID and timestamps.
+        """
+        now = datetime.now(tz=datetime.now().astimezone().tzinfo)
+
+        return Document(
+            id=validate_base32_id(
+                generate_base32_id()
+            ),  # Generate a Base32 ID and convert to integer
+            date_created=now,
+            date_updated=now,
+            title=self.title,
+            description=self.description,
+            url=self.url,
+            doi=self.doi,
+            date_resource_published=self.date_resource_published,
+            date_resource_updated=self.date_resource_updated,
+            version=self.version,
+            type=self.type,
+            series=self.series,
+            handle=self.handle,
+            number=self.number,
+            generator=self.generator,
+            contributors=self.contributors,
+            resource_relations=self.resource_relations,
+            external_relations=self.external_relations,
+            related_resources=[],  # Empty for ingested documents
+        )
+
+
+class DocumentIngestRequest(BaseModel):
+    """Schema for `post_ingest_documents`."""
+
+    documents: Annotated[
+        list[DocumentRequest],
+        Field(
+            description="List of documents to ingest.",
+            min_length=1,
+        ),
+    ]
 
 
 class LtdIngestRequest(BaseModel):

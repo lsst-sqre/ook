@@ -7,8 +7,11 @@ from fastapi import APIRouter, Depends, Response
 
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
+from ook.domain.resources import Document
 
+from ..resources.models import DocumentResource
 from .models import (
+    DocumentIngestRequest,
     LsstTexmfIngestRequest,
     LtdIngestRequest,
     SdmSchemasIngestRequest,
@@ -106,3 +109,74 @@ async def post_ingest_lsst_texmf(
         )
         await context.session.commit()
     return Response(status_code=200)
+
+
+@router.post(
+    "/resources/documents",
+    summary="Ingest document resources",
+)
+async def post_ingest_documents(
+    ingest_request: DocumentIngestRequest,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[DocumentResource]:
+    """Ingest document resources into the bibliography database.
+
+    This endpoint accepts a list of documents to ingest. Each document
+    will be assigned a new ID and timestamps, then upserted into the database.
+    The endpoint returns the documents as stored in the database.
+    """
+    logger = context.logger
+    logger.info(
+        "Received request to ingest documents.",
+        document_count=len(ingest_request.documents),
+    )
+
+    # Convert request models to domain models
+    documents = [
+        doc_request.to_domain() for doc_request in ingest_request.documents
+    ]
+
+    # Get the resource service and upsert documents
+    resource_service = context.factory.create_resource_service()
+
+    for document in documents:
+        await resource_service.upsert_document(document)
+        logger.debug(
+            "Upserted document",
+            document_id=document.id,
+            title=document.title,
+        )
+
+    await context.session.commit()
+
+    # Retrieve the documents from the database to return them with all
+    # fields populated
+    retrieved_documents = []
+    for document in documents:
+        retrieved_doc = await resource_service.get_resource_by_id(
+            document.id,
+        )
+        if retrieved_doc is not None:
+            if not isinstance(retrieved_doc, Document):
+                logger.warning(
+                    "Retrieved resource is not a Document",
+                    document_id=document.id,
+                    resource_class=retrieved_doc.resource_class,
+                )
+                continue
+            retrieved_documents.append(retrieved_doc)
+        else:
+            logger.warning(
+                "Failed to retrieve document after upsert",
+                document_id=document.id,
+            )
+
+    logger.info(
+        "Successfully ingested documents.",
+        ingested_count=len(retrieved_documents),
+    )
+
+    return [
+        DocumentResource.from_domain(doc, request=context.request)
+        for doc in retrieved_documents
+    ]
