@@ -2,6 +2,30 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.18.0'></a>
+
+## 0.18.0 (2025-07-29)
+
+### Backwards-incompatible changes
+
+- This release requires a database migration to add new tables for the resources API: `113ced7d2d29` to `1ad667eab84e`.
+
+### New features
+
+- Ook now has a bibliographic resource API for storing metadata records about Rubin Observatory documentation (technical notes, documents, user guides), software code bases, and other resources:
+
+  - Core data model designed to be compatible with DataCite concepts for straightforward integration with DataCite DOI registration.
+
+  - Polymorphic resource model allows different types of resources (documents, software, datasets) to be stored efficiently. This release demonstrates this model with a `Document` resource type.
+
+  - Support for relationships between records and external references (such as papers with DOIs). Relationships are annotated with DataCite relationship types to enable features such as reference tracking and tracing documents that supersede other documents.
+
+  - Integration with the existing author API for both author lists and tracking other types of contributors.
+
+  - Resources are available through `GET /resources` and `GET /resources/{id}` endpoints. These endpoints should be considered experimental and subject to change in future releases.
+
+  This bibliographic API will enable features such as sophisticated documentation search APIs and user interfaces, automation for DOI registration, and more. Future releases will integrate Ook's existing documentation ingest processes with the bibliographic database and develop API endpoints for querying and managing bibliographic resources.
+
 <a id='changelog-0.17.0'></a>
 
 ## 0.17.0 (2025-07-15)
