@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import Select, case, func, select
+from sqlalchemy import Select, case, func, select, text
 from sqlalchemy.dialects.postgresql import JSONB, aggregate_order_by
 
 from ook.dbschema.authors import (
@@ -19,6 +19,7 @@ __all__ = [
     "create_author_affiliations_subquery",
     "create_author_by_internal_id_stmt",
     "create_author_json_object",
+    "create_author_search_stmt",
     "create_author_with_affiliations_columns",
 ]
 
@@ -235,4 +236,152 @@ def create_all_authors_stmt() -> Select:
             SqlAuthor.id == affiliations_subquery.c.author_id,
             isouter=True,
         )
+    )
+
+
+def create_author_search_stmt(search_query: str) -> Select:
+    """Create a select statement for fuzzy author search.
+
+    This implements trigram-based fuzzy matching for author names,
+    supporting various name formats and returning results with
+    relevance scores.
+
+    Parameters
+    ----------
+    search_query
+        The search query string to match against author names.
+
+    Returns
+    -------
+    Select
+        SQLAlchemy select statement ready for execution, suitable for
+        pagination. Results include a 'score' column with relevance.
+    """
+    # Handle "Lastname, Firstname" format by creating normalized query
+    search_terms_cte = select(
+        func.cast(search_query, text("text")).label("original_query"),
+        case(
+            (
+                func.cast(search_query, text("text")).like("%,%"),
+                func.trim(func.split_part(search_query, ",", 2))
+                + " "
+                + func.trim(func.split_part(search_query, ",", 1)),
+            ),
+            else_=func.cast(search_query, text("text")),
+        ).label("normalized_query"),
+    ).cte("search_terms")
+
+    # Subquery to get affiliations as a JSON array for each author
+    affiliations_subquery = (
+        select(
+            SqlAuthor.id.label("author_id"),
+            func.json_agg(create_affiliations_json_object().cast(JSONB)).label(
+                "affiliations"
+            ),
+        )
+        .select_from(SqlAuthor)
+        .join(
+            SqlAuthorAffiliation,
+            SqlAuthor.id == SqlAuthorAffiliation.author_id,
+            isouter=True,
+        )
+        .join(
+            SqlAffiliation,
+            SqlAffiliation.id == SqlAuthorAffiliation.affiliation_id,
+            isouter=True,
+        )
+        .group_by(SqlAuthor.id)
+        .order_by(SqlAuthor.id, func.array_agg(SqlAuthorAffiliation.position))
+    ).alias("affiliations_subquery")
+
+    # Calculate composite relevance score
+    score_expr = func.greatest(
+        # Direct similarity to search vector
+        func.similarity(
+            SqlAuthor.search_vector, search_terms_cte.c.original_query
+        )
+        * 100,
+        func.similarity(
+            SqlAuthor.search_vector, search_terms_cte.c.normalized_query
+        )
+        * 100,
+        # Surname similarity (weighted higher)
+        func.similarity(SqlAuthor.surname, search_terms_cte.c.original_query)
+        * 120,
+        func.similarity(SqlAuthor.surname, search_terms_cte.c.normalized_query)
+        * 120,
+        # Given name similarity
+        func.coalesce(
+            func.similarity(
+                SqlAuthor.given_name, search_terms_cte.c.original_query
+            )
+            * 80,
+            0,
+        ),
+        func.coalesce(
+            func.similarity(
+                SqlAuthor.given_name, search_terms_cte.c.normalized_query
+            )
+            * 80,
+            0,
+        ),
+        # Exact substring match bonuses
+        case(
+            (SqlAuthor.surname.ilike("%" + search_query + "%"), 90),
+            (SqlAuthor.given_name.ilike("%" + search_query + "%"), 70),
+            else_=0,
+        ),
+    ).label("score")
+
+    # Main search query with trigram filtering
+    return (
+        select(
+            SqlAuthor.internal_id,
+            SqlAuthor.surname,
+            SqlAuthor.given_name,
+            SqlAuthor.orcid,
+            SqlAuthor.email,
+            SqlAuthor.notes,
+            case(
+                (
+                    affiliations_subquery.c.affiliations.is_(None),
+                    func.json_build_array(),
+                ),
+                else_=affiliations_subquery.c.affiliations,
+            ).label("affiliations"),
+            score_expr,
+        )
+        .select_from(SqlAuthor)
+        .join(search_terms_cte, text("true"))  # Cross join with search terms
+        .join(
+            affiliations_subquery,
+            SqlAuthor.id == affiliations_subquery.c.author_id,
+            isouter=True,
+        )
+        .where(
+            # Use trigram index for initial filtering
+            (
+                SqlAuthor.search_vector.op("%")(
+                    search_terms_cte.c.original_query
+                )
+            )
+            | (
+                SqlAuthor.search_vector.op("%")(
+                    search_terms_cte.c.normalized_query
+                )
+            )
+            | (SqlAuthor.surname.op("%")(search_terms_cte.c.original_query))
+            | (SqlAuthor.surname.op("%")(search_terms_cte.c.normalized_query))
+            | (SqlAuthor.given_name.op("%")(search_terms_cte.c.original_query))
+            | (
+                SqlAuthor.given_name.op("%")(
+                    search_terms_cte.c.normalized_query
+                )
+            )
+            # Include exact substring matches
+            | SqlAuthor.surname.ilike("%" + search_query + "%")
+            | SqlAuthor.given_name.ilike("%" + search_query + "%")
+        )
+        .having(score_expr > 20)  # Minimum relevance threshold
+        .order_by(score_expr.desc(), SqlAuthor.internal_id.asc())
     )

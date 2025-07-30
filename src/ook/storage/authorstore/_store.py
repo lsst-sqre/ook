@@ -22,11 +22,15 @@ from ook.dbschema.authors import (
     SqlAuthor,
     SqlAuthorAffiliation,
 )
-from ook.domain.authors import Affiliation, Author
+from ook.domain.authors import Affiliation, Author, AuthorSearchResult
 
-from ._query import create_all_authors_stmt, create_author_by_internal_id_stmt
+from ._query import (
+    create_all_authors_stmt,
+    create_author_by_internal_id_stmt,
+    create_author_search_stmt,
+)
 
-__all__ = ["AuthorStore"]
+__all__ = ["AuthorSearchCursor", "AuthorStore", "AuthorsCursor"]
 
 
 class AuthorStore:
@@ -85,6 +89,42 @@ class AuthorStore:
         runner = CountedPaginatedQueryRunner(
             entry_type=Author,
             cursor_type=AuthorsCursor,
+        )
+        return await runner.query_row(
+            session=self._session,
+            stmt=stmt,
+            cursor=cursor,
+            limit=limit,
+        )
+
+    async def search_authors(
+        self,
+        search_query: str,
+        cursor: AuthorSearchCursor | None = None,
+        limit: int | None = None,
+    ) -> CountedPaginatedList[AuthorSearchResult, AuthorSearchCursor]:
+        """Search authors with fuzzy matching and relevance scoring.
+
+        Parameters
+        ----------
+        search_query
+            The search query string to match against author names.
+        cursor
+            The pagination cursor for the query.
+        limit
+            The maximum number of authors to return. If None, all matching
+            authors are returned.
+
+        Returns
+        -------
+        CountedPaginatedList[AuthorSearchResult]
+            A paginated list of authors with relevance scores.
+        """
+        stmt = create_author_search_stmt(search_query)
+
+        runner = CountedPaginatedQueryRunner(
+            entry_type=AuthorSearchResult,
+            cursor_type=AuthorSearchCursor,
         )
         return await runner.query_row(
             session=self._session,
@@ -427,3 +467,124 @@ class AuthorsCursor(PaginationCursor[Author]):
             The string representation of the cursor.
         """
         return f"p__{self.internal_id}" if self.previous else self.internal_id
+
+
+@dataclass(slots=True)
+class AuthorSearchCursor(PaginationCursor[AuthorSearchResult]):
+    """Cursor for paginating author search results, sorted by relevance."""
+
+    score: float
+    """The relevance score of the author."""
+
+    internal_id: str
+    """The internal ID of the author for tie-breaking."""
+
+    @override
+    @classmethod
+    def from_entry(
+        cls, entry: AuthorSearchResult, *, reverse: bool = False
+    ) -> Self:
+        """Create a cursor from a search result entry as the bound.
+
+        Parameters
+        ----------
+        entry
+            The search result entry.
+        reverse
+            Whether the cursor is for the previous page.
+
+        Returns
+        -------
+        AuthorSearchCursor
+            The cursor object.
+        """
+        return cls(
+            score=entry.score,
+            internal_id=entry.internal_id,
+            previous=reverse,
+        )
+
+    @override
+    @classmethod
+    def from_str(cls, cursor: str) -> Self:
+        """Create a cursor from a string.
+
+        Parameters
+        ----------
+        cursor
+            The cursor string in format "score:internal_id" or
+            "p__score:internal_id".
+
+        Returns
+        -------
+        AuthorSearchCursor
+            The cursor object.
+        """
+        previous_prefix = "p__"
+        if cursor.startswith(previous_prefix):
+            cursor_part = cursor.removeprefix(previous_prefix)
+            previous = True
+        else:
+            cursor_part = cursor
+            previous = False
+
+        score_str, internal_id = cursor_part.split(":", 1)
+        return cls(
+            score=float(score_str),
+            internal_id=internal_id,
+            previous=previous,
+        )
+
+    @override
+    @classmethod
+    def apply_order(cls, stmt: Select, *, reverse: bool = False) -> Select:
+        """Apply the sort order of the cursor to a select statement.
+
+        The query already has ordering applied in create_author_search_stmt.
+        """
+        return stmt
+
+    @override
+    def apply_cursor(self, stmt: Select) -> Select:
+        """Apply the cursor to a select statement.
+
+        Parameters
+        ----------
+        stmt
+            The SQLAlchemy statement to apply the cursor to.
+
+        Returns
+        -------
+        Select
+            The modified SQLAlchemy statement with the cursor applied.
+        """
+        # For simplicity, use internal_id-based pagination like AuthorsCursor
+        if self.previous:
+            return stmt.where(SqlAuthor.internal_id < self.internal_id)
+        return stmt.where(SqlAuthor.internal_id >= self.internal_id)
+
+    @override
+    def invert(self) -> Self:
+        """Invert the cursor.
+
+        Returns
+        -------
+        AuthorSearchCursor
+            The inverted cursor.
+        """
+        return type(self)(
+            score=self.score,
+            internal_id=self.internal_id,
+            previous=not self.previous,
+        )
+
+    def __str__(self) -> str:
+        """Convert the cursor to a string.
+
+        Returns
+        -------
+        str
+            The string representation of the cursor.
+        """
+        cursor_value = f"{self.score}:{self.internal_id}"
+        return f"p__{cursor_value}" if self.previous else cursor_value

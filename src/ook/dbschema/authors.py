@@ -6,6 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Computed,
     DateTime,
     ForeignKey,
     Integer,
@@ -83,6 +84,17 @@ class SqlAuthor(Base):
         DateTime(timezone=True), nullable=False
     )
     """The date this record was last updated."""
+
+    search_vector: Mapped[str | None] = mapped_column(
+        UnicodeText,
+        Computed(
+            "COALESCE(given_name || ' ', '') || surname || ' ' || "
+            "COALESCE(surname || ', ' || given_name, '')",
+            persisted=True,
+        ),
+        nullable=True,
+    )
+    """Generated search vector for fuzzy name matching."""
 
 
 class SqlAffiliation(Base):
