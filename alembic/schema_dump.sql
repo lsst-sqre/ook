@@ -2,8 +2,8 @@
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 16.8 (Debian 16.8-1.pgdg120+1)
--- Dumped by pg_dump version 16.8 (Debian 16.8-1.pgdg120+1)
+-- Dumped from database version 16.9 (Debian 16.9-1.pgdg120+1)
+-- Dumped by pg_dump version 16.9 (Debian 16.9-1.pgdg120+1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -86,7 +86,8 @@ CREATE TABLE public.author (
     notes text[] NOT NULL,
     email text,
     orcid text,
-    date_updated timestamp with time zone NOT NULL
+    date_updated timestamp with time zone NOT NULL,
+    search_vector text GENERATED ALWAYS AS ((((COALESCE((given_name || ' '::text), ''::text) || surname) || ' '::text) || COALESCE(((surname || ', '::text) || given_name), ''::text))) STORED
 );
 
 
@@ -614,7 +615,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-1ad667eab84e
+c03d146610d8
 \.
 
 
