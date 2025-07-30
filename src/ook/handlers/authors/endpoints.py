@@ -55,39 +55,43 @@ async def get_authors(
 
         if search:
             # Perform fuzzy search
-            results = await author_service.search_authors(
+            search_results = await author_service.search_authors(
                 search_query=search,
                 limit=limit,
                 cursor=AuthorSearchCursor.from_str(cursor) if cursor else None,
             )
-            if results.count == 0:
+            if search_results.count == 0:
                 raise NotFoundError(
                     message=f"No authors found matching '{search}'",
                 )
             response = context.response
             request = context.request
-            response.headers["Link"] = results.link_header(request.url)
-            response.headers["X-Total-Count"] = str(results.count)
+            response.headers["Link"] = search_results.link_header(request.url)
+            response.headers["X-Total-Count"] = str(search_results.count)
             return [
                 AuthorSearchResult.from_domain(result)
-                for result in results.entries
+                for result in search_results.entries
             ]
         else:
             # Get all authors (existing functionality)
-            results = await author_service.get_authors(
+            author_results = await author_service.get_authors(
                 limit=limit,
                 cursor=AuthorsCursor.from_str(cursor) if cursor else None,
             )
-            if results.count == 0:
+            if author_results.count == 0:
                 raise NotFoundError(
                     message="No authors found",
                 )
             if cursor or limit:
                 response = context.response
                 request = context.request
-                response.headers["Link"] = results.link_header(request.url)
-                response.headers["X-Total-Count"] = str(results.count)
-            return [Author.from_domain(author) for author in results.entries]
+                response.headers["Link"] = author_results.link_header(
+                    request.url
+                )
+                response.headers["X-Total-Count"] = str(author_results.count)
+            return [
+                Author.from_domain(author) for author in author_results.entries
+            ]
 
 
 @router.get(

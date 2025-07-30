@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import Select, case, func, select, text
+from sqlalchemy import Select, case, cast, func, select, text
 from sqlalchemy.dialects.postgresql import JSONB, aggregate_order_by
+from sqlalchemy.sql.sqltypes import Text
 
 from ook.dbschema.authors import (
     SqlAffiliation,
@@ -259,15 +260,15 @@ def create_author_search_stmt(search_query: str) -> Select:
     """
     # Handle "Lastname, Firstname" format by creating normalized query
     search_terms_cte = select(
-        func.cast(search_query, text("text")).label("original_query"),
+        cast(search_query, Text).label("original_query"),
         case(
             (
-                func.cast(search_query, text("text")).like("%,%"),
+                cast(search_query, Text).like("%,%"),
                 func.trim(func.split_part(search_query, ",", 2))
                 + " "
                 + func.trim(func.split_part(search_query, ",", 1)),
             ),
-            else_=func.cast(search_query, text("text")),
+            else_=cast(search_query, Text),
         ).label("normalized_query"),
     ).cte("search_terms")
 

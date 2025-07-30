@@ -144,8 +144,12 @@ class AuthorSearchResult(Author):
     )
 
     @classmethod
-    def from_domain(cls, author: AuthorSearchResultDomain) -> Self:
+    def from_domain(cls, author: AuthorDomain) -> Self:
         """Create an AuthorSearchResult from a domain AuthorSearchResult."""
+        if not isinstance(author, AuthorSearchResultDomain):
+            msg = f"Expected AuthorSearchResult, got {type(author).__name__}"
+            raise TypeError(msg)
+
         orcid_url = None
         if author.orcid:
             orcid_formatted = format_orcid_url(author.orcid)
