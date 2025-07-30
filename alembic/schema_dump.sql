@@ -127,6 +127,107 @@ ALTER SEQUENCE public.author_id_seq OWNED BY public.author.id;
 
 
 --
+-- Name: contributor; Type: TABLE; Schema: public; Owner: test
+--
+
+CREATE TABLE public.contributor (
+    id bigint NOT NULL,
+    resource_id bigint NOT NULL,
+    "order" integer NOT NULL,
+    role text NOT NULL,
+    author_id bigint
+);
+
+
+ALTER TABLE public.contributor OWNER TO test;
+
+--
+-- Name: contributor_id_seq; Type: SEQUENCE; Schema: public; Owner: test
+--
+
+CREATE SEQUENCE public.contributor_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.contributor_id_seq OWNER TO test;
+
+--
+-- Name: contributor_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: test
+--
+
+ALTER SEQUENCE public.contributor_id_seq OWNED BY public.contributor.id;
+
+
+--
+-- Name: document_resource; Type: TABLE; Schema: public; Owner: test
+--
+
+CREATE TABLE public.document_resource (
+    id bigint NOT NULL,
+    series text NOT NULL,
+    handle text NOT NULL,
+    generator text,
+    number integer NOT NULL
+);
+
+
+ALTER TABLE public.document_resource OWNER TO test;
+
+--
+-- Name: external_reference; Type: TABLE; Schema: public; Owner: test
+--
+
+CREATE TABLE public.external_reference (
+    id bigint NOT NULL,
+    url text,
+    doi text,
+    arxiv_id text,
+    isbn text,
+    issn text,
+    ads_bibcode text,
+    type text,
+    title text,
+    publication_year text,
+    volume text,
+    issue text,
+    number text,
+    number_type text,
+    first_page text,
+    last_page text,
+    publisher text,
+    edition text,
+    contributors json
+);
+
+
+ALTER TABLE public.external_reference OWNER TO test;
+
+--
+-- Name: external_reference_id_seq; Type: SEQUENCE; Schema: public; Owner: test
+--
+
+CREATE SEQUENCE public.external_reference_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.external_reference_id_seq OWNER TO test;
+
+--
+-- Name: external_reference_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: test
+--
+
+ALTER SEQUENCE public.external_reference_id_seq OWNED BY public.external_reference.id;
+
+
+--
 -- Name: link; Type: TABLE; Schema: public; Owner: test
 --
 
@@ -199,6 +300,65 @@ CREATE TABLE public.links_sdm_tables (
 
 
 ALTER TABLE public.links_sdm_tables OWNER TO test;
+
+--
+-- Name: resource; Type: TABLE; Schema: public; Owner: test
+--
+
+CREATE TABLE public.resource (
+    id bigint NOT NULL,
+    resource_class character varying,
+    date_created timestamp with time zone NOT NULL,
+    date_updated timestamp with time zone NOT NULL,
+    title text NOT NULL,
+    description text,
+    url text,
+    doi text,
+    date_resource_published timestamp with time zone,
+    date_resource_updated timestamp with time zone,
+    version character varying,
+    type character varying
+);
+
+
+ALTER TABLE public.resource OWNER TO test;
+
+--
+-- Name: resource_relation; Type: TABLE; Schema: public; Owner: test
+--
+
+CREATE TABLE public.resource_relation (
+    id bigint NOT NULL,
+    source_resource_id bigint NOT NULL,
+    related_resource_id bigint,
+    related_external_ref_id bigint,
+    relation_type text NOT NULL,
+    CONSTRAINT chk_exactly_one_related CHECK ((((related_resource_id IS NOT NULL) AND (related_external_ref_id IS NULL)) OR ((related_resource_id IS NULL) AND (related_external_ref_id IS NOT NULL))))
+);
+
+
+ALTER TABLE public.resource_relation OWNER TO test;
+
+--
+-- Name: resource_relation_id_seq; Type: SEQUENCE; Schema: public; Owner: test
+--
+
+CREATE SEQUENCE public.resource_relation_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.resource_relation_id_seq OWNER TO test;
+
+--
+-- Name: resource_relation_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: test
+--
+
+ALTER SEQUENCE public.resource_relation_id_seq OWNED BY public.resource_relation.id;
+
 
 --
 -- Name: sdm_column; Type: TABLE; Schema: public; Owner: test
@@ -386,10 +546,31 @@ ALTER TABLE ONLY public.author ALTER COLUMN id SET DEFAULT nextval('public.autho
 
 
 --
+-- Name: contributor id; Type: DEFAULT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.contributor ALTER COLUMN id SET DEFAULT nextval('public.contributor_id_seq'::regclass);
+
+
+--
+-- Name: external_reference id; Type: DEFAULT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.external_reference ALTER COLUMN id SET DEFAULT nextval('public.external_reference_id_seq'::regclass);
+
+
+--
 -- Name: link id; Type: DEFAULT; Schema: public; Owner: test
 --
 
 ALTER TABLE ONLY public.link ALTER COLUMN id SET DEFAULT nextval('public.link_id_seq'::regclass);
+
+
+--
+-- Name: resource_relation id; Type: DEFAULT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.resource_relation ALTER COLUMN id SET DEFAULT nextval('public.resource_relation_id_seq'::regclass);
 
 
 --
@@ -433,7 +614,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-113ced7d2d29
+1ad667eab84e
 \.
 
 
@@ -450,6 +631,30 @@ COPY public.author (id, internal_id, surname, given_name, notes, email, orcid, d
 --
 
 COPY public.author_affiliations (author_id, affiliation_id, "position") FROM stdin;
+\.
+
+
+--
+-- Data for Name: contributor; Type: TABLE DATA; Schema: public; Owner: test
+--
+
+COPY public.contributor (id, resource_id, "order", role, author_id) FROM stdin;
+\.
+
+
+--
+-- Data for Name: document_resource; Type: TABLE DATA; Schema: public; Owner: test
+--
+
+COPY public.document_resource (id, series, handle, generator, number) FROM stdin;
+\.
+
+
+--
+-- Data for Name: external_reference; Type: TABLE DATA; Schema: public; Owner: test
+--
+
+COPY public.external_reference (id, url, doi, arxiv_id, isbn, issn, ads_bibcode, type, title, publication_year, volume, issue, number, number_type, first_page, last_page, publisher, edition, contributors) FROM stdin;
 \.
 
 
@@ -482,6 +687,22 @@ COPY public.links_sdm_schemas (id, schema_id) FROM stdin;
 --
 
 COPY public.links_sdm_tables (id, table_id) FROM stdin;
+\.
+
+
+--
+-- Data for Name: resource; Type: TABLE DATA; Schema: public; Owner: test
+--
+
+COPY public.resource (id, resource_class, date_created, date_updated, title, description, url, doi, date_resource_published, date_resource_updated, version, type) FROM stdin;
+\.
+
+
+--
+-- Data for Name: resource_relation; Type: TABLE DATA; Schema: public; Owner: test
+--
+
+COPY public.resource_relation (id, source_resource_id, related_resource_id, related_external_ref_id, relation_type) FROM stdin;
 \.
 
 
@@ -540,10 +761,31 @@ SELECT pg_catalog.setval('public.author_id_seq', 1, false);
 
 
 --
+-- Name: contributor_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
+--
+
+SELECT pg_catalog.setval('public.contributor_id_seq', 1, false);
+
+
+--
+-- Name: external_reference_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
+--
+
+SELECT pg_catalog.setval('public.external_reference_id_seq', 1, false);
+
+
+--
 -- Name: link_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
 --
 
 SELECT pg_catalog.setval('public.link_id_seq', 1, false);
+
+
+--
+-- Name: resource_relation_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
+--
+
+SELECT pg_catalog.setval('public.resource_relation_id_seq', 1, false);
 
 
 --
@@ -607,6 +849,78 @@ ALTER TABLE ONLY public.author
 
 
 --
+-- Name: contributor contributor_pkey; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.contributor
+    ADD CONSTRAINT contributor_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: document_resource document_resource_handle_key; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.document_resource
+    ADD CONSTRAINT document_resource_handle_key UNIQUE (handle);
+
+
+--
+-- Name: document_resource document_resource_pkey; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.document_resource
+    ADD CONSTRAINT document_resource_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: external_reference external_reference_ads_bibcode_key; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.external_reference
+    ADD CONSTRAINT external_reference_ads_bibcode_key UNIQUE (ads_bibcode);
+
+
+--
+-- Name: external_reference external_reference_arxiv_id_key; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.external_reference
+    ADD CONSTRAINT external_reference_arxiv_id_key UNIQUE (arxiv_id);
+
+
+--
+-- Name: external_reference external_reference_doi_key; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.external_reference
+    ADD CONSTRAINT external_reference_doi_key UNIQUE (doi);
+
+
+--
+-- Name: external_reference external_reference_isbn_key; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.external_reference
+    ADD CONSTRAINT external_reference_isbn_key UNIQUE (isbn);
+
+
+--
+-- Name: external_reference external_reference_issn_key; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.external_reference
+    ADD CONSTRAINT external_reference_issn_key UNIQUE (issn);
+
+
+--
+-- Name: external_reference external_reference_pkey; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.external_reference
+    ADD CONSTRAINT external_reference_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: link link_pkey; Type: CONSTRAINT; Schema: public; Owner: test
 --
 
@@ -636,6 +950,30 @@ ALTER TABLE ONLY public.links_sdm_schemas
 
 ALTER TABLE ONLY public.links_sdm_tables
     ADD CONSTRAINT links_sdm_tables_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: resource resource_doi_key; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.resource
+    ADD CONSTRAINT resource_doi_key UNIQUE (doi);
+
+
+--
+-- Name: resource resource_pkey; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.resource
+    ADD CONSTRAINT resource_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: resource_relation resource_relation_pkey; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.resource_relation
+    ADD CONSTRAINT resource_relation_pkey PRIMARY KEY (id);
 
 
 --
@@ -695,6 +1033,30 @@ ALTER TABLE ONLY public.author
 
 
 --
+-- Name: contributor uq_contributor_resource_order_role; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.contributor
+    ADD CONSTRAINT uq_contributor_resource_order_role UNIQUE (resource_id, "order", role);
+
+
+--
+-- Name: document_resource uq_document_series_number; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.document_resource
+    ADD CONSTRAINT uq_document_series_number UNIQUE (series, number);
+
+
+--
+-- Name: resource_relation uq_resource_relation; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.resource_relation
+    ADD CONSTRAINT uq_resource_relation UNIQUE (source_resource_id, related_resource_id, related_external_ref_id, relation_type);
+
+
+--
 -- Name: sdm_column uq_sdm_column_table_name; Type: CONSTRAINT; Schema: public; Owner: test
 --
 
@@ -724,6 +1086,48 @@ ALTER TABLE ONLY public.sdm_table
 
 ALTER TABLE ONLY public.term
     ADD CONSTRAINT uq_term_definition UNIQUE (term, definition);
+
+
+--
+-- Name: idx_document_series_number; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_document_series_number ON public.document_resource USING btree (series, number);
+
+
+--
+-- Name: idx_resource_class; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_resource_class ON public.resource USING btree (resource_class);
+
+
+--
+-- Name: idx_resource_date_published; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_resource_date_published ON public.resource USING btree (date_resource_published);
+
+
+--
+-- Name: idx_resource_date_updated; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_resource_date_updated ON public.resource USING btree (date_resource_updated);
+
+
+--
+-- Name: idx_resource_relation_source; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_resource_relation_source ON public.resource_relation USING btree (source_resource_id);
+
+
+--
+-- Name: idx_resource_relation_type; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_resource_relation_type ON public.resource_relation USING btree (relation_type);
 
 
 --
@@ -855,6 +1259,30 @@ ALTER TABLE ONLY public.author_affiliations
 
 
 --
+-- Name: contributor contributor_author_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.contributor
+    ADD CONSTRAINT contributor_author_id_fkey FOREIGN KEY (author_id) REFERENCES public.author(id);
+
+
+--
+-- Name: contributor contributor_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.contributor
+    ADD CONSTRAINT contributor_resource_id_fkey FOREIGN KEY (resource_id) REFERENCES public.resource(id);
+
+
+--
+-- Name: document_resource document_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.document_resource
+    ADD CONSTRAINT document_resource_id_fkey FOREIGN KEY (id) REFERENCES public.resource(id);
+
+
+--
 -- Name: links_sdm_columns links_sdm_columns_column_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
 --
 
@@ -900,6 +1328,30 @@ ALTER TABLE ONLY public.links_sdm_tables
 
 ALTER TABLE ONLY public.links_sdm_tables
     ADD CONSTRAINT links_sdm_tables_table_id_fkey FOREIGN KEY (table_id) REFERENCES public.sdm_table(id);
+
+
+--
+-- Name: resource_relation resource_relation_related_external_ref_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.resource_relation
+    ADD CONSTRAINT resource_relation_related_external_ref_id_fkey FOREIGN KEY (related_external_ref_id) REFERENCES public.external_reference(id);
+
+
+--
+-- Name: resource_relation resource_relation_related_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.resource_relation
+    ADD CONSTRAINT resource_relation_related_resource_id_fkey FOREIGN KEY (related_resource_id) REFERENCES public.resource(id);
+
+
+--
+-- Name: resource_relation resource_relation_source_resource_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.resource_relation
+    ADD CONSTRAINT resource_relation_source_resource_id_fkey FOREIGN KEY (source_resource_id) REFERENCES public.resource(id);
 
 
 --
