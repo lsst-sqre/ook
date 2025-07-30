@@ -4,13 +4,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import Select, case, func, select
+from sqlalchemy import Select, case, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB, aggregate_order_by
 
 from ook.dbschema.authors import (
     SqlAffiliation,
     SqlAuthor,
     SqlAuthorAffiliation,
+)
+from ook.domain.authors import NameParser
+from ook.storage.authorstore._searchstrategies import (
+    ComponentStrategy,
+    InitialStrategy,
+    SearchStrategy,
+    TrigramStrategy,
 )
 
 __all__ = [
@@ -19,6 +26,7 @@ __all__ = [
     "create_author_affiliations_subquery",
     "create_author_by_internal_id_stmt",
     "create_author_json_object",
+    "create_author_search_stmt",
     "create_author_with_affiliations_columns",
 ]
 
@@ -189,30 +197,66 @@ def create_all_authors_stmt() -> Select:
         SQLAlchemy select statement ready for execution, suitable for
         pagination.
     """
-    # Subquery to get affiliations as a JSON array for each author
-    affiliations_subquery = (
-        select(
-            SqlAuthor.id.label("author_id"),
-            func.json_agg(create_affiliations_json_object().cast(JSONB)).label(
-                "affiliations"
-            ),
-        )
-        .select_from(SqlAuthor)
-        .join(
-            SqlAuthorAffiliation,
-            SqlAuthor.id == SqlAuthorAffiliation.author_id,
-            isouter=True,
-        )
-        .join(
-            SqlAffiliation,
-            SqlAffiliation.id == SqlAuthorAffiliation.affiliation_id,
-            isouter=True,
-        )
-        .group_by(SqlAuthor.id)
-        .order_by(SqlAuthor.id, func.array_agg(SqlAuthorAffiliation.position))
-    ).alias("affiliations_subquery")
+    columns = create_author_with_affiliations_columns()
+    return select(*columns)
 
-    # Main query to get all authors with their affiliations
+
+def create_author_search_stmt(search_query: str) -> Select:
+    """Create author search statement using multi-strategy matching.
+
+    This implements a sophisticated search using multiple strategies:
+    - TrigramStrategy: PostgreSQL trigram similarity for fuzzy matching
+    - ComponentStrategy: Precise component matching with middle initial
+      flexibility
+    - InitialStrategy: Specialized initial-based searches (e.g., "Sick, J")
+
+    The function automatically selects appropriate strategies based on the
+    parsed query format and combines their results for optimal relevance.
+
+    Parameters
+    ----------
+    search_query
+        The search query string to match against author names.
+
+    Returns
+    -------
+    Select
+        SQLAlchemy select statement ready for execution, suitable for
+        pagination. Results include a 'score' column with relevance.
+    """
+    # Parse the query into structured components
+    parser = NameParser()
+    parsed_name = parser.parse(search_query)
+
+    # Select appropriate strategies based on parsed query
+    strategies: list[SearchStrategy] = []
+
+    # Always use trigram strategy for fuzzy matching and typo tolerance
+    strategies.append(TrigramStrategy())
+
+    # Add component strategy for structured searches (name components)
+    if parsed_name.surname or parsed_name.given_name:
+        strategies.append(ComponentStrategy())
+
+    # Add initial strategy if initials are detected
+    if parsed_name.initials:
+        strategies.append(InitialStrategy())
+
+    # Build combined condition and score expressions
+    conditions = []
+    score_exprs = []
+
+    for strategy in strategies:
+        conditions.append(strategy.build_condition(parsed_name))
+        score_exprs.append(strategy.build_score_expr(parsed_name))
+
+    # Combine conditions with OR (match any strategy)
+    combined_condition = or_(*conditions)
+
+    # Combine scores with GREATEST (use best score from any strategy)
+    combined_score = func.greatest(*score_exprs).label("score")
+
+    # Build the final query
     return (
         select(
             SqlAuthor.internal_id,
@@ -221,18 +265,9 @@ def create_all_authors_stmt() -> Select:
             SqlAuthor.orcid,
             SqlAuthor.email,
             SqlAuthor.notes,
-            case(
-                (
-                    affiliations_subquery.c.affiliations.is_(None),
-                    func.json_build_array(),
-                ),
-                else_=affiliations_subquery.c.affiliations,
-            ).label("affiliations"),
+            create_author_affiliations_subquery().label("affiliations"),
+            combined_score,
         )
-        .select_from(SqlAuthor)
-        .join(
-            affiliations_subquery,
-            SqlAuthor.id == affiliations_subquery.c.author_id,
-            isouter=True,
-        )
+        .where(combined_condition)
+        .order_by(combined_score.desc(), SqlAuthor.internal_id.asc())
     )

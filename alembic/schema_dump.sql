@@ -2,8 +2,8 @@
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 16.8 (Debian 16.8-1.pgdg120+1)
--- Dumped by pg_dump version 16.8 (Debian 16.8-1.pgdg120+1)
+-- Dumped from database version 16.9 (Debian 16.9-1.pgdg120+1)
+-- Dumped by pg_dump version 16.9 (Debian 16.9-1.pgdg120+1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -15,6 +15,20 @@ SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
+
+--
+-- Name: pg_trgm; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
+
+
+--
+-- Name: EXTENSION pg_trgm; Type: COMMENT; Schema: -; Owner:
+--
+
+COMMENT ON EXTENSION pg_trgm IS 'text similarity measurement and index searching based on trigrams';
+
 
 SET default_tablespace = '';
 
@@ -86,7 +100,8 @@ CREATE TABLE public.author (
     notes text[] NOT NULL,
     email text,
     orcid text,
-    date_updated timestamp with time zone NOT NULL
+    date_updated timestamp with time zone NOT NULL,
+    search_vector text GENERATED ALWAYS AS ((((COALESCE((given_name || ' '::text), ''::text) || surname) || ' '::text) || COALESCE(((surname || ', '::text) || given_name), ''::text))) STORED NOT NULL
 );
 
 
@@ -614,7 +629,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-1ad667eab84e
+c03d146610d8
 \.
 
 
@@ -1086,6 +1101,27 @@ ALTER TABLE ONLY public.sdm_table
 
 ALTER TABLE ONLY public.term
     ADD CONSTRAINT uq_term_definition UNIQUE (term, definition);
+
+
+--
+-- Name: idx_author_given_name_trgm; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_author_given_name_trgm ON public.author USING gin (given_name public.gin_trgm_ops);
+
+
+--
+-- Name: idx_author_search_vector_trgm; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_author_search_vector_trgm ON public.author USING gin (search_vector public.gin_trgm_ops);
+
+
+--
+-- Name: idx_author_surname_trgm; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_author_surname_trgm ON public.author USING gin (surname public.gin_trgm_ops);
 
 
 --

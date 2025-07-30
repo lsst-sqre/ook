@@ -5,8 +5,12 @@ from __future__ import annotations
 from safir.database import CountedPaginatedList
 from structlog.stdlib import BoundLogger
 
-from ook.domain.authors import Author
-from ook.storage.authorstore import AuthorsCursor, AuthorStore
+from ook.domain.authors import Author, AuthorSearchResult
+from ook.storage.authorstore import (
+    AuthorsCursor,
+    AuthorSearchCursor,
+    AuthorStore,
+)
 
 
 class AuthorService:
@@ -60,3 +64,31 @@ class AuthorService:
             A paginated list of authors.
         """
         return await self._author_store.get_authors(limit=limit, cursor=cursor)
+
+    async def search_authors(
+        self,
+        *,
+        search_query: str,
+        limit: int | None = None,
+        cursor: AuthorSearchCursor | None = None,
+    ) -> CountedPaginatedList[AuthorSearchResult, AuthorSearchCursor]:
+        """Search authors with fuzzy matching and relevance scoring.
+
+        Parameters
+        ----------
+        search_query
+            The search query string to match against author names.
+        limit
+            The maximum number of authors to return. If None, all matching
+            authors are returned.
+        cursor
+            The cursor for pagination. If None, the first page is returned.
+
+        Returns
+        -------
+        CountedPaginatedList
+            A paginated list of author search results with relevance scores.
+        """
+        return await self._author_store.search_authors(
+            search_query=search_query, limit=limit, cursor=cursor
+        )
