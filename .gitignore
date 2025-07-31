@@ -140,3 +140,4 @@ dmypy.json
 
 # AI tools
 .claude/settings.local.json
+.claude/tasks/

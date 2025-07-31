@@ -125,3 +125,19 @@ Application configuration is handled through Pydantic settings in `src/ook/confi
 - Code style is determined by ruff linting (see `lint` nox session).
 - Type checking is enforced using mypy (see `typing` nox session) using the `from __future__ import annotations` feature for forward references.
 - Docstrings use the Numpydoc style, though types are omitted in docstrings as per project convention. Return and yield types are still specified by their type.
+
+## Plan & Review
+
+### Before starting work
+
+- Always in plan mode to make a plan
+- After get the plan, make sure you Write the plan to .claude/tasks/TASK_NAME.md.
+- The plan should be a detailed implementation plan and the reasoning behind them, as well as tasks broken down.
+- If the task require external knowledge or certain package, also research to get latest knowledge (Use Task tool for research)
+- Don't over plan it, always think MVP.
+- Once you write the plan, firstly ask me to review it. Do not continue until I approve the plan.
+
+### While implementing
+
+- You should update the plan as you work.
+- After you complete tasks in the plan, you should update and append detailed descriptions of the changes you made, so following tasks can be easily hand over to other engineers.
