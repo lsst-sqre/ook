@@ -99,6 +99,7 @@ def dump_db_schema(session: nox.Session) -> None:
                     "OOK_DATABASE_PASSWORD": postgres.password,
                 }
             )
+            _install_postgres_extensions(postgres)
 
             session.run(
                 "ook",
@@ -162,6 +163,7 @@ def alembic(session: nox.Session) -> None:
                     "OOK_DATABASE_PASSWORD": postgres.password,
                 }
             )
+            _install_postgres_extensions(postgres)
 
             sleep(1)
             engine = sqlalchemy.create_engine(postgres.get_connection_url())
