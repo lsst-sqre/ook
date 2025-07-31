@@ -1,4 +1,5 @@
 import base64
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -33,6 +34,8 @@ def typing(session: nox.Session) -> None:
 @session(uv_groups=["dev"])
 def test(session: nox.Session) -> None:
     """Run pytest."""
+    _setup_testcontainers_logging()
+
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16") as postgres:
             _install_postgres_extensions(postgres)
@@ -58,6 +61,8 @@ def test(session: nox.Session) -> None:
 @session(name="dump-db-schema")
 def dump_db_schema(session: nox.Session) -> None:
     """Initialize then dump the database schema."""
+    _setup_testcontainers_logging()
+
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16") as postgres:
             env_vars = _make_env_vars(
@@ -104,6 +109,8 @@ def dump_db_schema(session: nox.Session) -> None:
 @session(name="alembic", uv_groups=["dev"])
 def alembic(session: nox.Session) -> None:
     """Run alembic commands."""
+    _setup_testcontainers_logging()
+
     sql_dump_path = Path(__file__).parent.joinpath("alembic/schema_dump.sql")
 
     if not sql_dump_path.exists():
@@ -180,6 +187,8 @@ def alembic(session: nox.Session) -> None:
 @session(name="run")
 def run(session: nox.Session) -> None:
     """Run the application in development mode."""
+    _setup_testcontainers_logging()
+
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer(
             "postgres:16", username="user", password="pass"
@@ -223,6 +232,8 @@ def cli(session: nox.Session) -> None:
 
       op run --env-file="square.env" -- nox -s cli -- --help
     """
+    _setup_testcontainers_logging()
+
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer(
             "postgres:16", username="user", password="pass"
@@ -253,6 +264,8 @@ def cli(session: nox.Session) -> None:
 @session(uv_groups=["docs"])
 def docs(session: nox.Session) -> None:
     """Build the docs."""
+    _setup_testcontainers_logging()
+
     doctree_dir = (session.cache_dir / "doctrees").absolute()
 
     with KafkaContainer().with_kraft() as kafka:
@@ -286,6 +299,8 @@ def docs(session: nox.Session) -> None:
 @session(name="docs-linkcheck", uv_groups=["docs"])
 def docs_linkcheck(session: nox.Session) -> None:
     """Linkcheck the docs."""
+    _setup_testcontainers_logging()
+
     doctree_dir = (session.cache_dir / "doctrees").absolute()
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16") as postgres:
@@ -358,6 +373,13 @@ xN+SqGqDTKDC22j00S7jcvCaa1qadn1qbdfukZ4NXv7E2d/LO0Y2Kkc=
 -----END RSA PRIVATE KEY-----
 
 """
+
+
+def _setup_testcontainers_logging() -> None:
+    """Configure logging to reduce testcontainers noise."""
+    logging.getLogger("testcontainers").setLevel(logging.ERROR)
+    logging.getLogger("docker").setLevel(logging.ERROR)
+    logging.getLogger("urllib3").setLevel(logging.ERROR)
 
 
 def _make_env_vars(
