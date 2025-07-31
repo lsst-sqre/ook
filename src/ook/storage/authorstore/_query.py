@@ -212,25 +212,98 @@ def create_author_search_stmt(search_query: str) -> Select:
         SQLAlchemy select statement ready for execution, suitable for
         pagination. Results include a 'score' column with relevance.
     """
-    # Simple relevance scoring based on match type
-    score_expr = case(
-        # Exact match on surname gets highest score
-        (SqlAuthor.surname.ilike(search_query), 100),
-        # Exact match on given name gets high score
-        (SqlAuthor.given_name.ilike(search_query), 90),
-        # Surname starts with search term
-        (SqlAuthor.surname.ilike(search_query + "%"), 80),
-        # Given name starts with search term
-        (SqlAuthor.given_name.ilike(search_query + "%"), 70),
-        # Surname contains search term
-        (SqlAuthor.surname.ilike("%" + search_query + "%"), 60),
-        # Given name contains search term
-        (SqlAuthor.given_name.ilike("%" + search_query + "%"), 50),
-        # Default score for other matches
-        else_=40,
-    ).label("score")
+    # Handle multi-word queries (e.g., "Jonathan Sick")
+    query_parts = search_query.strip().split()
 
-    # Main search query with basic text matching
+    if len(query_parts) == 2:
+        # Likely first name and last name
+        first_part, second_part = query_parts
+        # Simple relevance scoring for multi-word queries
+        score_expr = case(
+            # Exact match: given_name matches first, surname matches second
+            (
+                (SqlAuthor.given_name.ilike(first_part))
+                & (SqlAuthor.surname.ilike(second_part)),
+                100,
+            ),
+            # Exact match: surname matches first, given_name matches second
+            (
+                (SqlAuthor.surname.ilike(first_part))
+                & (SqlAuthor.given_name.ilike(second_part)),
+                95,
+            ),
+            # Partial match: given_name starts with first, surname with second
+            (
+                (SqlAuthor.given_name.ilike(first_part + "%"))
+                & (SqlAuthor.surname.ilike(second_part + "%")),
+                90,
+            ),
+            # Partial match: surname starts with first, given_name with second
+            (
+                (SqlAuthor.surname.ilike(first_part + "%"))
+                & (SqlAuthor.given_name.ilike(second_part + "%")),
+                85,
+            ),
+            # Contains match: given_name contains first, surname second
+            (
+                (SqlAuthor.given_name.ilike("%" + first_part + "%"))
+                & (SqlAuthor.surname.ilike("%" + second_part + "%")),
+                80,
+            ),
+            # Contains match: surname contains first, given_name second
+            (
+                (SqlAuthor.surname.ilike("%" + first_part + "%"))
+                & (SqlAuthor.given_name.ilike("%" + second_part + "%")),
+                75,
+            ),
+            # Single field matches (fallback for partial matches)
+            (SqlAuthor.surname.ilike("%" + search_query + "%"), 60),
+            (SqlAuthor.given_name.ilike("%" + search_query + "%"), 50),
+            # Default score
+            else_=40,
+        ).label("score")
+
+        # Search condition for multi-word queries
+        search_condition = (
+            # Match across both fields
+            (
+                (SqlAuthor.given_name.ilike("%" + first_part + "%"))
+                & (SqlAuthor.surname.ilike("%" + second_part + "%"))
+            )
+            | (
+                (SqlAuthor.surname.ilike("%" + first_part + "%"))
+                & (SqlAuthor.given_name.ilike("%" + second_part + "%"))
+            )
+            |
+            # Fallback to single field matching
+            SqlAuthor.surname.ilike("%" + search_query + "%")
+            | SqlAuthor.given_name.ilike("%" + search_query + "%")
+        )
+    else:
+        # Single word or complex query - use original logic
+        score_expr = case(
+            # Exact match on surname gets highest score
+            (SqlAuthor.surname.ilike(search_query), 100),
+            # Exact match on given name gets high score
+            (SqlAuthor.given_name.ilike(search_query), 90),
+            # Surname starts with search term
+            (SqlAuthor.surname.ilike(search_query + "%"), 80),
+            # Given name starts with search term
+            (SqlAuthor.given_name.ilike(search_query + "%"), 70),
+            # Surname contains search term
+            (SqlAuthor.surname.ilike("%" + search_query + "%"), 60),
+            # Given name contains search term
+            (SqlAuthor.given_name.ilike("%" + search_query + "%"), 50),
+            # Default score for other matches
+            else_=40,
+        ).label("score")
+
+        # Simple substring matching
+        search_condition = SqlAuthor.surname.ilike(
+            "%" + search_query + "%"
+        ) | SqlAuthor.given_name.ilike("%" + search_query + "%")
+
+    # Main search query with text matching
     return (
         select(
             SqlAuthor.internal_id,
@@ -242,10 +315,6 @@ def create_author_search_stmt(search_query: str) -> Select:
             create_author_affiliations_subquery().label("affiliations"),
             score_expr,
         )
-        .where(
-            # Simple substring matching
-            SqlAuthor.surname.ilike("%" + search_query + "%")
-            | SqlAuthor.given_name.ilike("%" + search_query + "%")
-        )
+        .where(search_condition)
         .order_by(score_expr.desc(), SqlAuthor.internal_id.asc())
     )
