@@ -207,7 +207,31 @@ class ComponentStrategy(SearchStrategy):
                 )
             )
 
-        return case(*score_cases, else_=50)
+        # Handle surname-only queries
+        if parsed_name.surname:
+            score_cases.append(
+                (SqlAuthor.surname.ilike(parsed_name.surname), 70)
+            )
+            score_cases.append(
+                (SqlAuthor.surname.ilike(f"{parsed_name.surname}%"), 65)
+            )
+            score_cases.append(
+                (SqlAuthor.surname.ilike(f"%{parsed_name.surname}%"), 60)
+            )
+
+        # Handle given name-only queries
+        if parsed_name.given_name:
+            score_cases.append(
+                (SqlAuthor.given_name.ilike(parsed_name.given_name), 60)
+            )
+            score_cases.append(
+                (SqlAuthor.given_name.ilike(f"{parsed_name.given_name}%"), 55)
+            )
+            score_cases.append(
+                (SqlAuthor.given_name.ilike(f"%{parsed_name.given_name}%"), 50)
+            )
+
+        return case(*score_cases, else_=40)
 
 
 class InitialStrategy(SearchStrategy):
@@ -249,7 +273,8 @@ class InitialStrategy(SearchStrategy):
         exact surname matches and multiple initial matches.
         """
         if not parsed_name.initials:
-            return case(else_=0)
+            # Return a literal zero for no initial matches
+            return case((SqlAuthor.id.isnot(None), 0), else_=0)
 
         score_cases = []
 
