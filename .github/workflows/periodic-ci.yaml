@@ -35,7 +35,7 @@ jobs:
         run: make update-deps
 
       - name: Run tests
-        run: uv run --group=nox nox -s lint typing test docs
+        run: uv run --group=nox nox -s lint typing test-coverage docs
 
       - name: Report status
         if: always()

@@ -33,7 +33,32 @@ def typing(session: nox.Session) -> None:
 
 @session(uv_groups=["dev"])
 def test(session: nox.Session) -> None:
-    """Run pytest."""
+    """Run pytest without coverage reporting."""
+    _setup_testcontainers_logging()
+
+    with KafkaContainer().with_kraft() as kafka:
+        with PostgresContainer("postgres:16") as postgres:
+            _install_postgres_extensions(postgres)
+
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                }
+            )
+            session.run(
+                "pytest",
+                *session.posargs,
+                env=env_vars,
+            )
+
+
+@session(name="test-coverage", uv_groups=["dev"])
+def test_coverage(session: nox.Session) -> None:
+    """Run pytest with coverage reporting."""
     _setup_testcontainers_logging()
 
     with KafkaContainer().with_kraft() as kafka:
