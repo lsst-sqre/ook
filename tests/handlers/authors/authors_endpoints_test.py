@@ -208,9 +208,10 @@ async def test_search_authors_no_results(
     """Test search with no matching results."""
     # Search for something very unlikely to match
     response = await client.get("/ook/authors?search=xyznonexistent")
-    assert response.status_code == 404  # NotFoundError when no results
-    error_data = response.json()
-    assert "No authors found matching 'xyznonexistent'" in str(error_data)
+    assert response.status_code == 200  # Empty results return 200
+    results = response.json()
+    assert results == []  # Empty list for no results
+    assert response.headers["X-Total-Count"] == "0"
 
 
 @pytest.mark.asyncio

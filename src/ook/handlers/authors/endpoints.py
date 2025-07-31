@@ -60,10 +60,6 @@ async def get_authors(
                 limit=limit,
                 cursor=AuthorSearchCursor.from_str(cursor) if cursor else None,
             )
-            if search_results.count == 0:
-                raise NotFoundError(
-                    message=f"No authors found matching '{search}'",
-                )
             response = context.response
             request = context.request
             response.headers["Link"] = search_results.link_header(request.url)
