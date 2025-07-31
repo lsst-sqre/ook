@@ -106,14 +106,14 @@ class SqlAuthor(Base):
     )
     """The date this record was last updated."""
 
-    search_vector: Mapped[str | None] = mapped_column(
+    search_vector: Mapped[str] = mapped_column(
         UnicodeText,
         Computed(
             "COALESCE(given_name || ' ', '') || surname || ' ' || "
             "COALESCE(surname || ', ' || given_name, '')",
             persisted=True,
         ),
-        nullable=True,
+        nullable=False,
     )
     """Generated search vector for fuzzy name matching."""
 

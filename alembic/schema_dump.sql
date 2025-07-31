@@ -16,6 +16,20 @@ SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
 
+--
+-- Name: pg_trgm; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
+
+
+--
+-- Name: EXTENSION pg_trgm; Type: COMMENT; Schema: -; Owner:
+--
+
+COMMENT ON EXTENSION pg_trgm IS 'text similarity measurement and index searching based on trigrams';
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -87,7 +101,7 @@ CREATE TABLE public.author (
     email text,
     orcid text,
     date_updated timestamp with time zone NOT NULL,
-    search_vector text GENERATED ALWAYS AS ((((COALESCE((given_name || ' '::text), ''::text) || surname) || ' '::text) || COALESCE(((surname || ', '::text) || given_name), ''::text))) STORED
+    search_vector text GENERATED ALWAYS AS ((((COALESCE((given_name || ' '::text), ''::text) || surname) || ' '::text) || COALESCE(((surname || ', '::text) || given_name), ''::text))) STORED NOT NULL
 );
 
 
@@ -1087,6 +1101,27 @@ ALTER TABLE ONLY public.sdm_table
 
 ALTER TABLE ONLY public.term
     ADD CONSTRAINT uq_term_definition UNIQUE (term, definition);
+
+
+--
+-- Name: idx_author_given_name_trgm; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_author_given_name_trgm ON public.author USING gin (given_name public.gin_trgm_ops);
+
+
+--
+-- Name: idx_author_search_vector_trgm; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_author_search_vector_trgm ON public.author USING gin (search_vector public.gin_trgm_ops);
+
+
+--
+-- Name: idx_author_surname_trgm; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_author_surname_trgm ON public.author USING gin (surname public.gin_trgm_ops);
 
 
 --

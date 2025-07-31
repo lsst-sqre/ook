@@ -33,7 +33,7 @@ def upgrade() -> None:
                 "COALESCE(surname || ', ' || given_name, '')",
                 persisted=True,
             ),
-            nullable=True,
+            nullable=False,
         ),
     )
 
