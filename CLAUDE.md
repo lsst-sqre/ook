@@ -125,6 +125,7 @@ Application configuration is handled through Pydantic settings in `src/ook/confi
 - Code style is determined by ruff linting (see `lint` nox session).
 - Type checking is enforced using mypy (see `typing` nox session) using the `from __future__ import annotations` feature for forward references.
 - Docstrings use the Numpydoc style, though types are omitted in docstrings as per project convention. Return and yield types are still specified by their type.
+- Pytest tests use the functional style with fixtures for setup and teardown rather than class-based tests.
 
 ## Plan & Review
 
