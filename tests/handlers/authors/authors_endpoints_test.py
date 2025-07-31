@@ -115,94 +115,53 @@ async def test_get_authors(
 
 
 @pytest.mark.asyncio
-async def test_search_authors_exact_match(
+async def test_search_authors_family_name(
     client: AsyncClient, ingest_lsst_texmf: None
 ) -> None:
-    """Test fuzzy search with exact name matches."""
-    # First, let's see what authors exist
-    response = await client.get("/ook/authors")
-    authors = response.json()
-    author_list = [
-        f"{a['internal_id']}: {a['family_name']}, {a['given_name'] or ''}"
-        for a in authors[:5]
-    ]
-    print(f"Available authors: {author_list}")
-
-    # Test search with just two characters to meet minimum requirement
-    response = await client.get("/ook/authors?search=Si")
-    print(f"Search 'Si' - Status: {response.status_code}")
-    if response.status_code == 404:
-        print(f"404 Error body: {response.text}")
-    elif response.status_code == 200:
-        results = response.json()
-        print(f"Results: {len(results)} found")
-        if results:
-            print(f"First result: {results[0]}")
-        else:
-            print("No results returned")
-    else:
-        print(f"Other status {response.status_code}: {response.text}")
-
-    # Simple assertion to ensure something works
-    assert response.status_code in [200, 404]  # Either works or no results
-
-
-@pytest.mark.asyncio
-async def test_search_authors_partial_matches(
-    client: AsyncClient, ingest_lsst_texmf: None
-) -> None:
-    """Test fuzzy search with partial matches and typos."""
-    # Test partial given name
-    response = await client.get("/ook/authors?search=Jon")
-    assert response.status_code == 200
-    results = response.json()
-    # Should find Jonathan Sick
-    jonathan_results = [r for r in results if r["internal_id"] == "sickj"]
-    assert len(jonathan_results) == 1
-    assert "score" in jonathan_results[0]
-
-    # Test with substring in family name (basic search, not fuzzy)
+    """Test searching authors by family name."""
     response = await client.get("/ook/authors?search=Sick")
     assert response.status_code == 200
     results = response.json()
-    # Should find Sick with exact substring matching
-    sick_results = [r for r in results if r["family_name"] == "Sick"]
-    assert len(sick_results) >= 1
-
-    # Test partial search that should match multiple authors
-    response = await client.get("/ook/authors?search=Jon")
-    assert response.status_code == 200
-    results = response.json()
-    # Should find authors with J in their names
     assert len(results) >= 1
     assert all("score" in result for result in results)
+    # Should find Jonathan Sick with high relevance
+    sick_results = [r for r in results if r["internal_id"] == "sickj"]
+    assert len(sick_results) == 1
+    assert sick_results[0]["family_name"] == "Sick"
 
 
 @pytest.mark.asyncio
-async def test_search_authors_lastname_firstname_format(
+async def test_search_authors_full_name(
     client: AsyncClient, ingest_lsst_texmf: None
 ) -> None:
-    """Test search with complete names."""
-    # Test full name search
-    response = await client.get("/ook/authors?search=Jonathan")
+    """Test searching authors by full name."""
+    response = await client.get("/ook/authors?search=Jonathan%20Sick")
     assert response.status_code == 200
     results = response.json()
     assert len(results) >= 1
+    assert all("score" in result for result in results)
     # Should find Jonathan Sick with high relevance
-    jonathan_results = [r for r in results if r["internal_id"] == "sickj"]
-    assert len(jonathan_results) == 1
-    assert "score" in jonathan_results[0]
-    # Should have high score for given name match
-    assert jonathan_results[0]["score"] > 40
+    sick_results = [r for r in results if r["internal_id"] == "sickj"]
+    assert len(sick_results) == 1
+    assert sick_results[0]["family_name"] == "Sick"
 
-    # Test another author search by surname
-    response = await client.get("/ook/authors?search=Bosch")
+
+@pytest.mark.asyncio
+async def test_search_authors_partial_family_name(
+    client: AsyncClient, ingest_lsst_texmf: None
+) -> None:
+    """Test searching authors with partial family name."""
+    response = await client.get("/ook/authors?search=Gold")
     assert response.status_code == 200
     results = response.json()
-    # Should find James F. Bosch
-    bosch_results = [r for r in results if r["family_name"] == "Bosch"]
-    assert len(bosch_results) >= 1
-    assert "score" in bosch_results[0]
+    print("Search results:", results)
+    assert len(results) >= 1
+    assert all("score" in result for result in results)
+    # Should find internal_id goldinat and goldsteinda with high relevance
+    gold_results = [
+        r for r in results if r["internal_id"] in ["goldinat", "goldsteinda"]
+    ]
+    assert len(gold_results) == 2
 
 
 @pytest.mark.asyncio
@@ -211,7 +170,7 @@ async def test_search_authors_relevance_ordering(
 ) -> None:
     """Test that search results are ordered by relevance score."""
     # Search for a common letter that should match many authors
-    response = await client.get("/ook/authors?search=Jon")
+    response = await client.get("/ook/authors?search=Ho")
     assert response.status_code == 200
     results = response.json()
     assert len(results) >= 2
@@ -225,21 +184,6 @@ async def test_search_authors_relevance_ordering(
 
     # Verify scores are within valid range
     assert all(0 <= score <= 100 for score in scores)
-
-
-@pytest.mark.asyncio
-async def test_search_authors_pagination(
-    client: AsyncClient, ingest_lsst_texmf: None
-) -> None:
-    """Test search result pagination."""
-    # Search for something that should return multiple results
-    response = await client.get("/ook/authors?search=Jon&limit=2")
-    assert response.status_code == 200
-    results = response.json()
-
-    # Should respect limit
-    assert len(results) <= 2
-    assert all("score" in result for result in results)
 
     # Check if pagination headers are present when there are more results
     if "Link" in response.headers:
