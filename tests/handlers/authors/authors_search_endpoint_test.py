@@ -11,6 +11,7 @@ import time
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
+from safir.database import PaginationLinkData
 
 from tests.support.github import GitHubMocker
 
@@ -87,8 +88,10 @@ async def test_search_first_last_format(
     response = await client.get("/ook/authors?search=Jonathan%20Sick")
     assert response.status_code == 200
     results = response.json()
+    assert len(results) >= 1
+    assert all("score" in result for result in results)
 
-    # Should find Jonathan Sick
+    # Should find Jonathan Sick with high relevance
     sick_results = [r for r in results if r["internal_id"] == "sickj"]
     assert len(sick_results) == 1
     assert sick_results[0]["family_name"] == "Sick"
@@ -103,14 +106,13 @@ async def test_search_surname_only(
     response = await client.get("/ook/authors?search=Sick")
     assert response.status_code == 200
     results = response.json()
+    assert len(results) >= 1
+    assert all("score" in result for result in results)
 
-    # Should find Jonathan Sick and potentially others with surname Sick
-    sick_results = [r for r in results if r["family_name"] == "Sick"]
-    assert len(sick_results) >= 1
-
-    # Jonathan Sick should be in the results
-    jonathan_sick = [r for r in sick_results if r["internal_id"] == "sickj"]
-    assert len(jonathan_sick) == 1
+    # Should find Jonathan Sick with high relevance
+    sick_results = [r for r in results if r["internal_id"] == "sickj"]
+    assert len(sick_results) == 1
+    assert sick_results[0]["family_name"] == "Sick"
 
 
 @pytest.mark.asyncio
@@ -197,22 +199,58 @@ async def test_search_case_insensitive(
 
 
 @pytest.mark.asyncio
+async def test_search_partial_family_name(
+    client: AsyncClient, ingest_lsst_texmf: None
+) -> None:
+    """Test searching authors with partial family name."""
+    response = await client.get("/ook/authors?search=Gold")
+    assert response.status_code == 200
+    results = response.json()
+    assert len(results) >= 1
+    assert all("score" in result for result in results)
+
+    # Should find internal_id goldinat and goldsteinda with high relevance
+    gold_results = [
+        r for r in results if r["internal_id"] in ["goldinat", "goldsteinda"]
+    ]
+    assert len(gold_results) == 2
+
+
+@pytest.mark.asyncio
 async def test_search_relevance_scoring(
     client: AsyncClient, ingest_lsst_texmf: None
 ) -> None:
     """Test that relevance scoring works correctly."""
-    response = await client.get("/ook/authors?search=Sick")
+    # Search for a common letter that should match many authors
+    response = await client.get("/ook/authors?search=Ho")
     assert response.status_code == 200
     results = response.json()
+    assert len(results) >= 2
 
-    # Results should be ordered by relevance (score descending)
-    scores = [r["score"] for r in results]
+    # Verify all results have scores
+    assert all("score" in result for result in results)
+
+    # Verify results are ordered by score (descending)
+    scores = [result["score"] for result in results]
     assert scores == sorted(scores, reverse=True)
 
-    # All results should have valid scores
-    assert all(
-        isinstance(score, (int, float)) and score >= 0 for score in scores
-    )
+    # Verify scores are within valid range
+    assert all(0 <= score <= 100 for score in scores)
+
+    # Check if pagination headers are present when there are more results
+    if "Link" in response.headers:
+        links = PaginationLinkData.from_header(response.headers["Link"])
+        if links.next_url:
+            # Test next page
+            next_response = await client.get(links.next_url)
+            assert next_response.status_code == 200
+            next_results = next_response.json()
+            assert all("score" in result for result in next_results)
+
+            # Results should be different (no duplicates across pages)
+            first_page_ids = {r["internal_id"] for r in results}
+            next_page_ids = {r["internal_id"] for r in next_results}
+            assert first_page_ids.isdisjoint(next_page_ids)
 
 
 @pytest.mark.asyncio
@@ -240,10 +278,21 @@ async def test_search_empty_query(
     client: AsyncClient, ingest_lsst_texmf: None
 ) -> None:
     """Test behavior with empty search query."""
+    # Empty search should fail validation due to min_length=2
     response = await client.get("/ook/authors?search=")
+    assert response.status_code == 422  # Validation error
 
-    # Should return 422 validation error for empty query (min_length=2)
-    assert response.status_code == 422
+    # Short search (1 char) should also fail validation
+    response = await client.get("/ook/authors?search=a")
+    assert response.status_code == 422  # Validation error
+
+    # But no search parameter should work (regular author listing)
+    response = await client.get("/ook/authors")
+    assert response.status_code == 200
+    results = response.json()
+    assert len(results) >= 1
+    # Regular listing should not have scores
+    assert all("score" not in result for result in results)
 
 
 @pytest.mark.asyncio
