@@ -191,53 +191,8 @@ def create_all_authors_stmt() -> Select:
         SQLAlchemy select statement ready for execution, suitable for
         pagination.
     """
-    # Subquery to get affiliations as a JSON array for each author
-    affiliations_subquery = (
-        select(
-            SqlAuthor.id.label("author_id"),
-            func.json_agg(create_affiliations_json_object().cast(JSONB)).label(
-                "affiliations"
-            ),
-        )
-        .select_from(SqlAuthor)
-        .join(
-            SqlAuthorAffiliation,
-            SqlAuthor.id == SqlAuthorAffiliation.author_id,
-            isouter=True,
-        )
-        .join(
-            SqlAffiliation,
-            SqlAffiliation.id == SqlAuthorAffiliation.affiliation_id,
-            isouter=True,
-        )
-        .group_by(SqlAuthor.id)
-        .order_by(SqlAuthor.id, func.array_agg(SqlAuthorAffiliation.position))
-    ).alias("affiliations_subquery")
-
-    # Main query to get all authors with their affiliations
-    return (
-        select(
-            SqlAuthor.internal_id,
-            SqlAuthor.surname,
-            SqlAuthor.given_name,
-            SqlAuthor.orcid,
-            SqlAuthor.email,
-            SqlAuthor.notes,
-            case(
-                (
-                    affiliations_subquery.c.affiliations.is_(None),
-                    func.json_build_array(),
-                ),
-                else_=affiliations_subquery.c.affiliations,
-            ).label("affiliations"),
-        )
-        .select_from(SqlAuthor)
-        .join(
-            affiliations_subquery,
-            SqlAuthor.id == affiliations_subquery.c.author_id,
-            isouter=True,
-        )
-    )
+    columns = create_author_with_affiliations_columns()
+    return select(*columns)
 
 
 def create_author_search_stmt(search_query: str) -> Select:
