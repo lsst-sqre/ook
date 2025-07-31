@@ -59,7 +59,7 @@ jobs:
           python-version-file: ".python-version"
 
       - name: Run nox
-        run: uv run --group=nox nox -s typing test
+        run: uv run --group=nox nox -s typing test-coverage
 
   docs:
     runs-on: ubuntu-latest
