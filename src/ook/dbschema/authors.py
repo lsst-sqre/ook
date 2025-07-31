@@ -9,6 +9,7 @@ from sqlalchemy import (
     Computed,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     UnicodeText,
     UniqueConstraint,
@@ -30,7 +31,27 @@ class SqlAuthor(Base):
 
     __tablename__ = "author"
 
-    __table_args__ = (UniqueConstraint("orcid", name="uq_author_orcid"),)
+    __table_args__ = (
+        UniqueConstraint("orcid", name="uq_author_orcid"),
+        Index(
+            "idx_author_surname_trgm",
+            "surname",
+            postgresql_using="gin",
+            postgresql_ops={"surname": "gin_trgm_ops"},
+        ),
+        Index(
+            "idx_author_given_name_trgm",
+            "given_name",
+            postgresql_using="gin",
+            postgresql_ops={"given_name": "gin_trgm_ops"},
+        ),
+        Index(
+            "idx_author_search_vector_trgm",
+            "search_vector",
+            postgresql_using="gin",
+            postgresql_ops={"search_vector": "gin_trgm_ops"},
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         BigInteger, primary_key=True, autoincrement=True
