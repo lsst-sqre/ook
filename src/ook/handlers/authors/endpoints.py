@@ -20,6 +20,62 @@ router = APIRouter(
 @router.get(
     "",
     summary="Get authors",
+    description="""
+Get a list of authors from the lsst-texmf authordb.yaml database.
+
+## Search by name
+
+Use the `search` parameter to for flexible and typo-tolerant searches of
+authors by name.
+
+### Name formats
+
+The search system automatically detects and handles various name formats:
+
+- "Last, First"
+- "Last, Initial"
+- "First Last"
+- Family name only
+- Given name only
+- Compound family names
+- Names with suffixes
+
+### Relevance scoring
+
+Search results include a `score` field (0-100) indicating match quality:
+
+- **90-100**: Exact or near-exact matches
+- **70-89**: Good matches with minor variations
+- **50-69**: Partial matches or fuzzy matches
+- **1-49**: Weak matches (rare, usually filtered out)
+
+Results are automatically sorted by relevance score in descending order.
+
+### Search examples
+
+```
+# Find exact author
+GET /ook/authors?search=Sick,%20Jonathan
+
+# Find by initial
+GET /ook/authors?search=Sick,%20J
+
+# Partial surname search
+GET /ook/authors?search=Gold
+
+# Handle typos
+GET /ook/authors?search=Sik  # Still finds "Sick"
+```
+
+## Pagination
+
+Both regular listing and search results support cursor-based pagination:
+
+- Use `cursor` parameter to navigate through pages
+- `limit` parameter controls page size (1-100, default 100)
+- Response includes `Link` header with next/prev URLs
+- `X-Total-Count` header provides total result count
+    """,
 )
 async def get_authors(
     *,
