@@ -213,7 +213,12 @@ def alembic(session: nox.Session) -> None:
 
 @session(name="run")
 def run(session: nox.Session) -> None:
-    """Run the application in development mode."""
+    """Run the application in development mode.
+
+    Pass a port number as an argument to customize the port (default: 3001)::
+
+        nox -s run -- 8080
+    """
     _setup_testcontainers_logging()
 
     with KafkaContainer().with_kraft() as kafka:
@@ -243,10 +248,22 @@ def run(session: nox.Session) -> None:
                 "alembic.ini",
                 env=env_vars,
             )
+
+            # Use port from posargs or default to 3001
+            port = "3001"
+            if session.posargs:
+                # Check if any posarg looks like a port number
+                for arg in session.posargs:
+                    if arg.isdigit() and 1024 <= int(arg) <= 65535:
+                        port = arg
+                        break
+
             session.run(
                 "uvicorn",
                 "ook.main:app",
                 "--reload",
+                "--port",
+                port,
                 env=env_vars,
             )
 
