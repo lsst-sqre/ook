@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import AnyHttpUrl, Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings
 from safir.kafka import KafkaConnectionSettings
 from safir.logging import LogLevel, Profile
@@ -44,15 +44,6 @@ class Configuration(BaseSettings):
         description=(
             "The URL prefix where the application's externally-accessible "
             "endpoints are hosted."
-        ),
-    )
-
-    environment_url: AnyHttpUrl = Field(
-        ...,
-        title="Base URL of the environment",
-        validation_alias="SAFIR_ENVIRONMENT_URL",
-        description=(
-            "The base URL of the environment where the application is hosted."
         ),
     )
 

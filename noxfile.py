@@ -369,7 +369,6 @@ def _make_env_vars(
     env_vars = {
         "SAFIR_PROFILE": "development",
         "SAFIR_LOG_LEVEL": "DEBUG",
-        "SAFIR_ENVIRONMENT_URL": "http://example.com/",
         "KAFKA_BOOTSTRAP_SERVERS": "localhost:9092",
         "KAFKA_SECURITY_PROTOCOL": "PLAINTEXT",
         "OOK_ENABLE_CONSUMER": "false",
