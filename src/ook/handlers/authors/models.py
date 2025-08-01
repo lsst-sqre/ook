@@ -7,8 +7,9 @@ from typing import Annotated, Any, Self
 from pydantic import BaseModel, BeforeValidator, Field, HttpUrl
 
 from ook.domain.authors import Author as AuthorDomain
+from ook.domain.authors import AuthorSearchResult as AuthorSearchResultDomain
 
-__all__ = ["Author"]
+__all__ = ["Author", "AuthorSearchResult"]
 
 
 class Address(BaseModel):
@@ -130,4 +131,40 @@ class Author(BaseModel):
                 Affiliation.model_validate(affil, from_attributes=True)
                 for affil in author.affiliations
             ],
+        )
+
+
+class AuthorSearchResult(Author):
+    """An author search result with relevance score."""
+
+    score: float = Field(
+        description="Relevance score (0-100) for search results",
+        ge=0,
+        le=100,
+    )
+
+    @classmethod
+    def from_domain(cls, author: AuthorDomain) -> Self:
+        """Create an AuthorSearchResult from a domain AuthorSearchResult."""
+        if not isinstance(author, AuthorSearchResultDomain):
+            msg = f"Expected AuthorSearchResult, got {type(author).__name__}"
+            raise TypeError(msg)
+
+        orcid_url = None
+        if author.orcid:
+            orcid_formatted = format_orcid_url(author.orcid)
+            if orcid_formatted:
+                orcid_url = HttpUrl(orcid_formatted)
+
+        return cls(
+            internal_id=author.internal_id,
+            family_name=author.surname,  # Map surname to family_name
+            given_name=author.given_name,
+            orcid=orcid_url,
+            notes=author.notes,
+            affiliations=[
+                Affiliation.model_validate(affil, from_attributes=True)
+                for affil in author.affiliations
+            ],
+            score=author.score,
         )
