@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-__all__ = ["Address", "Affiliation", "Author"]
+__all__ = ["Address", "Affiliation", "Author", "AuthorSearchResult"]
 
 
 class Address(BaseModel):
@@ -90,4 +90,14 @@ class Author(BaseModel):
     affiliations: list[Affiliation] = Field(
         default_factory=list,
         description="Affiliations of the author.",
+    )
+
+
+class AuthorSearchResult(Author):
+    """An author search result with relevance score."""
+
+    score: float = Field(
+        description="Relevance score (0-100) for search results",
+        ge=0,
+        le=100,
     )

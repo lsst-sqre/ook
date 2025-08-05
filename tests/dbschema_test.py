@@ -1,5 +1,6 @@
 """Test the database schema."""
 
+import os
 import subprocess
 
 import pytest
@@ -16,5 +17,35 @@ async def test_schema() -> None:
     )
     await drop_database(engine, Base.metadata)
     await engine.dispose()
-    subprocess.run(["alembic", "upgrade", "head"], check=True)  # noqa: ASYNC221
-    subprocess.run(["alembic", "check"], check=True)  # noqa: ASYNC221
+
+    # Run alembic upgrade
+    result = subprocess.run(  # noqa: ASYNC221
+        ["alembic", "upgrade", "head"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=os.environ,
+    )
+    if result.returncode != 0:
+        print(f"alembic upgrade failed with return code {result.returncode}")
+        print(f"stdout: {result.stdout}")
+        print(f"stderr: {result.stderr}")
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, result.stdout, result.stderr
+        )
+
+    # Run alembic check
+    result = subprocess.run(  # noqa: ASYNC221
+        ["alembic", "check"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=os.environ,
+    )
+    if result.returncode != 0:
+        print(f"alembic check failed with return code {result.returncode}")
+        print(f"stdout: {result.stdout}")
+        print(f"stderr: {result.stderr}")
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, result.stdout, result.stderr
+        )

@@ -1,4 +1,5 @@
 import base64
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -32,7 +33,34 @@ def typing(session: nox.Session) -> None:
 
 @session(uv_groups=["dev"])
 def test(session: nox.Session) -> None:
-    """Run pytest."""
+    """Run pytest without coverage reporting."""
+    _setup_testcontainers_logging()
+
+    with KafkaContainer().with_kraft() as kafka:
+        with PostgresContainer("postgres:16") as postgres:
+            _install_postgres_extensions(postgres)
+
+            env_vars = _make_env_vars(
+                {
+                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
+                    "OOK_DATABASE_URL": postgres.get_connection_url(
+                        driver="asyncpg"
+                    ),
+                    "OOK_DATABASE_PASSWORD": postgres.password,
+                }
+            )
+            session.run(
+                "pytest",
+                *session.posargs,
+                env=env_vars,
+            )
+
+
+@session(name="test-coverage", uv_groups=["dev"])
+def test_coverage(session: nox.Session) -> None:
+    """Run pytest with coverage reporting."""
+    _setup_testcontainers_logging()
+
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16") as postgres:
             _install_postgres_extensions(postgres)
@@ -58,6 +86,8 @@ def test(session: nox.Session) -> None:
 @session(name="dump-db-schema")
 def dump_db_schema(session: nox.Session) -> None:
     """Initialize then dump the database schema."""
+    _setup_testcontainers_logging()
+
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16") as postgres:
             env_vars = _make_env_vars(
@@ -69,6 +99,7 @@ def dump_db_schema(session: nox.Session) -> None:
                     "OOK_DATABASE_PASSWORD": postgres.password,
                 }
             )
+            _install_postgres_extensions(postgres)
 
             session.run(
                 "ook",
@@ -104,6 +135,8 @@ def dump_db_schema(session: nox.Session) -> None:
 @session(name="alembic", uv_groups=["dev"])
 def alembic(session: nox.Session) -> None:
     """Run alembic commands."""
+    _setup_testcontainers_logging()
+
     sql_dump_path = Path(__file__).parent.joinpath("alembic/schema_dump.sql")
 
     if not sql_dump_path.exists():
@@ -130,6 +163,7 @@ def alembic(session: nox.Session) -> None:
                     "OOK_DATABASE_PASSWORD": postgres.password,
                 }
             )
+            _install_postgres_extensions(postgres)
 
             sleep(1)
             engine = sqlalchemy.create_engine(postgres.get_connection_url())
@@ -179,7 +213,14 @@ def alembic(session: nox.Session) -> None:
 
 @session(name="run")
 def run(session: nox.Session) -> None:
-    """Run the application in development mode."""
+    """Run the application in development mode.
+
+    Pass a port number as an argument to customize the port (default: 3001)::
+
+        nox -s run -- 8080
+    """
+    _setup_testcontainers_logging()
+
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer(
             "postgres:16", username="user", password="pass"
@@ -207,10 +248,22 @@ def run(session: nox.Session) -> None:
                 "alembic.ini",
                 env=env_vars,
             )
+
+            # Use port from posargs or default to 3001
+            port = "3001"
+            if session.posargs:
+                # Check if any posarg looks like a port number
+                for arg in session.posargs:
+                    if arg.isdigit() and 1024 <= int(arg) <= 65535:
+                        port = arg
+                        break
+
             session.run(
                 "uvicorn",
                 "ook.main:app",
                 "--reload",
+                "--port",
+                port,
                 env=env_vars,
             )
 
@@ -223,6 +276,8 @@ def cli(session: nox.Session) -> None:
 
       op run --env-file="square.env" -- nox -s cli -- --help
     """
+    _setup_testcontainers_logging()
+
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer(
             "postgres:16", username="user", password="pass"
@@ -253,6 +308,8 @@ def cli(session: nox.Session) -> None:
 @session(uv_groups=["docs"])
 def docs(session: nox.Session) -> None:
     """Build the docs."""
+    _setup_testcontainers_logging()
+
     doctree_dir = (session.cache_dir / "doctrees").absolute()
 
     with KafkaContainer().with_kraft() as kafka:
@@ -286,6 +343,8 @@ def docs(session: nox.Session) -> None:
 @session(name="docs-linkcheck", uv_groups=["docs"])
 def docs_linkcheck(session: nox.Session) -> None:
     """Linkcheck the docs."""
+    _setup_testcontainers_logging()
+
     doctree_dir = (session.cache_dir / "doctrees").absolute()
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16") as postgres:
@@ -358,6 +417,13 @@ xN+SqGqDTKDC22j00S7jcvCaa1qadn1qbdfukZ4NXv7E2d/LO0Y2Kkc=
 -----END RSA PRIVATE KEY-----
 
 """
+
+
+def _setup_testcontainers_logging() -> None:
+    """Configure logging to reduce testcontainers noise."""
+    logging.getLogger("testcontainers").setLevel(logging.ERROR)
+    logging.getLogger("docker").setLevel(logging.ERROR)
+    logging.getLogger("urllib3").setLevel(logging.ERROR)
 
 
 def _make_env_vars(

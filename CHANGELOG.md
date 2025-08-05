@@ -2,6 +2,34 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.19.0'></a>
+
+## 0.19.0 (2025-08-04)
+
+### Backwards-incompatible changes
+
+- A database migration is required to add a new `search_vector` column to the `author` table. This column enables full-text search capabilities and is populated with computed values from the `given_name` and `surname` fields. Requires Alembic migration from `1ad667eab84e` to `c03d146610d8`.
+
+### New features
+
+- The `/authors` endpoint now supports a `search` query parameter that allows for flexible and typo-tolerant searching of authors by name. The search system automatically detects and handles various name formats:
+
+  - "Last, First"
+  - "Last, Initial"
+  - "First Last"
+  - Family name only
+  - Given name only
+  - Compound family names
+  - Names with suffixes
+  - Partial names, initials, and typos
+
+### Other changes
+
+- Improved codebase compatibility with coding agents like Claude:
+
+  - Streamlined the logging output from `nox` tests to reduce noise.
+  - Added Claude context file (`CLAUDE.md`) with project instructions.
+
 <a id='changelog-0.18.0'></a>
 
 ## 0.18.0 (2025-07-29)
