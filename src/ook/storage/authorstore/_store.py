@@ -164,7 +164,12 @@ class AuthorStore:
                 "address_postal_code": (
                     a.address.postal_code if a.address else None
                 ),
-                "address_country": a.address.country if a.address else None,
+                "address_country": a.address.country
+                if a.address
+                else None,  # Country name (with fallback logic)
+                "address_country_code": a.address.country_code
+                if a.address
+                else None,  # New ISO code
                 "date_updated": now,
             }
             for a in affiliations
@@ -184,6 +189,9 @@ class AuthorStore:
                     insert_stmt.excluded.address_postal_code
                 ),
                 "address_country": insert_stmt.excluded.address_country,
+                "address_country_code": (
+                    insert_stmt.excluded.address_country_code
+                ),
                 "date_updated": insert_stmt.excluded.date_updated,
             },
         )
