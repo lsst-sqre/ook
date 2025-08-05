@@ -31,8 +31,10 @@ class Address(BaseModel):
         default=None, description="Postal code of the affiliation."
     )
 
-    country: str | None = Field(
-        default=None, description="Country of the affiliation."
+    country: str | None = Field(default=None, description="Country name.")
+
+    country_code: str | None = Field(
+        default=None, description="ISO 3166-1 alpha-2 country code."
     )
 
 
