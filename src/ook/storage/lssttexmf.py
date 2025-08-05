@@ -11,7 +11,12 @@ from pydantic import BaseModel, BeforeValidator, Field, ValidationError
 from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
 
-from ook.domain.authors import Address, Affiliation, Author
+from ook.domain.authors import (
+    Address,
+    Affiliation,
+    Author,
+    normalize_country_code,
+)
 from ook.domain.latex import Latex
 from ook.storage.github import GitHubRepoStore
 
@@ -273,9 +278,19 @@ class AuthorDbYaml(BaseModel):
                     postal_code=Latex(affiliation.address.postcode).to_text()
                     if affiliation.address and affiliation.address.postcode
                     else None,
-                    country=Latex(affiliation.address.country_code).to_text()
+                    country_code=normalize_country_code(
+                        Latex(affiliation.address.country_code).to_text()
+                    )
                     if affiliation.address and affiliation.address.country_code
                     else None,
+                    country_name=(
+                        Latex(
+                            affiliation.address.country_code
+                        ).to_text()  # Store original LaTeX-processed
+                        if affiliation.address
+                        and affiliation.address.country_code
+                        else None
+                    ),
                 ),
             )
             for internal_id, affiliation in self.affiliations.items()

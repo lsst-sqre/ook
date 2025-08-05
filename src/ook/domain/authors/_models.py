@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
-
-import pycountry
 from pydantic import BaseModel, Field
+
+from ._countries import get_country_name
 
 __all__ = ["Address", "Affiliation", "Author", "AuthorSearchResult"]
 
@@ -43,28 +42,12 @@ class Address(BaseModel):
         """Get country name with fallback logic."""
         # Try to get from country_code first (preferred)
         if self.country_code:
-            country_name = self._get_country_name(self.country_code)
+            country_name = get_country_name(self.country_code)
             if country_name:
                 return country_name
 
         # Fall back to stored country name
         return self.country_name
-
-    @staticmethod
-    @lru_cache(maxsize=256)  # Cache country lookups for performance
-    def _get_country_name(country_code: str | None) -> str | None:
-        """Convert ISO 3166-1 alpha-2 code to country name."""
-        if not country_code:
-            return None
-
-        try:
-            country = pycountry.countries.get(alpha_2=country_code.upper())
-            if country:
-                return getattr(country, "name", None)
-        except (AttributeError, KeyError):
-            pass
-
-        return None
 
 
 class Affiliation(BaseModel):
