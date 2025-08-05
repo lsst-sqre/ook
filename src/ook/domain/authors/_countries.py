@@ -9,36 +9,39 @@ import pycountry
 __all__ = ["get_country_name", "normalize_country_code"]
 
 # Custom mapping for known non-standard country codes and names
+# All keys are stored in uppercase for case-insensitive lookup
 _CUSTOM_COUNTRY_MAPPING = {
     "USA": "US",
     "UK": "GB",
-    "The Netherlands": "NL",
-    "People's Republic of China": "CN",
-    "Czech Republic": "CZ",
-    "Serbia": "RS",
-    "Switzerland": "CH",
-    "Germany": "DE",
-    "Argentina": "AR",
-    "Mexico": "MX",
-    "France": "FR",
-    "Italy": "IT",
-    "Spain": "ES",
-    "Canada": "CA",
-    "Brazil": "BR",
-    "Japan": "JP",
-    "Poland": "PL",
-    "Slovenia": "SI",
-    "Sweden": "SE",
-    "Belgium": "BE",
-    "India": "IN",
+    "THE NETHERLANDS": "NL",
+    "PEOPLE'S REPUBLIC OF CHINA": "CN",
+    "CZECH REPUBLIC": "CZ",
+    "SERBIA": "RS",
+    "SWITZERLAND": "CH",
+    "GERMANY": "DE",
+    "ARGENTINA": "AR",
+    "MEXICO": "MX",
+    "FRANCE": "FR",
+    "ITALY": "IT",
+    "SPAIN": "ES",
+    "CANADA": "CA",
+    "BRAZIL": "BR",
+    "JAPAN": "JP",
+    "POLAND": "PL",
+    "SLOVENIA": "SI",
+    "SWEDEN": "SE",
+    "BELGIUM": "BE",
+    "INDIA": "IN",
 }
 
 
 @lru_cache(maxsize=256)
 def _cached_normalize_country_code(code: str) -> str | None:
     """Normalize country codes to ISO format."""
-    if code in _CUSTOM_COUNTRY_MAPPING:
-        return _CUSTOM_COUNTRY_MAPPING[code]
+    # Check custom mapping first (case-insensitive)
+    code_upper = code.upper()
+    if code_upper in _CUSTOM_COUNTRY_MAPPING:
+        return _CUSTOM_COUNTRY_MAPPING[code_upper]
 
     # Try fuzzy search for other cases
     try:
@@ -75,7 +78,12 @@ def normalize_country_code(raw_country_code: str | None) -> str | None:
     if not raw_country_code:
         return None
 
-    return _cached_normalize_country_code(raw_country_code)
+    # Strip whitespace from input
+    cleaned_code = raw_country_code.strip()
+    if not cleaned_code:
+        return None
+
+    return _cached_normalize_country_code(cleaned_code)
 
 
 @lru_cache(maxsize=256)
