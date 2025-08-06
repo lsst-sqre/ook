@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 import click
-import sqlalchemy as sa
 import structlog
 from algoliasearch.search_client import SearchClient
 from safir.asyncio import run_with_asyncio
@@ -24,7 +23,6 @@ from safir.logging import configure_logging
 from ook.config import config
 from ook.database import init_database
 from ook.domain.algoliarecord import MinimalDocumentModel
-from ook.domain.authors import normalize_country_code
 from ook.factory import Factory
 from ook.services.algoliadocindex import AlgoliaDocIndexService
 
@@ -271,14 +269,9 @@ def parse_timedelta(text: str) -> timedelta:
     is_flag=True,
     help="Show what would be updated without making changes.",
 )
-@click.option(
-    "--batch-size",
-    default=100,
-    help="Number of records to process in each batch.",
-)
 @run_with_asyncio
-async def migrate_country_codes(*, dry_run: bool, batch_size: int) -> None:
-    """Migrate country codes from existing country names."""
+async def migrate_country_codes(*, dry_run: bool) -> None:
+    """Migrate all country codes from existing country names."""
     logger = structlog.get_logger("ook")
 
     engine = create_database_engine(
@@ -289,77 +282,7 @@ async def migrate_country_codes(*, dry_run: bool, batch_size: int) -> None:
         logger=logger, engine=engine
     ) as factory:
         async with factory.db_session.begin():
-            # Get affiliations with country names but no country codes
-            result = await factory.db_session.execute(
-                sa.text("""
-                    SELECT id, address_country
-                    FROM affiliation
-                    WHERE address_country IS NOT NULL
-                    AND address_country_code IS NULL
-                    LIMIT :batch_size
-                """),
-                {"batch_size": batch_size},
-            )
-
-            records = result.fetchall()
-
-            if not records:
-                logger.info("No records to update")
-                return
-
-            updated_count = 0
-            failed_count = 0
-            conversions = {}
-
-            for affiliation_id, country_name in records:
-                country_code = normalize_country_code(country_name)
-
-                if country_code:
-                    conversions[affiliation_id] = {
-                        "country_name": country_name,
-                        "country_code": country_code,
-                    }
-                    updated_count += 1
-                else:
-                    failed_count += 1
-
-            if dry_run:
-                logger.info(
-                    "Dry run - would update records",
-                    updated=updated_count,
-                    failed=failed_count,
-                )
-                for affiliation_id, conversion in conversions.items():
-                    logger.info(
-                        "Would convert",
-                        affiliation_id=affiliation_id,
-                        **conversion,
-                    )
-            else:
-                # Apply updates
-                for affiliation_id, conversion in conversions.items():
-                    await factory.db_session.execute(
-                        sa.text("""
-                            UPDATE affiliation
-                            SET address_country_code = :country_code
-                            WHERE id = :affiliation_id
-                        """),
-                        {
-                            "country_code": conversion["country_code"],
-                            "affiliation_id": affiliation_id,
-                        },
-                    )
-
-                logger.info(
-                    "Updated country codes",
-                    updated=updated_count,
-                    failed=failed_count,
-                )
-
-            if failed_count > 0:
-                logger.warning(
-                    "Some country names could not be converted",
-                    failed_count=failed_count,
-                )
+            author_service = factory.create_author_service()
+            await author_service.migrate_country_codes(dry_run=dry_run)
 
     await engine.dispose()

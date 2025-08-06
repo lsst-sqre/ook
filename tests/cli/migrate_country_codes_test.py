@@ -110,10 +110,10 @@ def test_edge_cases() -> None:
         )
 
 
-def test_batch_processing_logic() -> None:
-    """Test the logic that would be used in batch processing."""
-    # Simulate a batch of country names that might be processed
-    country_batch = [
+def test_bulk_processing_logic() -> None:
+    """Test the logic for processing all records at once."""
+    # Simulate all country names that might be processed in one operation
+    all_country_names = [
         "United States",
         "Canada",
         "UK",
@@ -122,19 +122,35 @@ def test_batch_processing_logic() -> None:
         None,
         "",
         "France",
+        "Australia",
+        "Japan",
+        "Non-existent Country",
     ]
 
     successful_conversions = 0
     failed_conversions = 0
+    conversions = {}
+    failed_names = []
 
-    for country_name in country_batch:
+    # Process all records like the CLI command does
+    for i, country_name in enumerate(all_country_names):
         result = normalize_country_code(country_name)
         if result is not None:
+            conversions[f"affiliation_{i}"] = {
+                "country_name": country_name,
+                "country_code": result,
+            }
             successful_conversions += 1
         else:
+            failed_names.append(country_name)
             failed_conversions += 1
 
-    # Should successfully convert most valid country names
-    assert successful_conversions >= 5
+    # Should successfully convert valid country names
+    assert successful_conversions >= 7
     # Should fail on invalid inputs
     assert failed_conversions >= 3
+
+    # Verify conversions contain expected mappings
+    assert any(conv["country_code"] == "US" for conv in conversions.values())
+    assert any(conv["country_code"] == "CA" for conv in conversions.values())
+    assert any(conv["country_code"] == "GB" for conv in conversions.values())
