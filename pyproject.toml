@@ -41,6 +41,7 @@ dependencies = [
     "pylatexenc>=2.10",
     "base32-lib>=1.0.2",
     "pycountry>=24.6.1",
+    "google-i18n-address>=3.1.0",
 ]
 dynamic = ["version"]
 
