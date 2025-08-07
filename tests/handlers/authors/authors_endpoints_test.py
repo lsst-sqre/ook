@@ -69,6 +69,14 @@ async def test_get_author_by_id(
     )
     assert data["affiliations"][1]["ror"] == "https://ror.org/048g3cy84"
 
+    # Check that affiliations include address data with formatted field
+    for affiliation in data["affiliations"]:
+        if affiliation.get("address"):
+            assert "formatted" in affiliation["address"]
+            # Formatted field can be None or a string
+            formatted_addr = affiliation["address"]["formatted"]
+            assert formatted_addr is None or isinstance(formatted_addr, str)
+
 
 @pytest.mark.asyncio
 async def test_get_author_by_id_not_found(
@@ -112,3 +120,75 @@ async def test_get_authors(
     assert response.status_code == 200
     first_page_again = response.json()
     assert first_page == first_page_again
+
+
+@pytest.mark.asyncio
+async def test_author_address_formatting_in_api_response(
+    client: AsyncClient, ingest_lsst_texmf: None
+) -> None:
+    """Test that formatted addresses appear correctly in API responses."""
+    # Get an author with address data
+    response = await client.get("/ook/authors")
+    assert response.status_code == 200
+    authors = response.json()
+
+    # Look for an author with affiliations that have addresses
+    author_with_address = None
+    for author in authors:
+        for affiliation in author.get("affiliations", []):
+            if affiliation.get("address"):
+                author_with_address = author
+                break
+        if author_with_address:
+            break
+
+    if author_with_address:
+        # Verify the formatted field is present
+        for affiliation in author_with_address["affiliations"]:
+            address = affiliation.get("address")
+            if address:
+                # The formatted field should be present
+                assert "formatted" in address
+
+                # If there are address components, formatted should not be None
+                has_components = any(
+                    [
+                        address.get("street"),
+                        address.get("city"),
+                        address.get("state"),
+                        address.get("postal_code"),
+                        address.get("country"),
+                        address.get("country_code"),
+                    ]
+                )
+
+                if has_components:
+                    formatted = address["formatted"]
+                    assert formatted is not None
+                    assert isinstance(formatted, str)
+                    assert len(formatted.strip()) > 0
+                else:
+                    # If no components, formatted can be None
+                    assert address["formatted"] is None
+
+
+@pytest.mark.asyncio
+async def test_author_list_includes_formatted_addresses(
+    client: AsyncClient, ingest_lsst_texmf: None
+) -> None:
+    """Test that the authors list endpoint includes formatted addresses."""
+    response = await client.get("/ook/authors?limit=5")
+    assert response.status_code == 200
+    authors = response.json()
+
+    # Check that all authors maintain the formatted field structure
+    for author in authors:
+        for affiliation in author.get("affiliations", []):
+            address = affiliation.get("address")
+            if address:
+                # The formatted field must be present (though can be None)
+                assert "formatted" in address
+                formatted = address.get("formatted")
+                # If formatted is not None, it should be a string
+                if formatted is not None:
+                    assert isinstance(formatted, str)
