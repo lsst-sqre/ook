@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from i18naddress import format_address
 from pydantic import BaseModel, Field
 
 from ._countries import get_country_name
@@ -48,6 +49,59 @@ class Address(BaseModel):
 
         # Fall back to stored country name
         return self.country_name
+
+    @property
+    def formatted(self) -> str | None:
+        """Generate formatted address using international standards."""
+        return self._format_address()
+
+    def _format_address(self) -> str | None:
+        """Format address components into a formatted address string."""
+        if not any(
+            [
+                self.street,
+                self.city,
+                self.state,
+                self.postal_code,
+                self.country_code,
+                self.country_name,
+            ]
+        ):
+            return None
+
+        # Build address dict for google-i18n-address
+        address_dict = {}
+        if self.street:
+            address_dict["street_address"] = self.street
+        if self.city:
+            address_dict["city"] = self.city
+        if self.state:
+            address_dict["country_area"] = self.state
+        if self.postal_code:
+            address_dict["postal_code"] = self.postal_code
+        if self.country_code:
+            address_dict["country_code"] = self.country_code
+        elif self.country_name:
+            # Fallback to country name if code not available
+            address_dict["country_code"] = self.country_name
+
+        try:
+            return format_address(address_dict)
+        except Exception:
+            # Fallback to simple concatenation if formatting fails
+            return self._format_address_fallback()
+
+    def _format_address_fallback(self) -> str | None:
+        """Fallback formatting when google-i18n-address fails."""
+        components = [
+            self.street,
+            self.city,
+            f"{self.state} {self.postal_code}".strip()
+            if self.state or self.postal_code
+            else None,
+            self.country,
+        ]
+        return "\n".join(c for c in components if c)
 
 
 class Affiliation(BaseModel):

@@ -6,6 +6,7 @@ from typing import Annotated, Any, Self
 
 from pydantic import BaseModel, BeforeValidator, Field, HttpUrl
 
+from ook.domain.authors import Address as AddressDomain
 from ook.domain.authors import Author as AuthorDomain
 from ook.domain.authors import AuthorSearchResult as AuthorSearchResultDomain
 
@@ -36,6 +37,23 @@ class Address(BaseModel):
     country_code: str | None = Field(
         default=None, description="ISO 3166-1 alpha-2 country code."
     )
+
+    formatted: str | None = Field(
+        default=None, description="Formatted address string."
+    )
+
+    @classmethod
+    def from_domain(cls, address: AddressDomain) -> Self:
+        """Create API Address from domain Address."""
+        return cls(
+            street=address.street,
+            city=address.city,
+            state=address.state,
+            postal_code=address.postal_code,
+            country=address.country,
+            country_code=address.country_code,
+            formatted=address.formatted,
+        )
 
 
 def format_ror_url(value: Any) -> str | None:
@@ -82,6 +100,21 @@ class Affiliation(BaseModel):
     address: Address | None = Field(
         default=None, description="Address of the affiliation."
     )
+
+    @classmethod
+    def from_domain(cls, affil: Any) -> Self:
+        """Create API Affiliation from domain Affiliation."""
+        address = None
+        if affil.address:
+            address = Address.from_domain(affil.address)
+
+        return cls(
+            name=affil.name,
+            department=affil.department,
+            internal_id=affil.internal_id,
+            ror_id=affil.ror_id,
+            address=address,
+        )
 
 
 class Author(BaseModel):
@@ -130,8 +163,7 @@ class Author(BaseModel):
             orcid=orcid_url,
             notes=author.notes,
             affiliations=[
-                Affiliation.model_validate(affil, from_attributes=True)
-                for affil in author.affiliations
+                Affiliation.from_domain(affil) for affil in author.affiliations
             ],
         )
 
@@ -165,8 +197,7 @@ class AuthorSearchResult(Author):
             orcid=orcid_url,
             notes=author.notes,
             affiliations=[
-                Affiliation.model_validate(affil, from_attributes=True)
-                for affil in author.affiliations
+                Affiliation.from_domain(affil) for affil in author.affiliations
             ],
             score=author.score,
         )

@@ -2,6 +2,25 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.20.0'></a>
+## 0.20.0 (2025-08-07)
+
+### Backwards-incompatible changes
+
+- This version adds a new `address_country_code` column to the `affiliation` table. This requires an Alembic migration, `c03d146610d8` to `8e529b9177a0`.
+
+### New features
+
+- Ook now stores the two-letter ISO 3166-1 country code for an affiliation in the `affiliation` table, in addition to storing the country as provided by `authordb.yaml`. When a country code is available, it is used for determining the affiliation's country name, with a fallback to the country name column when absent. This should add reliability to affiliation address data.
+
+- The new CLI command, `ook migrate-country-codes` migrates existing country names to the country codes column.
+
+- Added formatted address field to affiliation responses. Affiliation addresses now include a `formatted` field that
+contains properly formatted address strings using international standards.
+  - Uses the [google-i18n-address](https://github.com/mirumee/google-i18n-address) library to respect country-specific conventions for address layout
+  - Includes graceful fallback formatting for invalid or incomplete address data
+  - Maintains full backwards compatibility with existing API consumers
+
 <a id='changelog-0.19.0'></a>
 
 ## 0.19.0 (2025-08-04)
