@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from ._countries import get_country_name
+
 __all__ = ["Address", "Affiliation", "Author", "AuthorSearchResult"]
 
 
@@ -26,9 +28,26 @@ class Address(BaseModel):
         default=None, description="Postal code of the affiliation."
     )
 
-    country: str | None = Field(
-        default=None, description="Country of the affiliation."
+    country_code: str | None = Field(
+        default=None, description="ISO 3166-1 alpha-2 country code."
     )
+
+    country_name: str | None = Field(
+        default=None,
+        description="Legacy country name storage.",
+    )
+
+    @property
+    def country(self) -> str | None:
+        """Get country name with fallback logic."""
+        # Try to get from country_code first (preferred)
+        if self.country_code:
+            country_name = get_country_name(self.country_code)
+            if country_name:
+                return country_name
+
+        # Fall back to stored country name
+        return self.country_name
 
 
 class Affiliation(BaseModel):

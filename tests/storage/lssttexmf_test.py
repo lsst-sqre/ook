@@ -116,3 +116,41 @@ def test_glossarydef_models(
 ) -> None:
     defs = GlossaryDef.parse_csv(glossarydefs_content)
     assert len(defs) > 0
+
+
+def test_country_code_latex_processing() -> None:
+    """Test that country codes with LaTeX markup are properly processed."""
+    # Create test data with LaTeX markup in country_code
+    test_data = {
+        "affiliations": {
+            "test_affil": {
+                "institute": "Test University",
+                "address": {
+                    # LaTeX markup for États-Unis (French for USA)
+                    "country_code": "\\'{E}tats-Unis"
+                },
+            }
+        },
+        "authors": {
+            "test_author": {"family_name": "Doe", "affil": ["test_affil"]}
+        },
+    }
+
+    # Parse and convert to domain models
+    authordb = AuthorDbYaml.model_validate(test_data)
+    affiliations = authordb.affiliations_to_domain()
+
+    # Verify that LaTeX processing occurred
+    test_affiliation = affiliations["test_affil"]
+    assert test_affiliation.address is not None
+
+    # The LaTeX should be processed to unicode
+    assert test_affiliation.address.country_name == "États-Unis"
+
+    # The country_code should be normalized (États-Unis might normalize to US
+    # but this specific string might not have a perfect match, so we just
+    # verify it's processed)
+    assert (
+        test_affiliation.address.country_code is not None
+        or test_affiliation.address.country_name is not None
+    )

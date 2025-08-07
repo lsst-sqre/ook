@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    String,
     UnicodeText,
     UniqueConstraint,
 )
@@ -187,7 +188,12 @@ class SqlAffiliation(Base):
     address_country: Mapped[str | None] = mapped_column(
         UnicodeText, nullable=True
     )
-    """The country code of the affiliation (unicode)."""
+    """The country name of the affiliation (legacy field)."""
+
+    address_country_code: Mapped[str | None] = mapped_column(
+        String(2), nullable=True, index=True
+    )
+    """The ISO 3166-1 alpha-2 country code of the affiliation."""
 
     authors: Mapped[list[SqlAuthorAffiliation]] = relationship(
         "SqlAuthorAffiliation",

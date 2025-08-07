@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Self, override
+from typing import Any, Self, override
 
 from safir.database import (
     CountedPaginatedList,
@@ -12,7 +12,7 @@ from safir.database import (
     PaginationCursor,
 )
 from safir.datetime import current_datetime
-from sqlalchemy import Select, delete, select
+from sqlalchemy import Select, delete, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import async_scoped_session
 from structlog.stdlib import BoundLogger
@@ -22,7 +22,12 @@ from ook.dbschema.authors import (
     SqlAuthor,
     SqlAuthorAffiliation,
 )
-from ook.domain.authors import Affiliation, Author, AuthorSearchResult
+from ook.domain.authors import (
+    Affiliation,
+    Author,
+    AuthorSearchResult,
+    normalize_country_code,
+)
 
 from ._query import (
     create_all_authors_stmt,
@@ -164,7 +169,12 @@ class AuthorStore:
                 "address_postal_code": (
                     a.address.postal_code if a.address else None
                 ),
-                "address_country": a.address.country if a.address else None,
+                "address_country": a.address.country
+                if a.address
+                else None,  # Country name (with fallback logic)
+                "address_country_code": a.address.country_code
+                if a.address
+                else None,  # New ISO code
                 "date_updated": now,
             }
             for a in affiliations
@@ -184,6 +194,9 @@ class AuthorStore:
                     insert_stmt.excluded.address_postal_code
                 ),
                 "address_country": insert_stmt.excluded.address_country,
+                "address_country_code": (
+                    insert_stmt.excluded.address_country_code
+                ),
                 "date_updated": insert_stmt.excluded.date_updated,
             },
         )
@@ -350,6 +363,101 @@ class AuthorStore:
                 )
                 await self._session.execute(delete_stmt)
                 await self._session.flush()
+
+    async def migrate_country_codes(
+        self, *, dry_run: bool = False
+    ) -> dict[str, Any]:
+        """Migrate all country codes from existing country names.
+
+        This method finds all affiliations with country names but no
+        country codes,
+        attempts to convert the country names to ISO 3166-1 alpha-2 codes using
+        the normalization logic, and updates the database accordingly.
+
+        Parameters
+        ----------
+        dry_run
+            If True, show what would be updated without making changes.
+
+        Returns
+        -------
+        dict[str, Any]
+            A dictionary containing migration results with keys:
+            - updated: int - Number of records successfully updated
+            - failed: int - Number of records that failed to convert
+            - total: int - Total number of records processed
+            - failed_conversions: list[dict] - Details of failed conversions
+            - conversions: dict[int, dict] - Details of successful
+              conversions (dry run only)
+        """
+        # Get all affiliations with country names but no country codes
+        result = await self._session.execute(
+            text("""
+                SELECT id, address_country
+                FROM affiliation
+                WHERE address_country IS NOT NULL
+                AND address_country_code IS NULL
+            """)
+        )
+
+        records = result.fetchall()
+
+        if not records:
+            return {
+                "updated": 0,
+                "failed": 0,
+                "total": 0,
+                "failed_conversions": [],
+                "conversions": {},
+            }
+
+        updated_count = 0
+        failed_count = 0
+        conversions = {}
+        failed_conversions = []
+
+        # Process each record
+        for affiliation_id, country_name in records:
+            country_code = normalize_country_code(country_name)
+
+            if country_code:
+                conversions[int(affiliation_id)] = {
+                    "country_name": country_name,
+                    "country_code": country_code,
+                }
+                updated_count += 1
+            else:
+                failed_conversions.append(
+                    {
+                        "affiliation_id": int(affiliation_id),
+                        "country_name": country_name,
+                    }
+                )
+                failed_count += 1
+
+        # Apply updates if not a dry run
+        if not dry_run:
+            for affiliation_id, conversion in conversions.items():
+                await self._session.execute(
+                    text("""
+                        UPDATE affiliation
+                        SET address_country_code = :country_code
+                        WHERE id = :affiliation_id
+                    """),
+                    {
+                        "country_code": conversion["country_code"],
+                        "affiliation_id": affiliation_id,
+                    },
+                )
+            await self._session.flush()
+
+        return {
+            "updated": updated_count,
+            "failed": failed_count,
+            "total": len(records),
+            "failed_conversions": failed_conversions,
+            "conversions": conversions if dry_run else {},
+        }
 
 
 @dataclass(slots=True)

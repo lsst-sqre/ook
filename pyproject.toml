@@ -40,6 +40,7 @@ dependencies = [
     "async_timeout>=2.0,<4.0", # for algoliasearch
     "pylatexenc>=2.10",
     "base32-lib>=1.0.2",
+    "pycountry>=24.6.1",
 ]
 dynamic = ["version"]
 

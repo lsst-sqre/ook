@@ -261,3 +261,28 @@ def parse_timedelta(text: str) -> timedelta:
         raise ValueError(f"Could not parse a timespan from {text!r}.")
     td_args = {k: int(v) for k, v in m.groupdict().items() if v is not None}
     return timedelta(**td_args)
+
+
+@main.command(name="migrate-country-codes")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would be updated without making changes.",
+)
+@run_with_asyncio
+async def migrate_country_codes(*, dry_run: bool) -> None:
+    """Migrate all country codes from existing country names."""
+    logger = structlog.get_logger("ook")
+
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+
+    async with Factory.create_standalone(
+        logger=logger, engine=engine
+    ) as factory:
+        async with factory.db_session.begin():
+            author_service = factory.create_author_service()
+            await author_service.migrate_country_codes(dry_run=dry_run)
+
+    await engine.dispose()

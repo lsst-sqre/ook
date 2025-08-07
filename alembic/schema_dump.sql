@@ -50,6 +50,7 @@ CREATE TABLE public.affiliation (
     address_state text,
     address_postal_code text,
     address_country text,
+    address_country_code character varying(2),
     date_updated timestamp with time zone NOT NULL
 );
 
@@ -620,7 +621,7 @@ ALTER TABLE ONLY public.term ALTER COLUMN id SET DEFAULT nextval('public.term_id
 -- Data for Name: affiliation; Type: TABLE DATA; Schema: public; Owner: test
 --
 
-COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id, address_street, address_city, address_state, address_postal_code, address_country, date_updated) FROM stdin;
+COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id, address_street, address_city, address_state, address_postal_code, address_country, address_country_code, date_updated) FROM stdin;
 \.
 
 
@@ -629,7 +630,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-c03d146610d8
+8e529b9177a0
 \.
 
 
@@ -1164,6 +1165,13 @@ CREATE INDEX idx_resource_relation_source ON public.resource_relation USING btre
 --
 
 CREATE INDEX idx_resource_relation_type ON public.resource_relation USING btree (relation_type);
+
+
+--
+-- Name: ix_affiliation_address_country_code; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_affiliation_address_country_code ON public.affiliation USING btree (address_country_code);
 
 
 --
