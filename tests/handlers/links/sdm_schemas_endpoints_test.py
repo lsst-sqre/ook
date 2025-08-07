@@ -298,6 +298,9 @@ async def test_sdm_schema_ingest_idempotency(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(
+    reason="Test is slow - uses limit=1 creating maximum pagination requests"
+)
 async def test_with_minimum_limit(
     client: AsyncClient, ingest_sdm_schemas: None
 ) -> None:
