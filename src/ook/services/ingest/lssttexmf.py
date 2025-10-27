@@ -8,6 +8,9 @@ from httpx import AsyncClient
 from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
 
+from ook.domain.authors import Author
+from ook.exceptions import DuplicateOrcidError
+from ook.services.slack import SlackNotificationService
 from ook.storage.authorstore import AuthorStore
 from ook.storage.github import GitHubRepoStore
 from ook.storage.glossarystore import GlossaryStore
@@ -25,6 +28,7 @@ class LsstTexmfIngestService:
         github_repo_store: GitHubRepoStore,
         author_store: AuthorStore,
         glossary_store: GlossaryStore,
+        slack_service: SlackNotificationService,
         github_owner: str = "lsst",
         github_repo: str = "lsst-texmf",
     ) -> None:
@@ -32,6 +36,7 @@ class LsstTexmfIngestService:
         self._http_client = http_client
         self._author_store = author_store
         self._glossary_store = glossary_store
+        self._slack_service = slack_service
         self._gh_repo_store = github_repo_store
         self._gh_repo = {"owner": github_owner, "repo": github_repo}
 
@@ -44,6 +49,7 @@ class LsstTexmfIngestService:
         gh_factory: GitHubAppClientFactory,
         author_store: AuthorStore,
         glossary_store: GlossaryStore,
+        slack_service: SlackNotificationService,
         github_owner: str = "lsst",
         github_repo: str = "lsst-texmf",
     ) -> Self:
@@ -62,6 +68,7 @@ class LsstTexmfIngestService:
             github_repo_store=gh_repo_store,
             author_store=author_store,
             glossary_store=glossary_store,
+            slack_service=slack_service,
             github_owner=github_owner,
             github_repo=github_repo,
         )
@@ -115,7 +122,7 @@ class LsstTexmfIngestService:
     async def _ingest_authordb(
         self, repo: LsstTexmfGitHubRepo, *, delete_stale_records: bool
     ) -> None:
-        """Ingest the authordb.yaml file."""
+        """Ingest the authordb.yaml file with stale entry detection."""
         author_db_data = await repo.load_authordb()
         await self._author_store.upsert_affiliations(
             affiliations=list(
@@ -123,10 +130,46 @@ class LsstTexmfIngestService:
             ),
             delete_stale_records=delete_stale_records,
         )
+
+        # Parse authors from authordb.yaml
         authors = author_db_data.authors_to_domain()
-        await self._author_store.upsert_authors(
-            list(authors.values()), delete_stale_records=delete_stale_records
-        )
+
+        # Detect stale entries before upserting
+        stale_authors = await self._detect_stale_authors(authors)
+
+        # Send Slack notification if stale entries found
+        if stale_authors:
+            self._logger.warning(
+                "Found %d stale author entries",
+                len(stale_authors),
+                extra={
+                    "stale_author_ids": [a.internal_id for a in stale_authors]
+                },
+            )
+            await self._slack_service.notify_stale_authors(
+                stale_authors,
+                git_ref=repo._git_ref,  # noqa: SLF001
+            )
+
+        # Attempt to upsert authors with duplicate ORCID error handling
+        try:
+            await self._author_store.upsert_authors(
+                list(authors.values()),
+                git_ref=repo._git_ref,  # noqa: SLF001
+                delete_stale_records=delete_stale_records,
+            )
+        except DuplicateOrcidError as e:
+            self._logger.exception(
+                "Duplicate ORCID constraint violation",
+                extra={
+                    "orcid": e.orcid,
+                    "existing_author_id": e.existing_author.internal_id,
+                    "new_author_ids": [a.internal_id for a in e.new_authors],
+                },
+            )
+            # SlackException is automatically formatted and sent to Slack
+            await self._slack_service.post_exception(e)
+            raise
 
     async def _ingest_glossary(self, repo: LsstTexmfGitHubRepo) -> None:
         """Ingest the glossarydefs.csv file."""
@@ -135,3 +178,31 @@ class LsstTexmfIngestService:
         await self._glossary_store.store_glossarydefs(
             terms=glossary_data, es_translations=es_glossary_data
         )
+
+    async def _detect_stale_authors(
+        self, current_authors: dict[str, Author]
+    ) -> list[Author]:
+        """Detect author entries that no longer exist in authordb.yaml.
+
+        Parameters
+        ----------
+        current_authors
+            Dictionary of current authors from authordb.yaml, keyed by
+            internal_id.
+
+        Returns
+        -------
+        list[Author]
+            List of stale author entries that exist in the database but
+            not in the current authordb.yaml.
+        """
+        # Get all authors from database (using unlimited pagination)
+        all_authors_page = await self._author_store.get_authors(limit=None)
+        db_authors = all_authors_page.entries
+
+        # Find authors in DB but not in current authordb.yaml
+        return [
+            author
+            for author in db_authors
+            if author.internal_id not in current_authors
+        ]

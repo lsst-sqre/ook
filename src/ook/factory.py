@@ -32,6 +32,7 @@ from .services.landerjsonldingest import LtdLanderJsonLdIngestService
 from .services.links import LinksService
 from .services.ltdmetadataservice import LtdMetadataService
 from .services.resources import ResourceService
+from .services.slack import SlackNotificationService
 from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
 from .services.technoteingest import TechnoteIngestService
 from .storage.authorstore import AuthorStore
@@ -328,6 +329,7 @@ class Factory:
             gh_factory=self.create_github_client_factory(),
             author_store=self.create_author_store(),
             glossary_store=self.create_glossary_store(),
+            slack_service=self.create_slack_service(),
         )
 
     def create_links_service(self) -> LinksService:
@@ -357,3 +359,7 @@ class Factory:
             resource_store=self.create_resource_store(),
             logger=self._logger,
         )
+
+    def create_slack_service(self) -> SlackNotificationService:
+        """Create a SlackNotificationService."""
+        return SlackNotificationService(config=config)

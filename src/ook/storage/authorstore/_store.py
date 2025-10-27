@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Self, override
@@ -14,6 +15,7 @@ from safir.database import (
 from safir.datetime import current_datetime
 from sqlalchemy import Select, delete, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_scoped_session
 from structlog.stdlib import BoundLogger
 
@@ -28,6 +30,7 @@ from ook.domain.authors import (
     AuthorSearchResult,
     normalize_country_code,
 )
+from ook.exceptions import DuplicateOrcidError
 
 from ._query import (
     create_all_authors_stmt,
@@ -235,8 +238,12 @@ class AuthorStore:
                 await self._session.execute(delete_stmt)
                 await self._session.flush()
 
-    async def upsert_authors(
-        self, authors: Sequence[Author], *, delete_stale_records: bool = False
+    async def upsert_authors(  # noqa: C901, PLR0915
+        self,
+        authors: Sequence[Author],
+        *,
+        git_ref: str,
+        delete_stale_records: bool = False,
     ) -> None:
         """Upsert authors into the database.
 
@@ -245,6 +252,8 @@ class AuthorStore:
         authors
             A sequence of Author domain models to be upserted into the
             database.
+        git_ref
+            Git reference being ingested (for error reporting context).
         delete_stale_records
             If True, delete authors that are not in the provided list.
         """
@@ -275,8 +284,43 @@ class AuthorStore:
                 "date_updated": now,
             },
         )
-        await self._session.execute(upsert_stmt)
-        await self._session.flush()
+
+        try:
+            await self._session.execute(upsert_stmt)
+            await self._session.flush()
+        except IntegrityError as e:
+            if "uq_author_orcid" in str(e):
+                # Extract the ORCID from error message
+                # Format: Key (orcid)=(0000-0003-4734-2019) already exists.
+                match = re.search(r"\(orcid\)=\(([^)]+)\)", str(e))
+                if not match:
+                    raise  # Re-raise if we can't parse the ORCID
+
+                orcid = match.group(1)
+
+                # Find which author(s) are affected
+                conflicting_authors = [a for a in authors if a.orcid == orcid]
+
+                # Find existing author with this ORCID
+                existing_author_result = await self._session.execute(
+                    select(SqlAuthor).where(SqlAuthor.orcid == orcid)
+                )
+                existing_author_row = existing_author_result.first()
+
+                if not existing_author_row:
+                    raise  # Re-raise if we can't find the existing author
+
+                existing_author = Author.model_validate(
+                    existing_author_row[0], from_attributes=True
+                )
+
+                raise DuplicateOrcidError(
+                    orcid=orcid,
+                    new_authors=conflicting_authors,
+                    existing_author=existing_author,
+                    git_ref=git_ref,
+                ) from e
+            raise
 
         # Handle author-affiliation relationships
         for author in authors:
