@@ -1,15 +1,20 @@
+from __future__ import annotations
+
 import base64
+import json
 import logging
 import os
 import subprocess
 from pathlib import Path
 from time import sleep
+from typing import TYPE_CHECKING
 
 import nox
 import sqlalchemy
 from nox_uv import session
-from testcontainers.kafka import KafkaContainer
-from testcontainers.postgres import PostgresContainer
+
+if TYPE_CHECKING:
+    from testcontainers.postgres import PostgresContainer
 
 # Default sessions
 nox.options.sessions = ["lint", "typing", "test", "docs"]
@@ -35,6 +40,11 @@ def typing(session: nox.Session) -> None:
 def test(session: nox.Session) -> None:
     """Run pytest without coverage reporting."""
     _setup_testcontainers_logging()
+    _setup_testcontainers_env()
+
+    # Import after setting environment variables so config is read correctly
+    from testcontainers.kafka import KafkaContainer  # noqa: PLC0415
+    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
 
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16") as postgres:
@@ -60,6 +70,11 @@ def test(session: nox.Session) -> None:
 def test_coverage(session: nox.Session) -> None:
     """Run pytest with coverage reporting."""
     _setup_testcontainers_logging()
+    _setup_testcontainers_env()
+
+    # Import after setting environment variables so config is read correctly
+    from testcontainers.kafka import KafkaContainer  # noqa: PLC0415
+    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
 
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16") as postgres:
@@ -87,6 +102,11 @@ def test_coverage(session: nox.Session) -> None:
 def dump_db_schema(session: nox.Session) -> None:
     """Initialize then dump the database schema."""
     _setup_testcontainers_logging()
+    _setup_testcontainers_env()
+
+    # Import after setting environment variables so config is read correctly
+    from testcontainers.kafka import KafkaContainer  # noqa: PLC0415
+    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
 
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16") as postgres:
@@ -136,6 +156,7 @@ def dump_db_schema(session: nox.Session) -> None:
 def alembic(session: nox.Session) -> None:
     """Run alembic commands."""
     _setup_testcontainers_logging()
+    _setup_testcontainers_env()
 
     sql_dump_path = Path(__file__).parent.joinpath("alembic/schema_dump.sql")
 
@@ -145,6 +166,10 @@ def alembic(session: nox.Session) -> None:
             "nox -s dump-db-schema with the earlier version of the "
             "application first."
         )
+
+    # Import after setting environment variables so config is read correctly
+    from testcontainers.kafka import KafkaContainer  # noqa: PLC0415
+    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
 
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer("postgres:16").with_volume_mapping(
@@ -220,6 +245,11 @@ def run(session: nox.Session) -> None:
         nox -s run -- 8080
     """
     _setup_testcontainers_logging()
+    _setup_testcontainers_env()
+
+    # Import after setting environment variables so config is read correctly
+    from testcontainers.kafka import KafkaContainer  # noqa: PLC0415
+    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
 
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer(
@@ -277,6 +307,11 @@ def cli(session: nox.Session) -> None:
       op run --env-file="square.env" -- nox -s cli -- --help
     """
     _setup_testcontainers_logging()
+    _setup_testcontainers_env()
+
+    # Import after setting environment variables so config is read correctly
+    from testcontainers.kafka import KafkaContainer  # noqa: PLC0415
+    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
 
     with KafkaContainer().with_kraft() as kafka:
         with PostgresContainer(
@@ -309,6 +344,11 @@ def cli(session: nox.Session) -> None:
 def docs(session: nox.Session) -> None:
     """Build the docs."""
     _setup_testcontainers_logging()
+    _setup_testcontainers_env()
+
+    # Import after setting environment variables so config is read correctly
+    from testcontainers.kafka import KafkaContainer  # noqa: PLC0415
+    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
 
     doctree_dir = (session.cache_dir / "doctrees").absolute()
 
@@ -344,6 +384,11 @@ def docs(session: nox.Session) -> None:
 def docs_linkcheck(session: nox.Session) -> None:
     """Linkcheck the docs."""
     _setup_testcontainers_logging()
+    _setup_testcontainers_env()
+
+    # Import after setting environment variables so config is read correctly
+    from testcontainers.kafka import KafkaContainer  # noqa: PLC0415
+    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
 
     doctree_dir = (session.cache_dir / "doctrees").absolute()
     with KafkaContainer().with_kraft() as kafka:
@@ -424,6 +469,38 @@ def _setup_testcontainers_logging() -> None:
     logging.getLogger("testcontainers").setLevel(logging.ERROR)
     logging.getLogger("docker").setLevel(logging.ERROR)
     logging.getLogger("urllib3").setLevel(logging.ERROR)
+
+
+def _setup_testcontainers_env() -> None:
+    """Configure testcontainers environment variables for Colima on macOS.
+
+    This must be called before any containers are started to ensure the
+    Reaper can connect properly when using Colima as the Docker runtime.
+    """
+    # Set testcontainers host override for Colima on macOS
+    # This fixes "nodename nor servname provided, or not known" errors
+    docker_host = os.getenv("DOCKER_HOST", "")
+    if docker_host.endswith(".colima/default/docker.sock"):
+        # Extract Colima VM IP address
+        try:
+            result = subprocess.run(
+                ["colima", "ls", "-j"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            colima_info = json.loads(result.stdout)
+            if colima_info and "address" in colima_info:
+                os.environ["TESTCONTAINERS_HOST_OVERRIDE"] = colima_info[
+                    "address"
+                ]
+        except (
+            subprocess.CalledProcessError,
+            json.JSONDecodeError,
+            KeyError,
+        ):
+            # If we can't get the Colima address, don't set override
+            pass
 
 
 def _make_env_vars(
