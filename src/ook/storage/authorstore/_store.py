@@ -238,6 +238,75 @@ class AuthorStore:
                 await self._session.execute(delete_stmt)
                 await self._session.flush()
 
+    async def _check_orcid_conflicts(
+        self,
+        authors: Sequence[Author],
+        git_ref: str,
+    ) -> None:
+        """Check for ORCID conflicts before upserting authors.
+
+        This pre-check prevents IntegrityErrors and transaction failures
+        by detecting ORCID conflicts before attempting database writes.
+
+        Parameters
+        ----------
+        authors
+            Authors to check for ORCID conflicts.
+        git_ref
+            Git reference being ingested (for error reporting context).
+
+        Raises
+        ------
+        DuplicateOrcidError
+            If any author has an ORCID that already exists in the database
+            with a different internal_id.
+        """
+        # Collect ORCIDs from incoming authors (excluding None)
+        orcid_to_authors: dict[str, list[Author]] = {}
+        for author in authors:
+            if author.orcid:
+                if author.orcid not in orcid_to_authors:
+                    orcid_to_authors[author.orcid] = []
+                orcid_to_authors[author.orcid].append(author)
+
+        if not orcid_to_authors:
+            return  # No ORCIDs to check
+
+        # Query for existing authors with these ORCIDs
+        existing_authors_result = await self._session.execute(
+            select(SqlAuthor).where(
+                SqlAuthor.orcid.in_(list(orcid_to_authors.keys()))
+            )
+        )
+        existing_authors = existing_authors_result.scalars().all()
+
+        # Check for conflicts: same ORCID but different internal_id
+        for existing_author_row in existing_authors:
+            existing_author = Author.model_validate(
+                existing_author_row, from_attributes=True
+            )
+            # Skip if orcid is None
+            # (shouldn't happen since we queried by ORCID)
+            if not existing_author.orcid:
+                continue
+
+            incoming_authors = orcid_to_authors.get(existing_author.orcid, [])
+
+            # Check if any incoming author has same ORCID but different ID
+            conflicting_authors = [
+                a
+                for a in incoming_authors
+                if a.internal_id != existing_author.internal_id
+            ]
+
+            if conflicting_authors:
+                raise DuplicateOrcidError(
+                    orcid=existing_author.orcid,
+                    new_authors=conflicting_authors,
+                    existing_author=existing_author,
+                    git_ref=git_ref,
+                )
+
     async def upsert_authors(  # noqa: C901, PLR0915
         self,
         authors: Sequence[Author],
@@ -257,6 +326,9 @@ class AuthorStore:
         delete_stale_records
             If True, delete authors that are not in the provided list.
         """
+        # Pre-check for ORCID conflicts to avoid transaction failures
+        await self._check_orcid_conflicts(authors, git_ref)
+
         now = current_datetime(microseconds=False)
 
         author_data = [
@@ -290,6 +362,9 @@ class AuthorStore:
             await self._session.flush()
         except IntegrityError as e:
             if "uq_author_orcid" in str(e):
+                # Rollback the transaction to allow further queries
+                await self._session.rollback()
+
                 # Extract the ORCID from error message
                 # Format: Key (orcid)=(0000-0003-4734-2019) already exists.
                 match = re.search(r"\(orcid\)=\(([^)]+)\)", str(e))
