@@ -95,6 +95,24 @@ class AuthorService:
             search_query=search_query, limit=limit, cursor=cursor
         )
 
+    async def delete_author(self, internal_id: str) -> None:
+        """Delete an author by their internal ID.
+
+        This operation permanently removes the author and all their
+        affiliation associations from the database.
+
+        Parameters
+        ----------
+        internal_id
+            The internal ID of the author to delete.
+        """
+        await self._author_store.delete_author(internal_id)
+
+        self._logger.info(
+            "Author deleted from database",
+            internal_id=internal_id,
+        )
+
     async def migrate_country_codes(
         self, *, dry_run: bool = False
     ) -> dict[str, Any]:

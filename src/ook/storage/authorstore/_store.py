@@ -36,6 +36,7 @@ from ._query import (
     create_all_authors_stmt,
     create_author_by_internal_id_stmt,
     create_author_search_stmt,
+    create_author_with_affiliations_columns,
 )
 
 __all__ = ["AuthorSearchCursor", "AuthorStore", "AuthorsCursor"]
@@ -139,6 +140,52 @@ class AuthorStore:
             stmt=stmt,
             cursor=cursor,
             limit=limit,
+        )
+
+    async def delete_author(self, internal_id: str) -> None:
+        """Delete an author by their internal ID.
+
+        This operation permanently removes the author and all their
+        affiliation associations from the database.
+
+        Parameters
+        ----------
+        internal_id
+            The internal ID of the author to delete.
+        """
+        # First, get the author's database ID
+        author_id_query = select(SqlAuthor.id).where(
+            SqlAuthor.internal_id == internal_id
+        )
+        author_id_result = await self._session.execute(author_id_query)
+        author_id = author_id_result.scalar_one_or_none()
+
+        if author_id is None:
+            # Author doesn't exist, nothing to delete
+            self._logger.debug(
+                "Author not found for deletion",
+                internal_id=internal_id,
+            )
+            return
+
+        # Delete author-affiliation associations first
+        delete_associations_stmt = delete(SqlAuthorAffiliation).where(
+            SqlAuthorAffiliation.author_id == author_id
+        )
+        await self._session.execute(delete_associations_stmt)
+
+        # Now delete the author
+        delete_author_stmt = delete(SqlAuthor).where(
+            SqlAuthor.internal_id == internal_id
+        )
+        result = await self._session.execute(delete_author_stmt)
+        await self._session.flush()
+
+        # The result.rowcount tells us if any rows were affected
+        self._logger.debug(
+            "Executed author deletion",
+            internal_id=internal_id,
+            rows_deleted=result.rowcount,
         )
 
     async def upsert_affiliations(
@@ -273,15 +320,16 @@ class AuthorStore:
             return  # No ORCIDs to check
 
         # Query for existing authors with these ORCIDs
+        # Use column-based query to avoid lazy-loading issues
         existing_authors_result = await self._session.execute(
-            select(SqlAuthor).where(
+            select(*create_author_with_affiliations_columns()).where(
                 SqlAuthor.orcid.in_(list(orcid_to_authors.keys()))
             )
         )
-        existing_authors = existing_authors_result.scalars().all()
+        existing_authors_rows = existing_authors_result.all()
 
         # Check for conflicts: same ORCID but different internal_id
-        for existing_author_row in existing_authors:
+        for existing_author_row in existing_authors_rows:
             existing_author = Author.model_validate(
                 existing_author_row, from_attributes=True
             )
