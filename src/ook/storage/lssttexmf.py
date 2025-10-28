@@ -466,6 +466,8 @@ class GlossaryDef(BaseModel):
         csv_content: str,
     ) -> list[Self]:
         """Parse the glossarydefs.csv file."""
+        # Strip UTF-8 BOM if present
+        csv_content = csv_content.removeprefix("\ufeff")
         glossary_defs = []
         reader = csv.DictReader(StringIO(csv_content))
         for i, row in enumerate(reader):
@@ -509,6 +511,8 @@ class GlossaryDefEs(BaseModel):
         csv_content: str,
     ) -> list[Self]:
         """Parse the glossarydefs_es.csv file."""
+        # Strip UTF-8 BOM if present
+        csv_content = csv_content.removeprefix("\ufeff")
         glossary_defs = []
         reader = csv.DictReader(StringIO(csv_content))
         for i, row in enumerate(reader):

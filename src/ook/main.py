@@ -26,6 +26,7 @@ from structlog import get_logger
 from .config import config
 from .dependencies.consumercontext import consumer_context_dependency
 from .dependencies.context import context_dependency
+from .handlers.admin import admin_router
 from .handlers.authors import authors_router
 from .handlers.glossary import glossary_router
 from .handlers.ingest import ingest_router
@@ -113,6 +114,13 @@ app = FastAPI(
             "name": "ingest",
             "description": "Ingest services.",
         },
+        {
+            "name": "admin",
+            "description": (
+                "Administrative operations. These endpoints should be "
+                "protected via Gafaelfawr ingress configuration."
+            ),
+        },
         {"name": "default", "description": "Application metadata."},
     ],
     docs_url=f"{config.path_prefix}/docs",
@@ -130,6 +138,7 @@ app.include_router(ingest_router)
 app.include_router(links_router)
 app.include_router(resources_router)
 app.include_router(kafka_router)
+app.include_router(admin_router)
 
 # Set up middleware
 app.add_middleware(XForwardedMiddleware)

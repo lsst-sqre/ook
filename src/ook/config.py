@@ -110,6 +110,15 @@ class Configuration(BaseSettings):
     https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps
     """
 
+    slack_webhook: SecretStr | None = Field(
+        None,
+        validation_alias="OOK_SLACK_WEBHOOK",
+        description=(
+            "Slack webhook for alerts. If set, alerts will be posted to this "
+            "Slack webhook"
+        ),
+    )
+
     @field_validator("github_app_private_key", mode="before")
     @classmethod
     def validate_none_secret(cls, v: SecretStr | None) -> SecretStr | None:

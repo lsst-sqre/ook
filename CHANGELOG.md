@@ -2,6 +2,29 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.21.0'></a>
+## 0.21.0 (2025-10-28)
+
+### New features
+
+- Added Slack webhook notifications for lsst-texmf author ingest issues. When the `OOK_SLACK_WEBHOOK` environment variable is configured, Ook now sends notifications for:
+
+  - **Stale author entries**: When author IDs are renamed in lsst-texmf's authordb.yaml, the old entries that remain in Ook's database are detected and reported (without automatic deletion).
+  - **Duplicate ORCID violations**: When an author ID changes but keeps the same ORCID, causing a unique constraint violation, a detailed notification is sent with information about both the existing and new author entries, including likely causes and resolution steps.
+
+- Added admin API endpoint `DELETE /ook/admin/authors/{internal_id}` for manually deleting author entries when resolving stale entries or ORCID conflicts.
+  These admin endpoints are intended to be protected with Gafaelfawr scope such as `exec:internal-tools`.
+
+- Ook's docker images are now built for both amd64 and arm64 architectures.
+
+### Bug fixes
+
+- The UTF-8 BOM is now properly handled when reading CSV files for glossary ingest, preventing parsing errors.
+
+### Other changes
+
+- Improved testcontainers setup for compatibility with Colima on macOS.
+
 <a id='changelog-0.20.0'></a>
 ## 0.20.0 (2025-08-07)
 

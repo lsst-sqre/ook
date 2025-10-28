@@ -26,7 +26,7 @@ class Term(BaseModel):
             default_factory=list,
             description="The related documentation tags.",
         ),
-    ] = []
+    ]
 
     is_abbr: Annotated[
         bool,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Self, override
@@ -14,6 +15,7 @@ from safir.database import (
 from safir.datetime import current_datetime
 from sqlalchemy import Select, delete, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_scoped_session
 from structlog.stdlib import BoundLogger
 
@@ -28,11 +30,13 @@ from ook.domain.authors import (
     AuthorSearchResult,
     normalize_country_code,
 )
+from ook.exceptions import DuplicateOrcidError
 
 from ._query import (
     create_all_authors_stmt,
     create_author_by_internal_id_stmt,
     create_author_search_stmt,
+    create_author_with_affiliations_columns,
 )
 
 __all__ = ["AuthorSearchCursor", "AuthorStore", "AuthorsCursor"]
@@ -138,6 +142,52 @@ class AuthorStore:
             limit=limit,
         )
 
+    async def delete_author(self, internal_id: str) -> None:
+        """Delete an author by their internal ID.
+
+        This operation permanently removes the author and all their
+        affiliation associations from the database.
+
+        Parameters
+        ----------
+        internal_id
+            The internal ID of the author to delete.
+        """
+        # First, get the author's database ID
+        author_id_query = select(SqlAuthor.id).where(
+            SqlAuthor.internal_id == internal_id
+        )
+        author_id_result = await self._session.execute(author_id_query)
+        author_id = author_id_result.scalar_one_or_none()
+
+        if author_id is None:
+            # Author doesn't exist, nothing to delete
+            self._logger.debug(
+                "Author not found for deletion",
+                internal_id=internal_id,
+            )
+            return
+
+        # Delete author-affiliation associations first
+        delete_associations_stmt = delete(SqlAuthorAffiliation).where(
+            SqlAuthorAffiliation.author_id == author_id
+        )
+        await self._session.execute(delete_associations_stmt)
+
+        # Now delete the author
+        delete_author_stmt = delete(SqlAuthor).where(
+            SqlAuthor.internal_id == internal_id
+        )
+        result = await self._session.execute(delete_author_stmt)
+        await self._session.flush()
+
+        # The result.rowcount tells us if any rows were affected
+        self._logger.debug(
+            "Executed author deletion",
+            internal_id=internal_id,
+            rows_deleted=result.rowcount,
+        )
+
     async def upsert_affiliations(
         self,
         affiliations: Sequence[Affiliation],
@@ -235,8 +285,82 @@ class AuthorStore:
                 await self._session.execute(delete_stmt)
                 await self._session.flush()
 
-    async def upsert_authors(
-        self, authors: Sequence[Author], *, delete_stale_records: bool = False
+    async def _check_orcid_conflicts(
+        self,
+        authors: Sequence[Author],
+        git_ref: str,
+    ) -> None:
+        """Check for ORCID conflicts before upserting authors.
+
+        This pre-check prevents IntegrityErrors and transaction failures
+        by detecting ORCID conflicts before attempting database writes.
+
+        Parameters
+        ----------
+        authors
+            Authors to check for ORCID conflicts.
+        git_ref
+            Git reference being ingested (for error reporting context).
+
+        Raises
+        ------
+        DuplicateOrcidError
+            If any author has an ORCID that already exists in the database
+            with a different internal_id.
+        """
+        # Collect ORCIDs from incoming authors (excluding None)
+        orcid_to_authors: dict[str, list[Author]] = {}
+        for author in authors:
+            if author.orcid:
+                if author.orcid not in orcid_to_authors:
+                    orcid_to_authors[author.orcid] = []
+                orcid_to_authors[author.orcid].append(author)
+
+        if not orcid_to_authors:
+            return  # No ORCIDs to check
+
+        # Query for existing authors with these ORCIDs
+        # Use column-based query to avoid lazy-loading issues
+        existing_authors_result = await self._session.execute(
+            select(*create_author_with_affiliations_columns()).where(
+                SqlAuthor.orcid.in_(list(orcid_to_authors.keys()))
+            )
+        )
+        existing_authors_rows = existing_authors_result.all()
+
+        # Check for conflicts: same ORCID but different internal_id
+        for existing_author_row in existing_authors_rows:
+            existing_author = Author.model_validate(
+                existing_author_row, from_attributes=True
+            )
+            # Skip if orcid is None
+            # (shouldn't happen since we queried by ORCID)
+            if not existing_author.orcid:
+                continue
+
+            incoming_authors = orcid_to_authors.get(existing_author.orcid, [])
+
+            # Check if any incoming author has same ORCID but different ID
+            conflicting_authors = [
+                a
+                for a in incoming_authors
+                if a.internal_id != existing_author.internal_id
+            ]
+
+            if conflicting_authors:
+                raise DuplicateOrcidError(
+                    orcid=existing_author.orcid,
+                    new_authors=conflicting_authors,
+                    existing_author=existing_author,
+                    git_ref=git_ref,
+                )
+
+    async def upsert_authors(  # noqa: C901, PLR0915
+        self,
+        authors: Sequence[Author],
+        *,
+        git_ref: str,
+        delete_stale_records: bool = False,
     ) -> None:
         """Upsert authors into the database.
 
@@ -245,9 +369,14 @@ class AuthorStore:
         authors
             A sequence of Author domain models to be upserted into the
             database.
+        git_ref
+            Git reference being ingested (for error reporting context).
         delete_stale_records
             If True, delete authors that are not in the provided list.
         """
+        # Pre-check for ORCID conflicts to avoid transaction failures
+        await self._check_orcid_conflicts(authors, git_ref)
+
         now = current_datetime(microseconds=False)
 
         author_data = [
@@ -275,8 +404,46 @@ class AuthorStore:
                 "date_updated": now,
             },
         )
-        await self._session.execute(upsert_stmt)
-        await self._session.flush()
+
+        try:
+            await self._session.execute(upsert_stmt)
+            await self._session.flush()
+        except IntegrityError as e:
+            if "uq_author_orcid" in str(e):
+                # Rollback the transaction to allow further queries
+                await self._session.rollback()
+
+                # Extract the ORCID from error message
+                # Format: Key (orcid)=(0000-0003-4734-2019) already exists.
+                match = re.search(r"\(orcid\)=\(([^)]+)\)", str(e))
+                if not match:
+                    raise  # Re-raise if we can't parse the ORCID
+
+                orcid = match.group(1)
+
+                # Find which author(s) are affected
+                conflicting_authors = [a for a in authors if a.orcid == orcid]
+
+                # Find existing author with this ORCID
+                existing_author_result = await self._session.execute(
+                    select(SqlAuthor).where(SqlAuthor.orcid == orcid)
+                )
+                existing_author_row = existing_author_result.first()
+
+                if not existing_author_row:
+                    raise  # Re-raise if we can't find the existing author
+
+                existing_author = Author.model_validate(
+                    existing_author_row[0], from_attributes=True
+                )
+
+                raise DuplicateOrcidError(
+                    orcid=orcid,
+                    new_authors=conflicting_authors,
+                    existing_author=existing_author,
+                    git_ref=git_ref,
+                ) from e
+            raise
 
         # Handle author-affiliation relationships
         for author in authors:
