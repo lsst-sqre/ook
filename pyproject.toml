@@ -36,7 +36,7 @@ dependencies = [
     "cssselect", # for lxml
     "lsst-felis", # SDM Schemas support
     "markdown-it-py[linkify,plugins]",
-    "aiohttp>=2.0,<4.0", # for algoliasearch
+    "aiohttp>=3.13.4,<4.0", # for algoliasearch
     "async_timeout>=2.0,<4.0", # for algoliasearch
     "pylatexenc>=2.10",
     "base32-lib>=1.0.2",
