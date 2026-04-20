@@ -15,10 +15,11 @@ env:
       - "dependabot/**"
       - "gh-readonly-queue/**"
       - "renovate/**"
+      - "t/**"
       - "tickets/**"
       - "u/**"
-    tags:
-      - "*"
+  release:
+    types: [published]
 
 jobs:
   lint:
@@ -32,11 +33,6 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           version: ${{ env.UV_VERSION }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version-file: ".python-version"
 
       - name: Run pre-commit
         run: uv run --group=lint pre-commit run --all-files
@@ -52,11 +48,6 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           version: ${{ env.UV_VERSION }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version-file: ".python-version"
 
       - name: Run nox
         run: uv run --group=nox nox -s typing test-coverage
@@ -82,11 +73,6 @@ jobs:
       - name: Install extra packages
         run: sudo apt install -y graphviz
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version-file: ".python-version"
-
       - name: Run nox
         run: uv run --group=nox nox -s docs
 
@@ -104,19 +90,28 @@ jobs:
         if: >
           github.event_name != 'merge_group'
           && (github.event_name != 'pull_request'
-            || startsWith(github.head_ref, 'tickets/'))
+              || (startsWith(github.head_ref, 'tickets/')
+                  || startsWith(github.head_ref, 't/')))
 
   build:
     needs: [test]
+    secrets: inherit
     uses: lsst-sqre/multiplatform-build-and-push/.github/workflows/build.yaml@v4
+    with:
+      images: ghcr.io/${{ github.repository }}
+
     # Only do Docker builds of tagged releases and pull requests from ticket
     # branches.  This will still trigger on pull requests from untrusted
     # repositories whose branch names match our tickets/* branch convention,
     # but in this case the build will fail with an error since the secret
     # won't be set.
+    # Only do Docker builds of releases and pull requests from ticket
+    # branches. This will still trigger on pull requests from untrusted
+    # repositories whose branch names match our tickets/* branch convention,
+    # but in this case the build will fail with an error since the secret
+    # won't be set.
     if: >
-      startsWith(github.ref, 'refs/tags/')
-      || startsWith(github.head_ref, 'tickets/')
-    with:
-      images: ghcr.io/${{ github.repository }}
-    secrets: inherit
+      (github.event_name == 'release' && github.event.action == 'published')
+      || (github.event_name != 'merge_group'
+          && (startsWith(github.head_ref, 'tickets/')
+              || startsWith(github.head_ref, 't/')))
