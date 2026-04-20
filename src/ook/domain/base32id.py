@@ -139,7 +139,7 @@ type Base32Id = Annotated[
     int,
     PlainValidator(validate_base32_id),
     PlainSerializer(
-        lambda value: serialize_ook_base32_id(value),
+        serialize_ook_base32_id,
         return_type=str,
         when_used="json",
     ),

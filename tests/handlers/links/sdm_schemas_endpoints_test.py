@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
-from safir.database import PaginationLinkData
+from safir.http import PaginationLinkData
 
 from tests.support.github import GitHubMocker
 

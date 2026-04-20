@@ -9,11 +9,11 @@ from typing import Self
 
 from algoliasearch.search_client import SearchClient
 from faststream.kafka import KafkaBroker
-from faststream.kafka.publisher.asyncapi import AsyncAPIDefaultPublisher
+from faststream.kafka.publisher import DefaultPublisher
 from httpx import AsyncClient
 from safir.database import create_async_session
 from safir.github import GitHubAppClientFactory
-from sqlalchemy.ext.asyncio import AsyncEngine, async_scoped_session
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from structlog.stdlib import BoundLogger
 
 from ook.services.authors import AuthorService
@@ -54,7 +54,7 @@ class ProcessContext:
     kafka_broker: KafkaBroker
     """The aiokafka broker provided through the FastStream Kafka router."""
 
-    kafka_ingest_publisher: AsyncAPIDefaultPublisher
+    kafka_ingest_publisher: DefaultPublisher
 
     algolia_client: SearchClient
     """Algolia client."""
@@ -69,7 +69,7 @@ class ProcessContext:
         http_client = AsyncClient()
 
         # Use the provided broker (typically for CLI contexts)
-        broker = kafka_broker if kafka_broker else kafka_router.broker
+        broker = kafka_broker or kafka_router.broker
 
         algolia_client = await algolia_client_dependency()
 
@@ -108,7 +108,7 @@ class Factory:
         self,
         *,
         logger: BoundLogger,
-        session: async_scoped_session,
+        session: AsyncSession,
         process_context: ProcessContext,
     ) -> None:
         self._process_context = process_context
@@ -172,7 +172,7 @@ class Factory:
         return self._process_context.http_client
 
     @property
-    def db_session(self) -> async_scoped_session:
+    def db_session(self) -> AsyncSession:
         """The database session."""
         return self._session
 

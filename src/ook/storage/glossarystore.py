@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
-from safir.datetime import current_datetime
 from sqlalchemy import delete, func, or_, select, text
-from sqlalchemy.ext.asyncio import async_scoped_session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.expression import case
 from structlog.stdlib import BoundLogger
 
@@ -20,9 +20,7 @@ __all__ = ["GlossaryStore"]
 class GlossaryStore:
     """Storage interface to the terms table in a database."""
 
-    def __init__(
-        self, session: async_scoped_session, logger: BoundLogger
-    ) -> None:
+    def __init__(self, session: AsyncSession, logger: BoundLogger) -> None:
         self._session = session
         self._logger = logger
 
@@ -287,7 +285,7 @@ class GlossaryStore:
 
         This method completely replaces all existing terms with the new terms.
         """
-        now = current_datetime(microseconds=False)
+        now = datetime.now(tz=UTC).replace(microsecond=0)
 
         # Delete all existing terms
         await self.clear_glossary()

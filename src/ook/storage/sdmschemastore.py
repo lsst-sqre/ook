@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from typing import cast
 
-from safir.datetime import current_datetime
-from sqlalchemy import delete, select
+from sqlalchemy import CursorResult, delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import async_scoped_session
+from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
 
 from ook.dbschema.sdmschemas import SqlSdmColumn, SqlSdmSchema, SqlSdmTable
@@ -24,15 +24,13 @@ __all__ = ["SdmSchemasStore"]
 class SdmSchemasStore:
     """An interface to the SQL tables for SDM Schemas."""
 
-    def __init__(
-        self, session: async_scoped_session, logger: BoundLogger
-    ) -> None:
+    def __init__(self, session: AsyncSession, logger: BoundLogger) -> None:
         self._session = session
         self._logger = logger
 
     async def update_schema(self, schema: SdmSchemaRecursive) -> None:
         """Upsert a schema, including its tables and columns."""
-        now = current_datetime(microseconds=False)
+        now = datetime.now(tz=UTC).replace(microsecond=0)
 
         # Prepare the schema data
         schema_data = {
@@ -155,10 +153,14 @@ class SdmSchemasStore:
             delete(SqlSdmColumn).where(SqlSdmColumn.id.in_(sub_query))
         )
         await self._session.flush()
+
+        # See https://github.com/sqlalchemy/sqlalchemy/issues/9185
+        # and https://github.com/sqlalchemy/sqlalchemy/issues/12813
+        rowcount = cast("CursorResult", result).rowcount
         self._logger.debug(
             "Checked outdated columns",
             schema_name=schema.name,
-            deleted_columns=result.rowcount,
+            deleted_columns=rowcount,
         )
 
         sub_query = (
@@ -172,10 +174,11 @@ class SdmSchemasStore:
             delete(SqlSdmTable).where(SqlSdmTable.id.in_(sub_query))
         )
         await self._session.flush()
+        rowcount = cast("CursorResult", result).rowcount
         self._logger.debug(
             "Checked outdated tables",
             schema_name=schema.name,
-            deleted_tables=result.rowcount,
+            deleted_tables=rowcount,
         )
 
         sub_query = (
@@ -188,10 +191,11 @@ class SdmSchemasStore:
             delete(SqlSdmSchema).where(SqlSdmSchema.id.in_(sub_query))
         )
         await self._session.flush()
+        rowcount = cast("CursorResult", result).rowcount
         self._logger.debug(
             "Checked outdated schemas",
             schema_name=schema.name,
-            deleted_schemas=result.rowcount,
+            deleted_schemas=rowcount,
         )
 
     async def get_schema(self, schema_name: str) -> SdmSchema | None:

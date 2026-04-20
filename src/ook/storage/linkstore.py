@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Self, override
 
 from safir.database import (
@@ -13,7 +14,6 @@ from safir.database import (
     InvalidCursorError,
     PaginationCursor,
 )
-from safir.datetime import current_datetime
 from sqlalchemy import (
     CTE,
     BigInteger,
@@ -27,7 +27,7 @@ from sqlalchemy import (
     select,
     union_all,
 )
-from sqlalchemy.ext.asyncio import async_scoped_session
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
 from sqlalchemy.sql.elements import ColumnElement
 from structlog.stdlib import BoundLogger
@@ -62,9 +62,7 @@ __all__ = [
 class LinkStore:
     """An interface to documentation links in a database."""
 
-    def __init__(
-        self, session: async_scoped_session, logger: BoundLogger
-    ) -> None:
+    def __init__(self, session: AsyncSession, logger: BoundLogger) -> None:
         self._session = session
         self._logger = logger
 
@@ -507,7 +505,7 @@ class LinkStore:
         including the schema itself, tables, and columns using bulk upsert
         operations.
         """
-        now = current_datetime(microseconds=False)
+        now = datetime.now(tz=UTC).replace(microsecond=0)
 
         # Get the schema record
         schema = (
