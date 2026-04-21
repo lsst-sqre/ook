@@ -12,7 +12,7 @@ from typing import Annotated, Any
 from fastapi import Depends, Request, Response
 from safir.dependencies.db_session import db_session_dependency
 from safir.dependencies.logger import logger_dependency
-from sqlalchemy.ext.asyncio import async_scoped_session
+from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
 
 from ..factory import Factory, ProcessContext
@@ -43,7 +43,7 @@ class RequestContext:
     logger: BoundLogger
     """The request logger, rebound with discovered context."""
 
-    session: async_scoped_session
+    session: AsyncSession
     """The database session."""
 
     factory: Factory
@@ -77,9 +77,7 @@ class ContextDependency:
         self,
         request: Request,
         response: Response,
-        session: Annotated[
-            async_scoped_session, Depends(db_session_dependency)
-        ],
+        session: Annotated[AsyncSession, Depends(db_session_dependency)],
         logger: Annotated[BoundLogger, Depends(logger_dependency)],
     ) -> RequestContext:
         """Create a per-request context and return it."""

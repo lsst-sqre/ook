@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Self, override
 
 from safir.database import (
@@ -11,10 +11,9 @@ from safir.database import (
     CountedPaginatedQueryRunner,
     PaginationCursor,
 )
-from safir.datetime import current_datetime
 from sqlalchemy import Select, delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.ext.asyncio import async_scoped_session
+from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
 
 from ook.dbschema import Base
@@ -49,7 +48,7 @@ class ResourceStore:
 
     def __init__(
         self,
-        session: async_scoped_session,
+        session: AsyncSession,
         logger: BoundLogger,
     ) -> None:
         self._session = session
@@ -85,9 +84,9 @@ class ResourceStore:
 
         # Use Pydantic's from_attributes to directly validate the result
         sql_resource = result[0]
-        contributors = result[1] if result[1] else []
-        resource_relations_json = result[2] if result[2] else []
-        external_relations = result[3] if result[3] else []
+        contributors = result[1] or []
+        resource_relations_json = result[2] or []
+        external_relations = result[3] or []
 
         self._logger.debug(
             "Resource query result",
@@ -235,7 +234,7 @@ class ResourceStore:
             If True, delete existing contributors and relations before
             inserting new ones.
         """
-        now = current_datetime(microseconds=False)
+        now = datetime.now(tz=UTC).replace(microsecond=0)
 
         # Handle related data deletion first
         if delete_stale_relations:
@@ -306,7 +305,7 @@ class ResourceStore:
             If True, delete existing contributors and relations before
             inserting new ones.
         """
-        now = current_datetime(microseconds=False)
+        now = datetime.now(tz=UTC).replace(microsecond=0)
 
         # Build resource data with common fields only
         resource_data = self._build_common_resource_data(resource, now)
@@ -571,9 +570,7 @@ class ResourceStore:
             "volume": external_ref.volume,
             "issue": external_ref.issue,
             "number": external_ref.number,
-            "number_type": external_ref.number_type
-            if external_ref.number_type
-            else None,
+            "number_type": external_ref.number_type or None,
             "first_page": external_ref.first_page,
             "last_page": external_ref.last_page,
             "publisher": external_ref.publisher,

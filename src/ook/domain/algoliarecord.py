@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from base64 import b64encode
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 __all__ = ["DocumentRecord", "DocumentSourceType", "MinimalDocumentModel"]
 
 
-class DocumentSourceType(str, Enum):
+class DocumentSourceType(StrEnum):
     """Types of content that can be classified by Ook."""
 
     LTD_TECHNOTE = "ltd_technote"

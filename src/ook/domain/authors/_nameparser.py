@@ -182,7 +182,7 @@ class NameParser:
                     format=NameFormat.LAST_COMMA_FIRST,
                     surname=surname,
                     given_name=given,
-                    initials=initials if initials else None,
+                    initials=initials or None,
                     suffix=parts[1],  # Use the suffix from middle position
                 )
 
@@ -224,9 +224,7 @@ class NameParser:
             format=NameFormat.LAST_COMMA_FIRST,
             surname=surname,
             given_name=given,  # Keep full given name including middle initials
-            initials=initials
-            if initials
-            else None,  # Store extracted initials separately
+            initials=initials or None,  # Store extracted initials separately
             suffix=suffix,
         )
 
@@ -306,6 +304,6 @@ class NameParser:
             format=NameFormat.FIRST_LAST,
             surname=surname,
             given_name=given_name,
-            initials=initials if initials else None,
+            initials=initials or None,
             suffix=suffix,
         )

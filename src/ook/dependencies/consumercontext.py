@@ -5,10 +5,9 @@ from typing import Annotated, Any
 
 from aiokafka import ConsumerRecord
 from fastapi import Depends
-from faststream import context
 from faststream.kafka.fastapi import KafkaMessage
 from safir.dependencies.db_session import db_session_dependency
-from sqlalchemy.ext.asyncio import async_scoped_session
+from sqlalchemy.ext.asyncio import AsyncSession
 from structlog import get_logger
 from structlog.stdlib import BoundLogger
 
@@ -54,13 +53,11 @@ class ConsumerContextDependency:
 
     async def __call__(
         self,
-        session: Annotated[
-            async_scoped_session, Depends(db_session_dependency)
-        ],
+        message: KafkaMessage,
+        session: Annotated[AsyncSession, Depends(db_session_dependency)],
     ) -> ConsumerContext:
         """Create a per-request context."""
         # Get the message from the FastStream context
-        message: KafkaMessage = context.get_local("message")
         if isinstance(message.raw_message, tuple):
             record = message.raw_message[0]
         else:

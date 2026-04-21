@@ -5,18 +5,18 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Self, override
+from datetime import UTC, datetime
+from typing import Any, Self, cast, override
 
 from safir.database import (
     CountedPaginatedList,
     CountedPaginatedQueryRunner,
     PaginationCursor,
 )
-from safir.datetime import current_datetime
-from sqlalchemy import Select, delete, select, text
+from sqlalchemy import CursorResult, Select, delete, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import async_scoped_session
+from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
 
 from ook.dbschema.authors import (
@@ -45,9 +45,7 @@ __all__ = ["AuthorSearchCursor", "AuthorStore", "AuthorsCursor"]
 class AuthorStore:
     """Interface for storing author information in a database."""
 
-    def __init__(
-        self, session: async_scoped_session, logger: BoundLogger
-    ) -> None:
+    def __init__(self, session: AsyncSession, logger: BoundLogger) -> None:
         self._session = session
         self._logger = logger
 
@@ -181,11 +179,15 @@ class AuthorStore:
         result = await self._session.execute(delete_author_stmt)
         await self._session.flush()
 
+        # See https://github.com/sqlalchemy/sqlalchemy/issues/9185
+        # and https://github.com/sqlalchemy/sqlalchemy/issues/12813
+        rowcount = cast("CursorResult", result).rowcount
+
         # The result.rowcount tells us if any rows were affected
         self._logger.debug(
             "Executed author deletion",
             internal_id=internal_id,
-            rows_deleted=result.rowcount,
+            rows_deleted=rowcount,
         )
 
     async def upsert_affiliations(
@@ -204,7 +206,7 @@ class AuthorStore:
         delete_stale_records
             If True, delete affiliations that are not in the provided list.
         """
-        now = current_datetime(microseconds=False)
+        now = datetime.now(tz=UTC).replace(microsecond=0)
 
         affiliation_data = [
             {
@@ -377,7 +379,7 @@ class AuthorStore:
         # Pre-check for ORCID conflicts to avoid transaction failures
         await self._check_orcid_conflicts(authors, git_ref)
 
-        now = current_datetime(microseconds=False)
+        now = datetime.now(tz=UTC).replace(microsecond=0)
 
         author_data = [
             {

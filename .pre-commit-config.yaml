@@ -11,12 +11,12 @@ repos:
         args: [--autofix, --indent=2, '--top-keys=name,doc,type']
 
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.8.19
+    rev: 0.11.7
     hooks:
       - id: uv-lock
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.13.1
+    rev: v0.15.11
     hooks:
       - id: ruff-check
         args: [--fix, --exit-non-zero-on-fix]
