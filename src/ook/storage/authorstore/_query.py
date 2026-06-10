@@ -11,6 +11,7 @@ from ook.dbschema.authors import (
     SqlAffiliation,
     SqlAuthor,
     SqlAuthorAffiliation,
+    SqlAuthorAlias,
 )
 from ook.domain.authors import NameParser
 from ook.storage.authorstore._searchstrategies import (
@@ -177,6 +178,9 @@ def create_author_with_affiliations_columns(
 def create_author_by_internal_id_stmt(internal_id: str) -> Select:
     """Create a complete statement to get an author by internal_id.
 
+    The internal ID may be an alias, in which case the root author is
+    selected.
+
     Parameters
     ----------
     internal_id
@@ -188,7 +192,17 @@ def create_author_by_internal_id_stmt(internal_id: str) -> Select:
         SQLAlchemy select statement ready for execution.
     """
     columns = create_author_with_affiliations_columns()
-    return select(*columns).where(SqlAuthor.internal_id == internal_id)
+    alias_author_id = (
+        select(SqlAuthorAlias.author_id)
+        .where(SqlAuthorAlias.internal_id == internal_id)
+        .scalar_subquery()
+    )
+    return select(*columns).where(
+        or_(
+            SqlAuthor.internal_id == internal_id,
+            SqlAuthor.id == alias_author_id,
+        )
+    )
 
 
 def create_all_authors_stmt() -> Select:

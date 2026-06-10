@@ -24,6 +24,7 @@ __all__ = [
     "SqlAffiliation",
     "SqlAuthor",
     "SqlAuthorAffiliation",
+    "SqlAuthorAlias",
 ]
 
 
@@ -117,6 +118,45 @@ class SqlAuthor(Base):
         nullable=False,
     )
     """Generated search vector for fuzzy name matching."""
+
+
+class SqlAuthorAlias(Base):
+    """A SQLAlchemy model for author internal ID aliases.
+
+    An alias is an alternative internal ID that resolves to a root author.
+    Aliases preserve backwards compatibility for documents that reference
+    an author by a superseded internal ID.
+    """
+
+    __tablename__ = "author_alias"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    """The primary key."""
+
+    internal_id: Mapped[str] = mapped_column(
+        UnicodeText, nullable=False, index=True, unique=True
+    )
+    """The alias internal ID.
+
+    This must not collide with any ``author.internal_id`` value.
+    """
+
+    author_id: Mapped[int] = mapped_column(
+        ForeignKey("author.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    """The root author this alias resolves to."""
+
+    author: Mapped[SqlAuthor] = relationship("SqlAuthor")
+    """The root author."""
+
+    date_updated: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    """The date this record was last updated."""
 
 
 class SqlAffiliation(Base):
