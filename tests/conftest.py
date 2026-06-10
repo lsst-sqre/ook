@@ -89,5 +89,4 @@ async def factory(
         logger=logger, engine=engine
     ) as factory:
         yield factory
-        await factory.aclose()
     await engine.dispose()

@@ -152,8 +152,15 @@ class Factory:
         async with aclosing(factory):
             # Manually connect the broker after the publishers are created
             # so that the producer can be added to each publisher.
-            await factory._process_context.kafka_broker.connect()  # noqa: SLF001
-            yield factory
+            broker = factory._process_context.kafka_broker  # noqa: SLF001
+            await broker.connect()
+            try:
+                yield factory
+            finally:
+                # Stop the broker on the same event loop that connected it.
+                # The broker may be a module-level singleton (kafka_router's),
+                # so leaving it connected leaks producers bound to this loop.
+                await broker.stop()
 
     async def aclose(self) -> None:
         """Shut down the factory and the internal process context."""
