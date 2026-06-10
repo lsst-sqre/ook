@@ -21,8 +21,8 @@ router = APIRouter(
     "/aliases",
     summary="List author ID aliases",
     description=(
-        "List all author internal ID aliases and the root author IDs they "
-        "resolve to."
+        "List all author internal ID aliases and the canonical author IDs "
+        "they resolve to."
     ),
 )
 async def get_author_aliases(
@@ -39,27 +39,29 @@ async def get_author_aliases(
     "/aliases",
     summary="Create an author ID alias",
     description="""
-Create an alias for an author's internal ID. Requests for the alias through
-`GET /ook/authors/{internal_id}` resolve to the root author's record, and
-documents that reference the alias are attributed to the root author. The
-author listing and search endpoints don't show aliases.
+Create an alias for an author's internal ID, mapping an `alias` ID to the
+`canonical` author ID it resolves to. Requests for the alias through
+`GET /ook/authors/{internal_id}` resolve to the canonical author's record,
+and documents that reference the alias are attributed to the canonical
+author. The author listing and search endpoints don't show aliases.
 
 Aliases preserve backwards compatibility when two authordb.yaml IDs
-correspond to the same person: register the superseded ID as an alias of
-the canonical one. During lsst-texmf ingest, an authordb.yaml entry whose
-key is a registered alias is skipped, so the root author keeps a unique
-ORCID.
+correspond to the same person: register the superseded ID as the `alias`
+of the `canonical` one. During lsst-texmf ingest, an authordb.yaml entry
+whose key is a registered alias is skipped, so the canonical author keeps a
+unique ORCID.
 
 ## Merging
 
-If an author record already exists with the alias's internal ID, it is
-merged into the root author: contributor (resource attribution) records
-pointing to it are re-pointed to the root author and the duplicate author
-record is deleted. **This is a destructive operation** that cannot be
+If an author record already exists with the `alias` internal ID, it is
+merged into the canonical author: contributor (resource attribution) records
+pointing to it are re-pointed to the canonical author and the duplicate
+author record is deleted. **This is a destructive operation** that cannot be
 undone.
 
-If the requested root author ID is itself an alias, it is resolved so that
-the new alias points directly to the root author (alias chains never form).
+If the requested `canonical` author ID is itself an alias, it is resolved so
+that the new alias points directly to the canonical author (alias chains
+never form).
     """,
     status_code=201,
     responses={
@@ -81,20 +83,18 @@ async def create_author_alias(
     async with context.session.begin():
         author_service = context.factory.create_author_service()
 
-        # Resolve the requested root author through any existing aliases so
-        # that alias chains flatten to the root author.
+        # Resolve the requested canonical author through any existing aliases
+        # so that alias chains flatten to the root author.
         root_author = await author_service.get_author_by_id(
-            alias_request.author_internal_id
+            alias_request.canonical
         )
         if root_author is None:
             raise NotFoundError(
-                message=(
-                    f"Author {alias_request.author_internal_id!r} not found"
-                ),
+                message=f"Author {alias_request.canonical!r} not found",
             )
 
         alias = await author_service.create_author_alias(
-            internal_id=alias_request.internal_id,
+            internal_id=alias_request.alias,
             author_internal_id=root_author.internal_id,
         )
 
@@ -104,12 +104,12 @@ async def create_author_alias(
 
 
 @router.delete(
-    "/aliases/{internal_id}",
+    "/aliases/{alias}",
     summary="Delete an author ID alias",
     description=(
-        "Delete an author internal ID alias. The root author is unaffected. "
-        "Note that if the alias is still present in authordb.yaml with a "
-        "duplicate ORCID, the next lsst-texmf ingest will fail."
+        "Delete an author internal ID alias. The canonical author is "
+        "unaffected. Note that if the alias is still present in authordb.yaml "
+        "with a duplicate ORCID, the next lsst-texmf ingest will fail."
     ),
     status_code=204,
     responses={
@@ -119,7 +119,7 @@ async def create_author_alias(
 )
 async def delete_author_alias(
     *,
-    internal_id: Annotated[
+    alias: Annotated[
         str,
         Path(
             title="Alias internal ID",
@@ -132,10 +132,10 @@ async def delete_author_alias(
     async with context.session.begin():
         author_service = context.factory.create_author_service()
 
-        deleted = await author_service.delete_author_alias(internal_id)
+        deleted = await author_service.delete_author_alias(alias)
         if not deleted:
             raise NotFoundError(
-                message=f"Author alias {internal_id!r} not found",
+                message=f"Author alias {alias!r} not found",
             )
 
         await context.session.commit()

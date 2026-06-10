@@ -42,14 +42,14 @@ async def test_author_alias_lifecycle(
     response = await client.post(
         "/ook/admin/authors/aliases",
         json={
-            "internal_id": "marshallpj",
-            "author_internal_id": "marshallp",
+            "alias": "marshallpj",
+            "canonical": "marshallp",
         },
     )
     assert response.status_code == 201
     data = response.json()
-    assert data["internal_id"] == "marshallpj"
-    assert data["author_internal_id"] == "marshallp"
+    assert data["alias"] == "marshallpj"
+    assert data["canonical"] == "marshallp"
 
     # The alias resolves to the root author's record
     response = await client.get("/ook/authors/marshallpj")
@@ -62,8 +62,8 @@ async def test_author_alias_lifecycle(
     response = await client.get("/ook/admin/authors/aliases")
     assert response.status_code == 200
     assert {
-        "internal_id": "marshallpj",
-        "author_internal_id": "marshallp",
+        "alias": "marshallpj",
+        "canonical": "marshallp",
     } in response.json()
 
     # The merged author no longer appears in search results
@@ -105,8 +105,8 @@ async def test_create_alias_root_author_not_found(
     response = await client.post(
         "/ook/admin/authors/aliases",
         json={
-            "internal_id": "somealias",
-            "author_internal_id": "doesnotexist",
+            "alias": "somealias",
+            "canonical": "doesnotexist",
         },
     )
     assert response.status_code == 404
@@ -117,10 +117,10 @@ async def test_create_alias_conflicts(
     client: AsyncClient, ingest_authors: None
 ) -> None:
     """Test conflicting alias creation requests."""
-    # An alias can't be the same as the root author ID
+    # An alias can't be the same as the canonical author ID
     response = await client.post(
         "/ook/admin/authors/aliases",
-        json={"internal_id": "sickj", "author_internal_id": "sickj"},
+        json={"alias": "sickj", "canonical": "sickj"},
     )
     assert response.status_code == 409
 
@@ -128,14 +128,14 @@ async def test_create_alias_conflicts(
     response = await client.post(
         "/ook/admin/authors/aliases",
         json={
-            "internal_id": "marshallpj",
-            "author_internal_id": "marshallp",
+            "alias": "marshallpj",
+            "canonical": "marshallp",
         },
     )
     assert response.status_code == 201
     response = await client.post(
         "/ook/admin/authors/aliases",
-        json={"internal_id": "marshallpj", "author_internal_id": "sickj"},
+        json={"alias": "marshallpj", "canonical": "sickj"},
     )
     assert response.status_code == 409
 
@@ -148,8 +148,8 @@ async def test_create_alias_chain_flattens(
     response = await client.post(
         "/ook/admin/authors/aliases",
         json={
-            "internal_id": "marshallpj",
-            "author_internal_id": "marshallp",
+            "alias": "marshallpj",
+            "canonical": "marshallp",
         },
     )
     assert response.status_code == 201
@@ -158,12 +158,12 @@ async def test_create_alias_chain_flattens(
     response = await client.post(
         "/ook/admin/authors/aliases",
         json={
-            "internal_id": "marshallphil",
-            "author_internal_id": "marshallpj",
+            "alias": "marshallphil",
+            "canonical": "marshallpj",
         },
     )
     assert response.status_code == 201
-    assert response.json()["author_internal_id"] == "marshallp"
+    assert response.json()["canonical"] == "marshallp"
 
 
 @pytest.mark.asyncio
@@ -174,8 +174,8 @@ async def test_delete_author_via_alias_conflicts(
     response = await client.post(
         "/ook/admin/authors/aliases",
         json={
-            "internal_id": "marshallpj",
-            "author_internal_id": "marshallp",
+            "alias": "marshallpj",
+            "canonical": "marshallp",
         },
     )
     assert response.status_code == 201
@@ -237,8 +237,8 @@ async def test_alias_merge_repoints_contributors(
     response = await client.post(
         "/ook/admin/authors/aliases",
         json={
-            "internal_id": "marshallpj",
-            "author_internal_id": "marshallp",
+            "alias": "marshallpj",
+            "canonical": "marshallp",
         },
     )
     assert response.status_code == 201
