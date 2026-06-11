@@ -2,6 +2,17 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.22.0'></a>
+## 0.22.0 (2026-06-10)
+
+### New features
+
+- Added author internal ID aliases so that two authordb.yaml IDs that correspond to the same person (and therefore the same ORCID) can coexist. An alias resolves to its root author: `GET /ook/authors/{internal_id}` with an alias returns the root author's record, document ingests attribute contributors referencing an alias to the root author, and the lsst-texmf ingest skips authordb.yaml entries whose keys are registered aliases instead of failing on a duplicate ORCID. Aliases are managed through new admin endpoints: `GET /ook/admin/authors/aliases`, `POST /ook/admin/authors/aliases` (with an `alias`/`canonical` request body), and `DELETE /ook/admin/authors/aliases/{alias}`. Creating an alias for an internal ID that already exists as an author record merges that record into the root author, re-pointing existing document attributions.
+
+### Bug fixes
+
+- `Factory.create_standalone` now stops the Kafka broker when its context exits. Previously the broker (a module-level singleton shared with the FastAPI app's Kafka router) was left connected, leaking aiokafka producers bound to the event loop that created them. In the test suite this caused an "Event loop is closed" error during app shutdown whenever a test using the standalone `factory` fixture ran before a handler test in the same pytest invocation.
+
 <a id='changelog-0.21.0'></a>
 ## 0.21.0 (2025-10-28)
 
