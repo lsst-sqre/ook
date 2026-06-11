@@ -23,7 +23,7 @@ Setting up a local development environment
 
 Local development requires:
 
-- Python 3.13
+- Python 3.14
 - Uv_
 - Docker or a compatible container runtime
 

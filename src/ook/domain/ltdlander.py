@@ -114,7 +114,7 @@ class ReducedLtdLanderDocument:
 
         try:
             handle = Handle.parse(self._metadata["reportNumber"])
-        except (ValueError, KeyError):
+        except ValueError, KeyError:
             # Fall back to getting handle from ingest URL
             handle = Handle.parse_from_subdomain(self.url)
 
@@ -156,7 +156,7 @@ class ReducedLtdLanderDocument:
 
         try:
             self._description: str = self._metadata["description"].strip()
-        except (KeyError, AttributeError):
+        except KeyError, AttributeError:
             # Fallback to using the first content chunk as the description
             try:
                 self._description = self._chunks[0].content
