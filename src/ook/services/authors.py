@@ -7,7 +7,7 @@ from typing import Any
 from safir.database import CountedPaginatedList
 from structlog.stdlib import BoundLogger
 
-from ook.domain.authors import Author, AuthorSearchResult
+from ook.domain.authors import Author, AuthorAlias, AuthorSearchResult
 from ook.storage.authorstore import (
     AuthorsCursor,
     AuthorSearchCursor,
@@ -112,6 +112,88 @@ class AuthorService:
             "Author deleted from database",
             internal_id=internal_id,
         )
+
+    async def get_author_aliases(self) -> list[AuthorAlias]:
+        """Get all author internal ID aliases.
+
+        Returns
+        -------
+        list of AuthorAlias
+            All aliases, sorted by the alias internal ID.
+        """
+        return await self._author_store.get_author_aliases()
+
+    async def get_author_alias(self, internal_id: str) -> AuthorAlias | None:
+        """Get an author internal ID alias.
+
+        Parameters
+        ----------
+        internal_id
+            The alias internal ID.
+
+        Returns
+        -------
+        AuthorAlias or None
+            The alias, or None if no such alias exists.
+        """
+        return await self._author_store.get_author_alias(internal_id)
+
+    async def create_author_alias(
+        self, *, internal_id: str, author_internal_id: str
+    ) -> AuthorAlias:
+        """Create an author internal ID alias that resolves to a root author.
+
+        If an author record already exists with the alias internal ID, it is
+        merged into the root author: contributor records pointing to it are
+        re-pointed to the root author and the record is deleted.
+
+        Parameters
+        ----------
+        internal_id
+            The alias internal ID.
+        author_internal_id
+            The internal ID of the root author the alias resolves to.
+
+        Returns
+        -------
+        AuthorAlias
+            The created alias.
+        """
+        alias = await self._author_store.create_author_alias(
+            internal_id=internal_id,
+            author_internal_id=author_internal_id,
+        )
+
+        self._logger.info(
+            "Created author alias",
+            internal_id=internal_id,
+            author_internal_id=author_internal_id,
+        )
+
+        return alias
+
+    async def delete_author_alias(self, internal_id: str) -> bool:
+        """Delete an author internal ID alias.
+
+        Parameters
+        ----------
+        internal_id
+            The alias internal ID.
+
+        Returns
+        -------
+        bool
+            True if an alias was deleted, False if no such alias exists.
+        """
+        deleted = await self._author_store.delete_author_alias(internal_id)
+
+        if deleted:
+            self._logger.info(
+                "Author alias deleted from database",
+                internal_id=internal_id,
+            )
+
+        return deleted
 
     async def migrate_country_codes(
         self, *, dry_run: bool = False

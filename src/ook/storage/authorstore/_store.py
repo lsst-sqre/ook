@@ -13,7 +13,7 @@ from safir.database import (
     CountedPaginatedQueryRunner,
     PaginationCursor,
 )
-from sqlalchemy import CursorResult, Select, delete, select, text
+from sqlalchemy import CursorResult, Select, delete, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,14 +23,17 @@ from ook.dbschema.authors import (
     SqlAffiliation,
     SqlAuthor,
     SqlAuthorAffiliation,
+    SqlAuthorAlias,
 )
+from ook.dbschema.resources import SqlContributor
 from ook.domain.authors import (
     Affiliation,
     Author,
+    AuthorAlias,
     AuthorSearchResult,
     normalize_country_code,
 )
-from ook.exceptions import DuplicateOrcidError
+from ook.exceptions import ConflictError, DuplicateOrcidError, NotFoundError
 
 from ._query import (
     create_all_authors_stmt,
@@ -189,6 +192,198 @@ class AuthorStore:
             internal_id=internal_id,
             rows_deleted=rowcount,
         )
+
+    async def get_author_aliases(self) -> list[AuthorAlias]:
+        """Get all author internal ID aliases.
+
+        Returns
+        -------
+        list of AuthorAlias
+            All aliases, sorted by the alias internal ID.
+        """
+        results = await self._session.execute(
+            self._author_alias_stmt().order_by(SqlAuthorAlias.internal_id)
+        )
+        return [
+            AuthorAlias.model_validate(row, from_attributes=True)
+            for row in results.all()
+        ]
+
+    async def get_author_alias(self, internal_id: str) -> AuthorAlias | None:
+        """Get an author internal ID alias.
+
+        Parameters
+        ----------
+        internal_id
+            The alias internal ID.
+
+        Returns
+        -------
+        AuthorAlias or None
+            The alias, or None if no such alias exists.
+        """
+        result = (
+            await self._session.execute(
+                self._author_alias_stmt().where(
+                    SqlAuthorAlias.internal_id == internal_id
+                )
+            )
+        ).first()
+        return (
+            AuthorAlias.model_validate(result, from_attributes=True)
+            if result
+            else None
+        )
+
+    def _author_alias_stmt(self) -> Select:
+        """Create a select statement for author aliases with the root
+        author's internal ID.
+        """
+        return select(
+            SqlAuthorAlias.internal_id,
+            SqlAuthor.internal_id.label("author_internal_id"),
+        ).join(SqlAuthor, SqlAuthor.id == SqlAuthorAlias.author_id)
+
+    async def create_author_alias(
+        self, *, internal_id: str, author_internal_id: str
+    ) -> AuthorAlias:
+        """Create an author internal ID alias that resolves to a root author.
+
+        If an author record already exists with the alias internal ID, it is
+        merged into the root author: contributor records pointing to it are
+        re-pointed to the root author and the record is deleted.
+
+        Parameters
+        ----------
+        internal_id
+            The alias internal ID.
+        author_internal_id
+            The internal ID of the root author the alias resolves to. This
+            must be an author's own internal ID, not another alias.
+
+        Returns
+        -------
+        AuthorAlias
+            The created alias.
+
+        Raises
+        ------
+        NotFoundError
+            If the root author does not exist.
+        ConflictError
+            If the alias is the same as the root author's internal ID, or
+            the alias already exists for a different author.
+        """
+        if internal_id == author_internal_id:
+            raise ConflictError(
+                f"Alias {internal_id!r} cannot be the same as the root "
+                "author's internal ID"
+            )
+
+        root_author_id = (
+            await self._session.execute(
+                select(SqlAuthor.id).where(
+                    SqlAuthor.internal_id == author_internal_id
+                )
+            )
+        ).scalar_one_or_none()
+        if root_author_id is None:
+            raise NotFoundError(
+                f"Author {author_internal_id!r} not found",
+            )
+
+        existing_alias = (
+            await self._session.execute(
+                select(SqlAuthorAlias).where(
+                    SqlAuthorAlias.internal_id == internal_id
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_alias is not None:
+            if existing_alias.author_id == root_author_id:
+                # Idempotent: the alias already resolves to this author
+                return AuthorAlias(
+                    internal_id=internal_id,
+                    author_internal_id=author_internal_id,
+                )
+            raise ConflictError(
+                f"Alias {internal_id!r} already exists for a different author"
+            )
+
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+
+        # Merge an existing author record that uses the alias internal ID
+        # into the root author.
+        old_author_id = (
+            await self._session.execute(
+                select(SqlAuthor.id).where(
+                    SqlAuthor.internal_id == internal_id
+                )
+            )
+        ).scalar_one_or_none()
+        if old_author_id is not None:
+            repoint_result = await self._session.execute(
+                update(SqlContributor)
+                .where(SqlContributor.author_id == old_author_id)
+                .values(author_id=root_author_id)
+            )
+            await self._session.execute(
+                delete(SqlAuthorAffiliation).where(
+                    SqlAuthorAffiliation.author_id == old_author_id
+                )
+            )
+            # Re-point aliases of the merged author so no alias chains form
+            await self._session.execute(
+                update(SqlAuthorAlias)
+                .where(SqlAuthorAlias.author_id == old_author_id)
+                .values(author_id=root_author_id, date_updated=now)
+            )
+            await self._session.execute(
+                delete(SqlAuthor).where(SqlAuthor.id == old_author_id)
+            )
+            self._logger.info(
+                "Merged author record into root author for alias",
+                internal_id=internal_id,
+                author_internal_id=author_internal_id,
+                contributors_repointed=cast(
+                    "CursorResult", repoint_result
+                ).rowcount,
+            )
+
+        await self._session.execute(
+            pg_insert(SqlAuthorAlias).values(
+                internal_id=internal_id,
+                author_id=root_author_id,
+                date_updated=now,
+            )
+        )
+        await self._session.flush()
+
+        return AuthorAlias(
+            internal_id=internal_id,
+            author_internal_id=author_internal_id,
+        )
+
+    async def delete_author_alias(self, internal_id: str) -> bool:
+        """Delete an author internal ID alias.
+
+        Parameters
+        ----------
+        internal_id
+            The alias internal ID.
+
+        Returns
+        -------
+        bool
+            True if an alias was deleted, False if no such alias exists.
+        """
+        result = await self._session.execute(
+            delete(SqlAuthorAlias).where(
+                SqlAuthorAlias.internal_id == internal_id
+            )
+        )
+        await self._session.flush()
+        return cast("CursorResult", result).rowcount > 0
 
     async def upsert_affiliations(
         self,
@@ -357,7 +552,31 @@ class AuthorStore:
                     git_ref=git_ref,
                 )
 
-    async def upsert_authors(  # noqa: C901, PLR0915
+    async def _filter_aliased_authors(
+        self, authors: Sequence[Author]
+    ) -> list[Author]:
+        """Drop incoming authors whose internal ID is a registered alias.
+
+        The root author carries the canonical record, so an aliased entry
+        (e.g. from authordb.yaml) is skipped rather than upserted.
+        """
+        alias_ids_result = await self._session.execute(
+            select(SqlAuthorAlias.internal_id)
+        )
+        alias_internal_ids = set(alias_ids_result.scalars())
+        skipped_aliases = [
+            a.internal_id
+            for a in authors
+            if a.internal_id in alias_internal_ids
+        ]
+        if skipped_aliases:
+            self._logger.info(
+                "Skipping upsert of authors with aliased internal IDs",
+                internal_ids=skipped_aliases,
+            )
+        return [a for a in authors if a.internal_id not in alias_internal_ids]
+
+    async def upsert_authors(  # noqa: C901, PLR0912, PLR0915
         self,
         authors: Sequence[Author],
         *,
@@ -376,6 +595,10 @@ class AuthorStore:
         delete_stale_records
             If True, delete authors that are not in the provided list.
         """
+        authors = await self._filter_aliased_authors(authors)
+        if not authors:
+            return
+
         # Pre-check for ORCID conflicts to avoid transaction failures
         await self._check_orcid_conflicts(authors, git_ref)
 

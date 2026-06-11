@@ -1,17 +1,4 @@
 {
-  "hooks": {
-    "PostTask": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "uv run --only-group=nox nox -s lint"
-          }
-        ],
-        "matcher": "Write|Edit|MultiEdit"
-      }
-    ]
-  },
   "permissions": {
     "allow": [
       "Bash(uv run --only-group=nox nox:*)"

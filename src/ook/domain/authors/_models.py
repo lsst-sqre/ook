@@ -166,6 +166,21 @@ class Author(BaseModel):
     )
 
 
+class AuthorAlias(BaseModel):
+    """An alias for an author's internal ID.
+
+    Requests for an alias resolve to the root author's record. Aliases
+    preserve backwards compatibility for documents that reference an author
+    by a superseded internal ID.
+    """
+
+    internal_id: str = Field(description="The alias internal ID.")
+
+    author_internal_id: str = Field(
+        description="Internal ID of the root author this alias resolves to.",
+    )
+
+
 class AuthorSearchResult(Author):
     """An author search result with relevance score."""
 

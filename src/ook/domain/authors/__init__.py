@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 from ._countries import get_country_name, normalize_country_code
-from ._models import Address, Affiliation, Author, AuthorSearchResult
+from ._models import (
+    Address,
+    Affiliation,
+    Author,
+    AuthorAlias,
+    AuthorSearchResult,
+)
 from ._nameparser import NameFormat, NameParser, ParsedName
 
 __all__ = [
     "Address",
     "Affiliation",
     "Author",
+    "AuthorAlias",
     "AuthorSearchResult",
     "NameFormat",
     "NameParser",

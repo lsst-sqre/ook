@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from ook.domain.authors import Author
 
 __all__ = [
+    "ConflictError",
     "DocumentParsingError",
     "DuplicateOrcidError",
     "LtdSlugClassificationError",
@@ -66,6 +67,15 @@ class NotFoundError(ClientRequestError):
 
     error = "not_found"
     status_code = status.HTTP_404_NOT_FOUND
+
+
+class ConflictError(ClientRequestError):
+    """Raised when a request conflicts with the current state of a
+    resource.
+    """
+
+    error = "conflict"
+    status_code = status.HTTP_409_CONFLICT
 
 
 class DuplicateOrcidError(SlackException):

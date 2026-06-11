@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
 
 from ook.dbschema import Base
-from ook.dbschema.authors import SqlAuthor
+from ook.dbschema.authors import SqlAuthor, SqlAuthorAlias
 from ook.dbschema.resources import (
     SqlContributor,
     SqlDocumentResource,
@@ -453,6 +453,15 @@ class ResourceStore:
         author_id_map = {
             internal_id: db_id for db_id, internal_id in author_result
         }
+
+        # Resolve any remaining internal IDs through author aliases to the
+        # root author's database ID.
+        alias_query = select(
+            SqlAuthorAlias.author_id, SqlAuthorAlias.internal_id
+        ).where(SqlAuthorAlias.internal_id.in_(author_internal_ids))
+        alias_result = await self._session.execute(alias_query)
+        for db_id, internal_id in alias_result:
+            author_id_map.setdefault(internal_id, db_id)
 
         # Build contributor data using the resolved author IDs
         contributor_data = []

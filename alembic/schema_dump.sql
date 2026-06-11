@@ -2,8 +2,10 @@
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 16.9 (Debian 16.9-1.pgdg120+1)
--- Dumped by pg_dump version 16.9 (Debian 16.9-1.pgdg120+1)
+\restrict Qtqlk6Zbwb4ibKWKpbtPC1HN34YwSMnAK8DiNlWhOyYMWqKe1WKViQEL5VF22Jq
+
+-- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
+-- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -120,6 +122,41 @@ CREATE TABLE public.author_affiliations (
 
 
 ALTER TABLE public.author_affiliations OWNER TO test;
+
+--
+-- Name: author_alias; Type: TABLE; Schema: public; Owner: test
+--
+
+CREATE TABLE public.author_alias (
+    id bigint NOT NULL,
+    internal_id text NOT NULL,
+    author_id bigint NOT NULL,
+    date_updated timestamp with time zone NOT NULL
+);
+
+
+ALTER TABLE public.author_alias OWNER TO test;
+
+--
+-- Name: author_alias_id_seq; Type: SEQUENCE; Schema: public; Owner: test
+--
+
+CREATE SEQUENCE public.author_alias_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.author_alias_id_seq OWNER TO test;
+
+--
+-- Name: author_alias_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: test
+--
+
+ALTER SEQUENCE public.author_alias_id_seq OWNED BY public.author_alias.id;
+
 
 --
 -- Name: author_id_seq; Type: SEQUENCE; Schema: public; Owner: test
@@ -562,6 +599,13 @@ ALTER TABLE ONLY public.author ALTER COLUMN id SET DEFAULT nextval('public.autho
 
 
 --
+-- Name: author_alias id; Type: DEFAULT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.author_alias ALTER COLUMN id SET DEFAULT nextval('public.author_alias_id_seq'::regclass);
+
+
+--
 -- Name: contributor id; Type: DEFAULT; Schema: public; Owner: test
 --
 
@@ -630,7 +674,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-8e529b9177a0
+34ea7479b953
 \.
 
 
@@ -647,6 +691,14 @@ COPY public.author (id, internal_id, surname, given_name, notes, email, orcid, d
 --
 
 COPY public.author_affiliations (author_id, affiliation_id, "position") FROM stdin;
+\.
+
+
+--
+-- Data for Name: author_alias; Type: TABLE DATA; Schema: public; Owner: test
+--
+
+COPY public.author_alias (id, internal_id, author_id, date_updated) FROM stdin;
 \.
 
 
@@ -770,6 +822,13 @@ SELECT pg_catalog.setval('public.affiliation_id_seq', 1, false);
 
 
 --
+-- Name: author_alias_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
+--
+
+SELECT pg_catalog.setval('public.author_alias_id_seq', 1, false);
+
+
+--
 -- Name: author_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
 --
 
@@ -854,6 +913,14 @@ ALTER TABLE ONLY public.alembic_version
 
 ALTER TABLE ONLY public.author_affiliations
     ADD CONSTRAINT author_affiliations_pkey PRIMARY KEY (author_id, affiliation_id);
+
+
+--
+-- Name: author_alias author_alias_pkey; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.author_alias
+    ADD CONSTRAINT author_alias_pkey PRIMARY KEY (id);
 
 
 --
@@ -1189,6 +1256,20 @@ CREATE INDEX ix_affiliation_name ON public.affiliation USING btree (name);
 
 
 --
+-- Name: ix_author_alias_author_id; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_author_alias_author_id ON public.author_alias USING btree (author_id);
+
+
+--
+-- Name: ix_author_alias_internal_id; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE UNIQUE INDEX ix_author_alias_internal_id ON public.author_alias USING btree (internal_id);
+
+
+--
 -- Name: ix_author_given_name; Type: INDEX; Schema: public; Owner: test
 --
 
@@ -1300,6 +1381,14 @@ ALTER TABLE ONLY public.author_affiliations
 
 ALTER TABLE ONLY public.author_affiliations
     ADD CONSTRAINT author_affiliations_author_id_fkey FOREIGN KEY (author_id) REFERENCES public.author(id);
+
+
+--
+-- Name: author_alias author_alias_author_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.author_alias
+    ADD CONSTRAINT author_alias_author_id_fkey FOREIGN KEY (author_id) REFERENCES public.author(id) ON DELETE CASCADE;
 
 
 --
@@ -1433,4 +1522,6 @@ ALTER TABLE ONLY public.term_relationships
 --
 -- PostgreSQL database dump complete
 --
+
+\unrestrict Qtqlk6Zbwb4ibKWKpbtPC1HN34YwSMnAK8DiNlWhOyYMWqKe1WKViQEL5VF22Jq
 

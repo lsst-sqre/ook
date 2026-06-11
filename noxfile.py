@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import re
 import subprocess
 from pathlib import Path
 from time import sleep
@@ -480,8 +481,10 @@ def _setup_testcontainers_env() -> None:
     # Set testcontainers host override for Colima on macOS
     # This fixes "nodename nor servname provided, or not known" errors
     docker_host = os.getenv("DOCKER_HOST", "")
-    if docker_host.endswith(".colima/default/docker.sock"):
-        # Extract Colima VM IP address
+    m = re.search(r"\.colima/(?P<profile>[^/]+)/docker\.sock$", docker_host)
+    if m:
+        # Extract the Colima VM IP address for the active profile.
+        # colima ls -j emits one JSON object per line (one per profile).
         try:
             result = subprocess.run(
                 ["colima", "ls", "-j"],
@@ -489,11 +492,17 @@ def _setup_testcontainers_env() -> None:
                 text=True,
                 check=True,
             )
-            colima_info = json.loads(result.stdout)
-            if colima_info and "address" in colima_info:
-                os.environ["TESTCONTAINERS_HOST_OVERRIDE"] = colima_info[
+            for line in result.stdout.splitlines():
+                if not line.strip():
+                    continue
+                colima_info = json.loads(line)
+                if colima_info.get("name") == m["profile"] and colima_info.get(
                     "address"
-                ]
+                ):
+                    os.environ["TESTCONTAINERS_HOST_OVERRIDE"] = colima_info[
+                        "address"
+                    ]
+                    break
         except (
             subprocess.CalledProcessError,
             json.JSONDecodeError,
