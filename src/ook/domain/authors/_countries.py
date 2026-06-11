@@ -48,7 +48,7 @@ def _cached_normalize_country_code(code: str) -> str | None:
         countries = pycountry.countries.search_fuzzy(code)
         if countries:
             return getattr(countries[0], "alpha_2", None)
-    except (IndexError, AttributeError, LookupError):
+    except IndexError, AttributeError, LookupError:
         # Could not normalize country code
         pass
 
@@ -107,7 +107,7 @@ def get_country_name(country_code: str | None) -> str | None:
         country = pycountry.countries.get(alpha_2=country_code.upper())
         if country:
             return getattr(country, "name", None)
-    except (AttributeError, KeyError):
+    except AttributeError, KeyError:
         pass
 
     return None

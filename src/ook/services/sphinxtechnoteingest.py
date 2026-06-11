@@ -68,7 +68,7 @@ class SphinxTechnoteIngestService:
 
         try:
             git_ref = edition_resource["tracked_refs"][0]
-        except (KeyError, IndexError):
+        except KeyError, IndexError:
             git_ref = "main"
 
         repo_url = project_resource["doc_repo"]

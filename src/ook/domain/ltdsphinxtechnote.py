@@ -135,7 +135,7 @@ class ReducedLtdSphinxTechnote:
 
         try:
             self._number: int | None = int(self._metadata["serial_number"])
-        except (KeyError, ValueError):
+        except KeyError, ValueError:
             self._number = None
 
         try:
