@@ -7,7 +7,6 @@ from typing import Literal, Self
 
 from fastapi import FastAPI, Request
 from pydantic import AnyHttpUrl, BaseModel, Field
-from starlette.routing import Route
 
 from ook.domain.links import Link as DomainLink
 from ook.domain.links import (
@@ -27,45 +26,14 @@ __all__ = [
 ]
 
 
-def get_path_template(app: FastAPI, name: str) -> str | None:
-    """Get the URI template for a FastAPI path operation by name.
+def _path_template(app: FastAPI, route_name: str, *param_names: str) -> str:
+    """Return the URI path template for a named route.
 
-    Parameters
-    ----------
-    app
-        The FastAPI application
-    name
-        The name of the path operation
-
-    Returns
-    -------
-    str | None
-        The URI template as a string, or None if not found
+    Path parameters are rendered as ``{name}`` placeholders so the result is a
+    URI template rather than a concrete URL.
     """
-    for route in app.routes:
-        if isinstance(route, Route) and route.name == name:
-            return route.path
-    return None
-
-
-def get_all_path_templates(app: FastAPI) -> dict[str, str]:
-    """Get all URI templates for a FastAPI application.
-
-    Parameters
-    ----------
-    app
-        The FastAPI application
-
-    Returns
-    -------
-    dict
-        A dict mapping route names to URI templates
-    """
-    templates = {}
-    for route in app.routes:
-        if isinstance(route, Route) and route.name:
-            templates[route.name] = route.path
-    return templates
+    placeholders = {p: f"{{{p}}}" for p in param_names}
+    return str(app.url_path_for(route_name, **placeholders))
 
 
 class SdmDomainInfo(BaseModel):
@@ -83,20 +51,41 @@ class SdmDomainInfo(BaseModel):
     @classmethod
     def create(cls, request: Request) -> Self:
         """Create a `SdmDomainInfo` object."""
-        base_url = str(request.base_url)
-        base_url = base_url.removesuffix("/")
-        paths = get_all_path_templates(request.app)
+        base_url = str(request.base_url).removesuffix("/")
+        app = request.app
         return cls(
             entities={
-                "schema": base_url + paths["get_sdm_schema_links"],
-                "table": base_url + paths["get_sdm_schema_table_links"],
-                "column": base_url + paths["get_sdm_schema_column_links"],
+                "schema": base_url
+                + _path_template(app, "get_sdm_schema_links", "schema_name"),
+                "table": base_url
+                + _path_template(
+                    app,
+                    "get_sdm_schema_table_links",
+                    "schema_name",
+                    "table_name",
+                ),
+                "column": base_url
+                + _path_template(
+                    app,
+                    "get_sdm_schema_column_links",
+                    "schema_name",
+                    "table_name",
+                    "column_name",
+                ),
             },
             collections={
-                "schemas": base_url + paths["get_sdm_links"],
-                "tables": base_url + paths["get_sdm_links_scoped_to_schema"],
+                "schemas": base_url + _path_template(app, "get_sdm_links"),
+                "tables": base_url
+                + _path_template(
+                    app, "get_sdm_links_scoped_to_schema", "schema_name"
+                ),
                 "columns": base_url
-                + paths["get_sdm_schema_column_links_for_table"],
+                + _path_template(
+                    app,
+                    "get_sdm_schema_column_links_for_table",
+                    "schema_name",
+                    "table_name",
+                ),
             },
         )
 

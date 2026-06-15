@@ -40,6 +40,29 @@ async def test_sdm_domain_info(client: AsyncClient) -> None:
     assert "entities" in data
     assert "collections" in data
 
+    # Assert exact URI templates so a future breakage in template generation
+    # (e.g. a FastAPI route-tree change) is caught by the normal suite.
+    assert data["entities"]["schema"].endswith(
+        "/ook/links/domains/sdm/schemas/{schema_name}"
+    )
+    assert data["entities"]["table"].endswith(
+        "/ook/links/domains/sdm/schemas/{schema_name}/tables/{table_name}"
+    )
+    assert data["entities"]["column"].endswith(
+        "/ook/links/domains/sdm/schemas/{schema_name}"
+        "/tables/{table_name}/columns/{column_name}"
+    )
+    assert data["collections"]["schemas"].endswith(
+        "/ook/links/domains/sdm/schemas"
+    )
+    assert data["collections"]["tables"].endswith(
+        "/ook/links/domains/sdm/schemas/{schema_name}/tables"
+    )
+    assert data["collections"]["columns"].endswith(
+        "/ook/links/domains/sdm/schemas/{schema_name}"
+        "/tables/{table_name}/columns"
+    )
+
 
 @pytest.mark.asyncio
 async def test_sdm_schema_endpoints(
