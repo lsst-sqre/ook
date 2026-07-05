@@ -1,0 +1,27 @@
+{
+  "name": "ook",
+  "build": { "dockerfile": "Dockerfile", "context": ".." },
+  "features": {
+    // testcontainers (Kafka + Postgres) in the nox test suite need a Docker
+    // daemon; DinD + containerUser root + privileged is what makes it work in
+    // stoker's derived AFK sandbox.
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  // Container starts as root so the DinD Feature's docker-init.sh (PID 1) can
+  // start dockerd; the agent and lifecycle commands still run as vscode.
+  "containerUser": "root",
+  "remoteUser": "vscode",
+  "privileged": true,
+  // make init runs `uv sync --frozen --all-groups` and installs the
+  // pre-commit hooks (see Makefile).
+  "postCreateCommand": "make init",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "ms-python.mypy-type-checker"
+      ]
+    }
+  }
+}

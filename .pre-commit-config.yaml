@@ -7,8 +7,12 @@ repos:
         args: [--allow-multiple-documents]
       - id: check-toml
       - id: check-json
+        # Devcontainer files are JSONC (allow comments), not plain JSON.
+        exclude: ^\.devcontainer/
       - id: pretty-format-json
         args: [--autofix, --indent=2, '--top-keys=name,doc,type']
+        # Devcontainer files are JSONC (allow comments), not plain JSON.
+        exclude: ^\.devcontainer/
 
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 0.11.21
