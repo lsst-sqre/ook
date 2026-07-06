@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from ook.domain.linkcheck import (
     CheckedUrlReport,
+    CheckRunStatus,
     CheckUrlStatus,
     LinkCheckReport,
     LinkState,
@@ -15,6 +17,7 @@ from ook.domain.linkcheck import (
     SubmittedUrl,
     UrlOccurrence,
     canonicalize_url,
+    evaluate_outcome,
     is_supported_url,
 )
 from ook.exceptions import LinkCheckTooManyUrlsError
@@ -25,7 +28,10 @@ if TYPE_CHECKING:
 
     from structlog.stdlib import BoundLogger
 
+    from ook.domain.linkcheck import RetryLadderConfig
     from ook.storage.linkcheckstore import CheckUrlRecord, LinkCheckStore
+
+    from ._urlchecker import UrlChecker
 
 __all__ = ["LinkCheckService", "SubmittedCheck"]
 
@@ -59,6 +65,11 @@ class LinkCheckService:
         results are reported immediately instead of being rechecked.
     max_urls_per_check
         Maximum number of unique canonical URLs accepted per submission.
+    url_checker
+        The HTTP checker used to resolve due URLs during execution.
+    retry_ladder
+        Thresholds for the failing-to-broken retry ladder, bound to
+        application configuration by the factory.
     """
 
     def __init__(
@@ -68,11 +79,15 @@ class LinkCheckService:
         logger: BoundLogger,
         freshness_ttl: timedelta,
         max_urls_per_check: int,
+        url_checker: UrlChecker,
+        retry_ladder: RetryLadderConfig,
     ) -> None:
         self._store = linkcheck_store
         self._logger = logger
         self._freshness_ttl = freshness_ttl
         self._max_urls_per_check = max_urls_per_check
+        self._url_checker = url_checker
+        self._retry_ladder = retry_ladder
 
     async def submit_check(
         self,
@@ -184,6 +199,65 @@ class LinkCheckService:
             due_url_count=len(due_urls),
         )
         return SubmittedCheck(check_id=check_id, due_urls=due_urls)
+
+    async def execute_check(self, check_id: int) -> None:
+        """Execute a submitted link check.
+
+        The check's member URLs that are due for a (re)check are
+        resolved with the URL checker (under its global concurrency cap
+        and per-host politeness schedule), their states are advanced
+        through the status-transition engine and persisted, and the
+        check moves through ``in_progress`` to ``complete``.
+
+        Parameters
+        ----------
+        check_id
+            The identifier of the check to execute, as returned by
+            `submit_check`.
+        """
+        record = await self._store.get_check(check_id)
+        if record is None:
+            # Execution requests may be delivered at-least-once and can
+            # outlive their check, so an unknown id is not an error.
+            self._logger.warning(
+                "Skipped execution of unknown link check", check_id=check_id
+            )
+            return
+        await self._store.update_check_status(
+            check_id, CheckRunStatus.in_progress
+        )
+
+        now = datetime.now(tz=UTC)
+        supported_urls = [
+            url_record.url
+            for url_record in record.urls
+            if is_supported_url(url_record.url)
+        ]
+        states = await self._store.get_url_states(supported_urls)
+        urls = [
+            url for url in supported_urls if self._is_due(states.get(url), now)
+        ]
+
+        outcomes = await asyncio.gather(
+            *(self._url_checker.check(url) for url in urls)
+        )
+        for url, outcome in zip(urls, outcomes, strict=True):
+            state = evaluate_outcome(
+                url=url,
+                prior=states.get(url),
+                outcome=outcome,
+                ladder=self._retry_ladder,
+            )
+            await self._store.upsert_url_state(state)
+
+        await self._store.update_check_status(
+            check_id, CheckRunStatus.complete
+        )
+        self._logger.info(
+            "Completed link check",
+            check_id=check_id,
+            checked_url_count=len(urls),
+        )
 
     async def get_check_report(self, check_id: int) -> LinkCheckReport | None:
         """Get the status report for a submitted check.

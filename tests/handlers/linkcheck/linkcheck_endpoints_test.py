@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 import structlog
 from httpx import AsyncClient
@@ -12,7 +14,8 @@ from sqlalchemy import select
 
 from ook.config import config
 from ook.dbschema.linkcheck import SqlCheckedUrl, SqlUrlOccurrence
-from ook.domain.linkcheck import LinkState, LinkStatus
+from ook.domain.linkcheck import LinkState, LinkStatus, RetryLadderConfig
+from ook.services.linkcheck import LinkCheckService, UrlChecker
 from ook.storage.linkcheckstore import LinkCheckStore
 
 
@@ -26,6 +29,45 @@ async def _seed_url_state(state: LinkState) -> None:
     store = LinkCheckStore(session=session, logger=logger)
     async with session.begin():
         await store.upsert_url_state(state)
+    await session.close()
+    await engine.dispose()
+
+
+async def _execute_check(
+    check_id: int, handler: Callable[[httpx.Request], httpx.Response]
+) -> None:
+    """Execute a check against the test database with mocked HTTP, the
+    way the Kafka consumer will invoke the service.
+    """
+
+    async def resolve_host(host: str) -> Sequence[str]:
+        return ["93.184.216.34"]
+
+    logger = structlog.get_logger("test")
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    session = await create_async_session(engine)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler)
+    ) as http_client:
+        checker = UrlChecker(
+            http_client=http_client,
+            logger=logger,
+            request_timeout=timedelta(seconds=5),
+            host_interval=timedelta(seconds=0),
+            resolve_host=resolve_host,
+        )
+        service = LinkCheckService(
+            linkcheck_store=LinkCheckStore(session=session, logger=logger),
+            logger=logger,
+            freshness_ttl=config.linkcheck_freshness_ttl,
+            max_urls_per_check=config.linkcheck_max_urls_per_check,
+            url_checker=checker,
+            retry_ladder=RetryLadderConfig(),
+        )
+        async with session.begin():
+            await service.execute_check(check_id)
     await session.close()
     await engine.dispose()
 
@@ -248,6 +290,59 @@ async def test_url_cap_rejected(
         },
     )
     assert response.status_code == 202
+
+
+@pytest.mark.asyncio
+async def test_poll_after_execution_reflects_results(
+    client: AsyncClient,
+) -> None:
+    """After a submitted check is executed, polling it shows the check
+    complete with per-URL results from the transition engine.
+    """
+    response = await client.post(
+        "/ook/linkcheck/checks",
+        json={
+            "ltd_slug": "sqr-000",
+            "default_branch": True,
+            "urls": [
+                {"url": "https://example.com/ok", "paths": ["index"]},
+                {"url": "https://example.com/gone", "paths": ["index"]},
+            ],
+        },
+    )
+    assert response.status_code == 202
+    location = response.headers["Location"]
+    check_id = int(location.rstrip("/").rsplit("/", 1)[-1])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/gone":
+            return httpx.Response(404)
+        return httpx.Response(200)
+
+    await _execute_check(check_id, handler)
+
+    response = await client.get(location)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "complete"
+    assert data["date_completed"] is not None
+    assert data["summary"] == {
+        "pending": 0,
+        "ok": 1,
+        "redirected": 0,
+        "failing": 0,
+        "broken": 1,
+        "unsupported": 0,
+    }
+    results = {u["url"]: u for u in data["urls"]}
+    ok = results["https://example.com/ok"]
+    assert ok["status"] == "ok"
+    assert ok["status_code"] == 200
+    assert ok["checked_at"] is not None
+    gone = results["https://example.com/gone"]
+    assert gone["status"] == "broken"
+    assert gone["status_code"] == 404
+    assert gone["checked_at"] is not None
 
 
 @pytest.mark.asyncio

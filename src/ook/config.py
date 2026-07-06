@@ -157,6 +157,42 @@ class Configuration(BaseSettings):
         ),
     )
 
+    linkcheck_broken_threshold: HumanTimedelta = Field(
+        timedelta(hours=48),
+        validation_alias="OOK_LINKCHECK_BROKEN_THRESHOLD",
+        description=(
+            "Minimum span of consecutive failures before a previously-OK"
+            " link is declared broken instead of failing."
+        ),
+    )
+
+    linkcheck_broken_min_attempts: int = Field(
+        3,
+        ge=1,
+        validation_alias="OOK_LINKCHECK_BROKEN_MIN_ATTEMPTS",
+        description=(
+            "Minimum number of consecutive failed attempts before a"
+            " previously-OK link is declared broken instead of failing."
+        ),
+    )
+
+    linkcheck_recheck_intervals: tuple[HumanTimedelta, ...] = Field(
+        (
+            timedelta(hours=1),
+            timedelta(hours=4),
+            timedelta(hours=24),
+            timedelta(hours=48),
+        ),
+        min_length=1,
+        validation_alias="OOK_LINKCHECK_RECHECK_INTERVALS",
+        description=(
+            "Delays until the next recheck of a failing link, indexed by"
+            " the number of consecutive failures so far. The last"
+            " interval repeats when the failure streak outlasts this"
+            " schedule."
+        ),
+    )
+
     slack_webhook: SecretStr | None = Field(
         None,
         validation_alias="OOK_SLACK_WEBHOOK",

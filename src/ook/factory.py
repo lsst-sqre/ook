@@ -21,6 +21,7 @@ from ook.services.authors import AuthorService
 
 from .config import config
 from .dependencies.algoliasearch import algolia_client_dependency
+from .domain.linkcheck import RetryLadderConfig
 from .kafkarouter import kafka_router
 from .services.algoliaaudit import AlgoliaAuditService
 from .services.algoliadocindex import AlgoliaDocIndexService
@@ -263,6 +264,12 @@ class Factory:
             logger=self._logger,
             freshness_ttl=config.linkcheck_freshness_ttl,
             max_urls_per_check=config.linkcheck_max_urls_per_check,
+            url_checker=self.url_checker,
+            retry_ladder=RetryLadderConfig(
+                broken_threshold=config.linkcheck_broken_threshold,
+                min_attempts=config.linkcheck_broken_min_attempts,
+                recheck_intervals=config.linkcheck_recheck_intervals,
+            ),
         )
 
     def create_glossary_store(self) -> GlossaryStore:
