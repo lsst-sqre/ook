@@ -13,6 +13,7 @@ __all__ = [
     "LinkState",
     "LinkStatus",
     "RetryLadderConfig",
+    "UrlOccurrence",
 ]
 
 
@@ -206,4 +207,17 @@ class LinkState(BaseModel):
             "Time of the next scheduled recheck on the retry ladder,"
             " or None if the link is not on the ladder."
         ),
+    )
+
+
+class UrlOccurrence(BaseModel):
+    """An occurrence of a checked URL on a documentation page."""
+
+    url: str = Field(
+        description="The canonical (fragment-stripped) URL that occurs."
+    )
+
+    path: str = Field(
+        description="The page path where the URL occurs, relative to the"
+        " project's documentation root."
     )

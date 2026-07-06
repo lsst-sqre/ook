@@ -7,6 +7,7 @@ from ._models import (
     LinkState,
     LinkStatus,
     RetryLadderConfig,
+    UrlOccurrence,
 )
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "LinkState",
     "LinkStatus",
     "RetryLadderConfig",
+    "UrlOccurrence",
     "evaluate_outcome",
     "is_supported_url",
 ]

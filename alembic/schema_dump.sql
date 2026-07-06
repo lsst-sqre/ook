@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict Qtqlk6Zbwb4ibKWKpbtPC1HN34YwSMnAK8DiNlWhOyYMWqKe1WKViQEL5VF22Jq
+\restrict uuBfTwSfSGjhROYlm2wcSfr2J2qjinL3n4YkzzS5VJDTeY12DQK3W1GPvpyqCns
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -180,6 +180,51 @@ ALTER SEQUENCE public.author_id_seq OWNED BY public.author.id;
 
 
 --
+-- Name: checked_url; Type: TABLE; Schema: public; Owner: test
+--
+
+CREATE TABLE public.checked_url (
+    id bigint NOT NULL,
+    url text NOT NULL,
+    status text,
+    status_code integer,
+    redirect_url text,
+    redirect_status_code integer,
+    error text,
+    last_checked_at timestamp with time zone,
+    last_ok_at timestamp with time zone,
+    failing_since timestamp with time zone,
+    failure_count integer NOT NULL,
+    next_check_at timestamp with time zone,
+    check_method text NOT NULL,
+    date_created timestamp with time zone NOT NULL
+);
+
+
+ALTER TABLE public.checked_url OWNER TO test;
+
+--
+-- Name: checked_url_id_seq; Type: SEQUENCE; Schema: public; Owner: test
+--
+
+CREATE SEQUENCE public.checked_url_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.checked_url_id_seq OWNER TO test;
+
+--
+-- Name: checked_url_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: test
+--
+
+ALTER SEQUENCE public.checked_url_id_seq OWNED BY public.checked_url.id;
+
+
+--
 -- Name: contributor; Type: TABLE; Schema: public; Owner: test
 --
 
@@ -317,6 +362,55 @@ ALTER SEQUENCE public.link_id_seq OWNER TO test;
 
 ALTER SEQUENCE public.link_id_seq OWNED BY public.link.id;
 
+
+--
+-- Name: linkcheck_check; Type: TABLE; Schema: public; Owner: test
+--
+
+CREATE TABLE public.linkcheck_check (
+    id bigint NOT NULL,
+    ltd_slug text NOT NULL,
+    default_branch boolean NOT NULL,
+    status text NOT NULL,
+    date_created timestamp with time zone NOT NULL,
+    date_completed timestamp with time zone
+);
+
+
+ALTER TABLE public.linkcheck_check OWNER TO test;
+
+--
+-- Name: linkcheck_check_id_seq; Type: SEQUENCE; Schema: public; Owner: test
+--
+
+CREATE SEQUENCE public.linkcheck_check_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.linkcheck_check_id_seq OWNER TO test;
+
+--
+-- Name: linkcheck_check_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: test
+--
+
+ALTER SEQUENCE public.linkcheck_check_id_seq OWNED BY public.linkcheck_check.id;
+
+
+--
+-- Name: linkcheck_check_url; Type: TABLE; Schema: public; Owner: test
+--
+
+CREATE TABLE public.linkcheck_check_url (
+    check_id bigint NOT NULL,
+    checked_url_id bigint NOT NULL
+);
+
+
+ALTER TABLE public.linkcheck_check_url OWNER TO test;
 
 --
 -- Name: links_sdm_columns; Type: TABLE; Schema: public; Owner: test
@@ -585,6 +679,41 @@ CREATE TABLE public.term_relationships (
 ALTER TABLE public.term_relationships OWNER TO test;
 
 --
+-- Name: url_occurrence; Type: TABLE; Schema: public; Owner: test
+--
+
+CREATE TABLE public.url_occurrence (
+    id bigint NOT NULL,
+    ltd_slug text NOT NULL,
+    path text NOT NULL,
+    checked_url_id bigint NOT NULL
+);
+
+
+ALTER TABLE public.url_occurrence OWNER TO test;
+
+--
+-- Name: url_occurrence_id_seq; Type: SEQUENCE; Schema: public; Owner: test
+--
+
+CREATE SEQUENCE public.url_occurrence_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.url_occurrence_id_seq OWNER TO test;
+
+--
+-- Name: url_occurrence_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: test
+--
+
+ALTER SEQUENCE public.url_occurrence_id_seq OWNED BY public.url_occurrence.id;
+
+
+--
 -- Name: affiliation id; Type: DEFAULT; Schema: public; Owner: test
 --
 
@@ -606,6 +735,13 @@ ALTER TABLE ONLY public.author_alias ALTER COLUMN id SET DEFAULT nextval('public
 
 
 --
+-- Name: checked_url id; Type: DEFAULT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.checked_url ALTER COLUMN id SET DEFAULT nextval('public.checked_url_id_seq'::regclass);
+
+
+--
 -- Name: contributor id; Type: DEFAULT; Schema: public; Owner: test
 --
 
@@ -624,6 +760,13 @@ ALTER TABLE ONLY public.external_reference ALTER COLUMN id SET DEFAULT nextval('
 --
 
 ALTER TABLE ONLY public.link ALTER COLUMN id SET DEFAULT nextval('public.link_id_seq'::regclass);
+
+
+--
+-- Name: linkcheck_check id; Type: DEFAULT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.linkcheck_check ALTER COLUMN id SET DEFAULT nextval('public.linkcheck_check_id_seq'::regclass);
 
 
 --
@@ -662,6 +805,13 @@ ALTER TABLE ONLY public.term ALTER COLUMN id SET DEFAULT nextval('public.term_id
 
 
 --
+-- Name: url_occurrence id; Type: DEFAULT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.url_occurrence ALTER COLUMN id SET DEFAULT nextval('public.url_occurrence_id_seq'::regclass);
+
+
+--
 -- Data for Name: affiliation; Type: TABLE DATA; Schema: public; Owner: test
 --
 
@@ -674,7 +824,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-34ea7479b953
+c1ddff6dff7a
 \.
 
 
@@ -699,6 +849,14 @@ COPY public.author_affiliations (author_id, affiliation_id, "position") FROM std
 --
 
 COPY public.author_alias (id, internal_id, author_id, date_updated) FROM stdin;
+\.
+
+
+--
+-- Data for Name: checked_url; Type: TABLE DATA; Schema: public; Owner: test
+--
+
+COPY public.checked_url (id, url, status, status_code, redirect_url, redirect_status_code, error, last_checked_at, last_ok_at, failing_since, failure_count, next_check_at, check_method, date_created) FROM stdin;
 \.
 
 
@@ -731,6 +889,22 @@ COPY public.external_reference (id, url, doi, arxiv_id, isbn, issn, ads_bibcode,
 --
 
 COPY public.link (id, type, html_url, source_type, source_title, source_collection_title, date_updated) FROM stdin;
+\.
+
+
+--
+-- Data for Name: linkcheck_check; Type: TABLE DATA; Schema: public; Owner: test
+--
+
+COPY public.linkcheck_check (id, ltd_slug, default_branch, status, date_created, date_completed) FROM stdin;
+\.
+
+
+--
+-- Data for Name: linkcheck_check_url; Type: TABLE DATA; Schema: public; Owner: test
+--
+
+COPY public.linkcheck_check_url (check_id, checked_url_id) FROM stdin;
 \.
 
 
@@ -815,6 +989,14 @@ COPY public.term_relationships (source_term_id, related_term_id) FROM stdin;
 
 
 --
+-- Data for Name: url_occurrence; Type: TABLE DATA; Schema: public; Owner: test
+--
+
+COPY public.url_occurrence (id, ltd_slug, path, checked_url_id) FROM stdin;
+\.
+
+
+--
 -- Name: affiliation_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
 --
 
@@ -836,6 +1018,13 @@ SELECT pg_catalog.setval('public.author_id_seq', 1, false);
 
 
 --
+-- Name: checked_url_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
+--
+
+SELECT pg_catalog.setval('public.checked_url_id_seq', 1, false);
+
+
+--
 -- Name: contributor_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
 --
 
@@ -854,6 +1043,13 @@ SELECT pg_catalog.setval('public.external_reference_id_seq', 1, false);
 --
 
 SELECT pg_catalog.setval('public.link_id_seq', 1, false);
+
+
+--
+-- Name: linkcheck_check_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
+--
+
+SELECT pg_catalog.setval('public.linkcheck_check_id_seq', 1, false);
 
 
 --
@@ -889,6 +1085,13 @@ SELECT pg_catalog.setval('public.sdm_table_id_seq', 1, false);
 --
 
 SELECT pg_catalog.setval('public.term_id_seq', 1, false);
+
+
+--
+-- Name: url_occurrence_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
+--
+
+SELECT pg_catalog.setval('public.url_occurrence_id_seq', 1, false);
 
 
 --
@@ -929,6 +1132,14 @@ ALTER TABLE ONLY public.author_alias
 
 ALTER TABLE ONLY public.author
     ADD CONSTRAINT author_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: checked_url checked_url_pkey; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.checked_url
+    ADD CONSTRAINT checked_url_pkey PRIMARY KEY (id);
 
 
 --
@@ -1009,6 +1220,22 @@ ALTER TABLE ONLY public.external_reference
 
 ALTER TABLE ONLY public.link
     ADD CONSTRAINT link_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: linkcheck_check linkcheck_check_pkey; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.linkcheck_check
+    ADD CONSTRAINT linkcheck_check_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: linkcheck_check_url linkcheck_check_url_pkey; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.linkcheck_check_url
+    ADD CONSTRAINT linkcheck_check_url_pkey PRIMARY KEY (check_id, checked_url_id);
 
 
 --
@@ -1172,6 +1399,22 @@ ALTER TABLE ONLY public.term
 
 
 --
+-- Name: url_occurrence uq_url_occurrence; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.url_occurrence
+    ADD CONSTRAINT uq_url_occurrence UNIQUE (ltd_slug, path, checked_url_id);
+
+
+--
+-- Name: url_occurrence url_occurrence_pkey; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.url_occurrence
+    ADD CONSTRAINT url_occurrence_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: idx_author_given_name_trgm; Type: INDEX; Schema: public; Owner: test
 --
 
@@ -1291,6 +1534,55 @@ CREATE INDEX ix_author_surname ON public.author USING btree (surname);
 
 
 --
+-- Name: ix_checked_url_last_checked_at; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_checked_url_last_checked_at ON public.checked_url USING btree (last_checked_at);
+
+
+--
+-- Name: ix_checked_url_next_check_at; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_checked_url_next_check_at ON public.checked_url USING btree (next_check_at);
+
+
+--
+-- Name: ix_checked_url_status; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_checked_url_status ON public.checked_url USING btree (status);
+
+
+--
+-- Name: ix_checked_url_url; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE UNIQUE INDEX ix_checked_url_url ON public.checked_url USING btree (url);
+
+
+--
+-- Name: ix_linkcheck_check_date_created; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_linkcheck_check_date_created ON public.linkcheck_check USING btree (date_created);
+
+
+--
+-- Name: ix_linkcheck_check_ltd_slug; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_linkcheck_check_ltd_slug ON public.linkcheck_check USING btree (ltd_slug);
+
+
+--
+-- Name: ix_linkcheck_check_url_checked_url_id; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_linkcheck_check_url_checked_url_id ON public.linkcheck_check_url USING btree (checked_url_id);
+
+
+--
 -- Name: ix_links_sdm_columns_column_id; Type: INDEX; Schema: public; Owner: test
 --
 
@@ -1368,6 +1660,20 @@ CREATE INDEX ix_term_term ON public.term USING btree (term);
 
 
 --
+-- Name: ix_url_occurrence_checked_url_id; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_url_occurrence_checked_url_id ON public.url_occurrence USING btree (checked_url_id);
+
+
+--
+-- Name: ix_url_occurrence_ltd_slug; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_url_occurrence_ltd_slug ON public.url_occurrence USING btree (ltd_slug);
+
+
+--
 -- Name: author_affiliations author_affiliations_affiliation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
 --
 
@@ -1413,6 +1719,22 @@ ALTER TABLE ONLY public.contributor
 
 ALTER TABLE ONLY public.document_resource
     ADD CONSTRAINT document_resource_id_fkey FOREIGN KEY (id) REFERENCES public.resource(id);
+
+
+--
+-- Name: linkcheck_check_url linkcheck_check_url_check_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.linkcheck_check_url
+    ADD CONSTRAINT linkcheck_check_url_check_id_fkey FOREIGN KEY (check_id) REFERENCES public.linkcheck_check(id) ON DELETE CASCADE;
+
+
+--
+-- Name: linkcheck_check_url linkcheck_check_url_checked_url_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.linkcheck_check_url
+    ADD CONSTRAINT linkcheck_check_url_checked_url_id_fkey FOREIGN KEY (checked_url_id) REFERENCES public.checked_url(id) ON DELETE CASCADE;
 
 
 --
@@ -1520,8 +1842,16 @@ ALTER TABLE ONLY public.term_relationships
 
 
 --
+-- Name: url_occurrence url_occurrence_checked_url_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.url_occurrence
+    ADD CONSTRAINT url_occurrence_checked_url_id_fkey FOREIGN KEY (checked_url_id) REFERENCES public.checked_url(id) ON DELETE CASCADE;
+
+
+--
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Qtqlk6Zbwb4ibKWKpbtPC1HN34YwSMnAK8DiNlWhOyYMWqKe1WKViQEL5VF22Jq
+\unrestrict uuBfTwSfSGjhROYlm2wcSfr2J2qjinL3n4YkzzS5VJDTeY12DQK3W1GPvpyqCns
 

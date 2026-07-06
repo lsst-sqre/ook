@@ -37,6 +37,7 @@ from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
 from .services.technoteingest import TechnoteIngestService
 from .storage.authorstore import AuthorStore
 from .storage.glossarystore import GlossaryStore
+from .storage.linkcheckstore import LinkCheckStore
 from .storage.linkstore import LinkStore
 from .storage.resourcestore import ResourceStore
 from .storage.sdmschemastore import SdmSchemasStore
@@ -221,6 +222,13 @@ class Factory:
     def create_author_store(self) -> AuthorStore:
         """Create an AuthorStore."""
         return AuthorStore(
+            session=self._session,
+            logger=self._logger,
+        )
+
+    def create_linkcheck_store(self) -> LinkCheckStore:
+        """Create a LinkCheckStore."""
+        return LinkCheckStore(
             session=self._session,
             logger=self._logger,
         )
