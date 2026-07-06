@@ -100,8 +100,9 @@ async def _get_occurrences(origin_base_url: str) -> set[tuple[str, str]]:
 
 @pytest.mark.asyncio
 async def test_post_check_accepted(client: AsyncClient) -> None:
-    """``POST /ook/linkcheck/checks`` returns 202 with a Location header
-    pointing at the created check.
+    """``POST /ook/linkcheck/checks`` with due URLs returns 202 with the
+    pending check resource as the body and a Location header that
+    matches a subsequent GET.
     """
     response = await client.post(
         "/ook/linkcheck/checks",
@@ -119,6 +120,75 @@ async def test_post_check_accepted(client: AsyncClient) -> None:
     assert response.status_code == 202
     location = response.headers["Location"]
     assert "/ook/linkcheck/checks/" in location
+
+    data = response.json()
+    assert data["status"] == "pending"
+    assert data["origin_base_url"] == ORIGIN
+    assert data["is_default_version"] is True
+    assert data["self_url"] == location
+    assert location.endswith(f"/ook/linkcheck/checks/{data['id']}")
+    assert [u["url"] for u in data["urls"]] == ["https://example.com/page"]
+
+    # The body matches a subsequent GET of the check on its stable
+    # fields (execution may advance the status concurrently).
+    get_response = await client.get(location)
+    assert get_response.status_code == 200
+    get_data = get_response.json()
+    for field in ("id", "self_url", "origin_base_url", "is_default_version"):
+        assert get_data[field] == data[field]
+    assert [u["url"] for u in get_data["urls"]] == [
+        u["url"] for u in data["urls"]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_check_all_fresh_returns_complete(
+    client: AsyncClient,
+) -> None:
+    """An all-fresh submission completes at submission and returns 200
+    with the finished check as the body (no polling needed), still with
+    a Location header.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_url_state(
+        LinkState(
+            url="https://example.com/fresh",
+            status=LinkStatus.ok,
+            checked_at=now,
+            last_ok_at=now,
+            status_code=200,
+        )
+    )
+
+    response = await client.post(
+        "/ook/linkcheck/checks",
+        json={
+            "origin_base_url": ORIGIN,
+            "is_default_version": False,
+            "urls": [
+                {
+                    "url": "https://example.com/fresh",
+                    "origin_paths": ["index"],
+                },
+                {"url": "mailto:someone@example.com", "origin_paths": ["a"]},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    location = response.headers["Location"]
+    data = response.json()
+    assert data["status"] == "complete"
+    assert data["date_completed"] is not None
+    assert data["self_url"] == location
+    results = {u["url"]: u for u in data["urls"]}
+    assert results["https://example.com/fresh"]["status"] == "ok"
+    assert results["mailto:someone@example.com"]["status"] == "unsupported"
+
+    # No execution is enqueued, so the body is the final resource and
+    # matches a subsequent GET exactly.
+    get_response = await client.get(location)
+    assert get_response.status_code == 200
+    assert get_response.json() == data
 
 
 @pytest.mark.asyncio
@@ -138,6 +208,7 @@ async def test_post_check_origin_normalization(client: AsyncClient) -> None:
         },
     )
     assert response.status_code == 202
+    assert response.json()["origin_base_url"] == ORIGIN
     assert await _get_occurrences(ORIGIN) == {
         ("https://example.com/a", "index"),
     }
@@ -467,7 +538,7 @@ async def test_get_url_record(client: AsyncClient) -> None:
             ],
         },
     )
-    assert response.status_code == 202
+    assert response.status_code == 200
 
     response = await client.get(
         "/ook/linkcheck/urls",
@@ -543,7 +614,7 @@ async def _seed_origin_links(client: AsyncClient) -> None:
             ],
         },
     )
-    assert response.status_code == 202
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio

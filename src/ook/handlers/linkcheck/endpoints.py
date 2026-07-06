@@ -2,14 +2,18 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query, Response
+from fastapi import APIRouter, Depends, Path, Query
 from pydantic import AfterValidator
 from safir.models import ErrorModel
 
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 from ook.domain.kafka import CheckLinksMessageV1
-from ook.domain.linkcheck import CheckUrlStatus, normalize_origin_base_url
+from ook.domain.linkcheck import (
+    CheckRunStatus,
+    CheckUrlStatus,
+    normalize_origin_base_url,
+)
 from ook.exceptions import NotFoundError
 from ook.storage.linkcheckstore import OriginLinksCursor
 
@@ -28,19 +32,38 @@ router = APIRouter(
         "Submit a website build's external URLs for checking. URLs are"
         " canonicalized (fragments stripped) and partitioned: URLs with"
         " a fresh cached result and unsupported URLs resolve"
-        " immediately, while the rest are checked asynchronously. Poll"
-        " the check at the returned Location header. This endpoint is"
-        " write-protected by Gafaelfawr at the ingress."
+        " immediately, while the rest are checked asynchronously. The"
+        " created check resource is returned as the body and its URL as"
+        " the Location header. A check whose URLs all resolve"
+        " immediately is returned complete with status 200; otherwise"
+        " the response is 202 and the check should be polled at the"
+        " Location header (or the body's self_url) until complete. This"
+        " endpoint is write-protected by Gafaelfawr at the ingress."
     ),
     status_code=202,
-    response_model=None,
-    responses={422: {"description": "Invalid submission"}},
+    responses={
+        200: {
+            "description": (
+                "The check completed at submission (all URLs resolved"
+                " immediately); the body holds the full results."
+            ),
+            "model": LinkCheck,
+        },
+        202: {
+            "description": (
+                "The check was accepted and is executing"
+                " asynchronously; poll it at the Location header."
+            ),
+            "model": LinkCheck,
+        },
+        422: {"description": "Invalid submission"},
+    },
 )
 async def post_linkcheck_check(
     check_request: LinkCheckRequest,
     context: Annotated[RequestContext, Depends(context_dependency)],
-) -> Response:
-    """Accept a link-check submission and return its polling location."""
+) -> LinkCheck:
+    """Accept a link-check submission and return the check resource."""
     context.logger.info(
         "Received link-check submission",
         origin_base_url=check_request.origin_base_url,
@@ -54,6 +77,11 @@ async def post_linkcheck_check(
             is_default_version=check_request.is_default_version,
             urls=[url.to_domain() for url in check_request.urls],
         )
+        report = await service.get_check_report(submission.check_id)
+        if report is None:
+            raise RuntimeError(
+                f"Link check {submission.check_id} not found after creation"
+            )
     if submission.due_urls:
         # Enqueue execution only after the transaction commits so the
         # consumer never sees a check id before its row is visible.
@@ -66,7 +94,12 @@ async def post_linkcheck_check(
             "get_linkcheck_check", check_id=submission.check_id
         )
     )
-    return Response(status_code=202, headers={"Location": location})
+    context.response.headers["Location"] = location
+    if report.status is CheckRunStatus.complete:
+        # The all-fresh fast path completes at submission, so this is a
+        # final resource representation, not an accepted async job.
+        context.response.status_code = 200
+    return LinkCheck.from_domain(report, request=context.request)
 
 
 @router.get(
