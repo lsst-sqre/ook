@@ -429,3 +429,150 @@ async def test_get_due_urls(factory: Factory) -> None:
         # A limit caps the number of returned URLs.
         limited = await store.get_due_urls(now=now, ttl=ttl, limit=2)
         assert len(limited) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_due_urls_referenced_only(factory: Factory) -> None:
+    """Referenced-only due-URL enumeration excludes URLs that no longer
+    occur on any project page.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        ttl = timedelta(hours=24)
+
+        # A never-checked URL occurring on a project page: due.
+        await store.replace_project_occurrences(
+            ltd_slug="sqr-000",
+            occurrences=[
+                UrlOccurrence(
+                    url="https://due.example.com/referenced", path="index"
+                )
+            ],
+        )
+        # A never-checked URL with no occurrences: due, but excluded
+        # from referenced-only enumeration.
+        await store.upsert_checked_urls(
+            ["https://due.example.com/unreferenced"]
+        )
+
+        due = await store.get_due_urls(now=now, ttl=ttl, referenced_only=True)
+        assert {d.url for d in due} == {"https://due.example.com/referenced"}
+
+        # The default enumeration still includes unreferenced URLs.
+        due_all = await store.get_due_urls(now=now, ttl=ttl)
+        assert {d.url for d in due_all} == {
+            "https://due.example.com/referenced",
+            "https://due.example.com/unreferenced",
+        }
+
+
+@pytest.mark.asyncio
+async def test_purge_expired_checks(factory: Factory) -> None:
+    """Purging expired checks deletes checks (and their memberships)
+    older than the retention period while keeping recent checks.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        retention = timedelta(days=30)
+
+        ids = await store.upsert_checked_urls(["https://example.com/a"])
+        old_check_id = await store.create_check(
+            ltd_slug="sqr-000",
+            default_branch=False,
+            checked_url_ids=list(ids.values()),
+            now=now - timedelta(days=31),
+        )
+        recent_check_id = await store.create_check(
+            ltd_slug="sqr-000",
+            default_branch=False,
+            checked_url_ids=list(ids.values()),
+            now=now - timedelta(days=1),
+        )
+
+        purged = await store.purge_expired_checks(now=now, retention=retention)
+        assert purged == 1
+        assert await store.get_check(old_check_id) is None
+        assert await store.get_check(recent_check_id) is not None
+
+        # The expired check's membership rows are gone as well.
+        memberships = (
+            (
+                await factory.db_session.execute(
+                    select(SqlLinkCheckUrl.check_id).where(
+                        SqlLinkCheckUrl.check_id == old_check_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert memberships == []
+
+
+@pytest.mark.asyncio
+async def test_purge_orphan_urls(factory: Factory) -> None:
+    """Purging orphan URLs deletes records with no remaining
+    occurrences and no check membership, keeping referenced URLs.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+
+        # A URL occurring on a project page is kept.
+        await store.replace_project_occurrences(
+            ltd_slug="sqr-000",
+            occurrences=[
+                UrlOccurrence(url="https://example.com/referenced", path="a")
+            ],
+        )
+        # A URL that is only a member of a (recent) check is kept, so
+        # active check reports never lose members mid-poll.
+        member_ids = await store.upsert_checked_urls(
+            ["https://example.com/member"]
+        )
+        await store.create_check(
+            ltd_slug="sqr-000",
+            default_branch=False,
+            checked_url_ids=list(member_ids.values()),
+            now=now,
+        )
+        # A URL with neither occurrences nor membership is purged.
+        await store.upsert_checked_urls(["https://example.com/orphan"])
+
+        purged = await store.purge_orphan_urls()
+        assert purged == 1
+
+        remaining = (
+            (await factory.db_session.execute(select(SqlCheckedUrl.url)))
+            .scalars()
+            .all()
+        )
+        assert set(remaining) == {
+            "https://example.com/referenced",
+            "https://example.com/member",
+        }
+
+
+@pytest.mark.asyncio
+async def test_get_urls_by_ids(factory: Factory) -> None:
+    """Looking up URLs by primary key returns known rows and silently
+    omits unknown ids.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+
+        ids = await store.upsert_checked_urls(
+            ["https://example.com/a", "https://example.com/b"]
+        )
+        unknown_id = max(ids.values()) + 1000
+
+        records = await store.get_urls_by_ids(
+            [ids["https://example.com/a"], unknown_id]
+        )
+        assert [(r.id, r.url) for r in records] == [
+            (ids["https://example.com/a"], "https://example.com/a")
+        ]
+
+        assert await store.get_urls_by_ids([]) == []

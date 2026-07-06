@@ -17,6 +17,7 @@ from ook.domain.linkcheck import (
     LinkStatus,
     RetryLadderConfig,
     SubmittedUrl,
+    UrlOccurrence,
 )
 from ook.factory import Factory
 from ook.services.linkcheck import LinkCheckService, UrlChecker
@@ -52,6 +53,7 @@ def make_service(
         max_urls_per_check=config.linkcheck_max_urls_per_check,
         url_checker=checker,
         retry_ladder=RetryLadderConfig(),
+        check_retention=config.linkcheck_check_retention,
     )
 
 
@@ -284,6 +286,203 @@ async def test_execute_unknown_check_is_noop(factory: Factory) -> None:
         service = make_service(factory, hc)
         async with factory.db_session.begin():
             await service.execute_check(123456789)
+
+
+@pytest.mark.asyncio
+async def test_execute_recheck_advances_ladder(factory: Factory) -> None:
+    """Rechecking a failing URL past the broken threshold advances it
+    through the retry ladder to broken.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            url = "https://example.com/rotting"
+            await store.upsert_url_state(
+                LinkState(
+                    url=url,
+                    status=LinkStatus.failing,
+                    checked_at=now - timedelta(hours=1),
+                    last_ok_at=now - timedelta(days=4),
+                    failing_since=now - timedelta(days=3),
+                    failure_count=3,
+                    status_code=404,
+                    error="404 Not Found",
+                    next_check_at=now - timedelta(minutes=5),
+                )
+            )
+            ids = await store.upsert_checked_urls([url])
+
+            await service.execute_recheck([ids[url]])
+
+            state = await store.get_url_state(url)
+            assert state is not None
+            assert state.status is LinkStatus.broken
+            assert state.failure_count == 4
+            assert state.failing_since == now - timedelta(days=3)
+            assert state.next_check_at is None
+
+
+@pytest.mark.asyncio
+async def test_execute_recheck_unknown_ids_is_noop(factory: Factory) -> None:
+    """Rechecking unknown URL ids neither raises nor fetches, so
+    at-least-once delivery of stale recheck requests is safe.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        async with factory.db_session.begin():
+            await service.execute_recheck([123456789, 987654321])
+
+
+@pytest.mark.asyncio
+async def test_execute_recheck_skips_fresh_urls(factory: Factory) -> None:
+    """A URL whose result was refreshed after enqueueing is no longer
+    due and is not refetched by the recheck.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            url = "https://example.com/just-checked"
+            fresh_state = LinkState(
+                url=url,
+                status=LinkStatus.ok,
+                checked_at=now,
+                last_ok_at=now,
+                status_code=200,
+            )
+            await store.upsert_url_state(fresh_state)
+            ids = await store.upsert_checked_urls([url])
+
+            await service.execute_recheck([ids[url]])
+
+            assert await store.get_url_state(url) == fresh_state
+
+
+@pytest.mark.asyncio
+async def test_list_due_recheck_urls_referenced_only(
+    factory: Factory,
+) -> None:
+    """The scheduled recheck enumeration lists only due URLs that
+    still occur on a project page.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            stale = now - config.linkcheck_freshness_ttl - timedelta(hours=1)
+            for url in (
+                "https://example.com/referenced-stale",
+                "https://example.com/unreferenced-stale",
+            ):
+                await store.upsert_url_state(
+                    LinkState(
+                        url=url,
+                        status=LinkStatus.ok,
+                        checked_at=stale,
+                        last_ok_at=stale,
+                        status_code=200,
+                    )
+                )
+            # Only one stale URL still occurs on a project page; a
+            # fresh referenced URL is not due.
+            await store.replace_project_occurrences(
+                ltd_slug="sqr-000",
+                occurrences=[
+                    UrlOccurrence(
+                        url="https://example.com/referenced-stale", path="a"
+                    ),
+                    UrlOccurrence(
+                        url="https://example.com/referenced-fresh", path="a"
+                    ),
+                ],
+            )
+            await store.upsert_url_state(
+                LinkState(
+                    url="https://example.com/referenced-fresh",
+                    status=LinkStatus.ok,
+                    checked_at=now,
+                    last_ok_at=now,
+                    status_code=200,
+                )
+            )
+
+            due = await service.list_due_recheck_urls()
+            assert [d.url for d in due] == [
+                "https://example.com/referenced-stale"
+            ]
+
+
+@pytest.mark.asyncio
+async def test_purge_expired_records(factory: Factory) -> None:
+    """Purging expired records removes checks older than the retention
+    period and orphaned URL records, reporting the counts.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            # An expired check whose member URL has no occurrences:
+            # both are purged.
+            ids = await store.upsert_checked_urls(
+                ["https://example.com/forgotten"]
+            )
+            await store.create_check(
+                ltd_slug="sqr-000",
+                default_branch=False,
+                checked_url_ids=list(ids.values()),
+                now=now - config.linkcheck_check_retention - timedelta(days=1),
+            )
+            # A referenced URL survives the purge.
+            await store.replace_project_occurrences(
+                ltd_slug="sqr-000",
+                occurrences=[
+                    UrlOccurrence(url="https://example.com/kept", path="a")
+                ],
+            )
+
+            result = await service.purge_expired_records()
+            assert result.check_count == 1
+            assert result.url_count == 1
+            assert (
+                await store.get_url_record("https://example.com/forgotten")
+                is None
+            )
+            assert (
+                await store.get_url_record("https://example.com/kept")
+                is not None
+            )
+
+
+def test_check_retention_configuration_default() -> None:
+    """The check-record retention period is exposed as a configuration
+    setting with a 30-day default.
+    """
+    assert config.linkcheck_check_retention == timedelta(days=30)
 
 
 def test_retry_ladder_configuration_defaults() -> None:

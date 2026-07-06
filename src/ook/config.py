@@ -201,6 +201,15 @@ class Configuration(BaseSettings):
         ),
     )
 
+    linkcheck_check_retention: HumanTimedelta = Field(
+        timedelta(days=30),
+        validation_alias="OOK_LINKCHECK_CHECK_RETENTION",
+        description=(
+            "Age beyond which link-check submission records are purged"
+            " by the scheduled linkcheck-recheck maintenance command."
+        ),
+    )
+
     slack_webhook: SecretStr | None = Field(
         None,
         validation_alias="OOK_SLACK_WEBHOOK",

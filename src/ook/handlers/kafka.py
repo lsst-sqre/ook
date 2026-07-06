@@ -10,7 +10,11 @@ from ook.dependencies.consumercontext import (
     consumer_context_dependency,
 )
 from ook.domain.algoliarecord import DocumentSourceType
-from ook.domain.kafka import CheckLinksMessageV1, LtdUrlIngestV2
+from ook.domain.kafka import (
+    CheckLinksMessageV1,
+    LtdUrlIngestV2,
+    RecheckUrlsMessageV1,
+)
 from ook.kafkarouter import kafka_router
 
 __all__ = ["handle_linkcheck_execution", "handle_ltd_document_ingest"]
@@ -66,18 +70,26 @@ async def handle_ltd_document_ingest(
     config.linkcheck_kafka_topic, group_id=config.kafka_consumer_group_id
 )
 async def handle_linkcheck_execution(
-    message: CheckLinksMessageV1,
+    message: CheckLinksMessageV1 | RecheckUrlsMessageV1,
     context: Annotated[ConsumerContext, Depends(consumer_context_dependency)],
 ) -> None:
-    """Handle a message requesting execution of a submitted link check."""
-    context.rebind_logger(check_id=message.check_id)
-    logger = context.logger
-
-    logger.info("Starting link-check execution request.")
-
+    """Handle a message requesting execution of a submitted link check
+    or a scheduled recheck of stored URLs.
+    """
     factory = context.factory
     service = factory.create_linkcheck_service()
-    async with factory.db_session.begin():
-        await service.execute_check(message.check_id)
 
-    logger.info("Finished link-check execution request.")
+    if isinstance(message, CheckLinksMessageV1):
+        context.rebind_logger(check_id=message.check_id)
+        logger = context.logger
+        logger.info("Starting link-check execution request.")
+        async with factory.db_session.begin():
+            await service.execute_check(message.check_id)
+        logger.info("Finished link-check execution request.")
+    else:
+        context.rebind_logger(url_count=len(message.url_ids))
+        logger = context.logger
+        logger.info("Starting link-recheck request.")
+        async with factory.db_session.begin():
+            await service.execute_recheck(message.url_ids)
+        logger.info("Finished link-recheck request.")

@@ -40,7 +40,18 @@ if TYPE_CHECKING:
 
     from ._urlchecker import UrlChecker
 
-__all__ = ["LinkCheckService", "SubmittedCheck"]
+__all__ = ["LinkCheckService", "PurgeResult", "SubmittedCheck"]
+
+
+@dataclass(frozen=True, slots=True)
+class PurgeResult:
+    """The result of purging expired link-check records."""
+
+    check_count: int
+    """The number of purged expired checks."""
+
+    url_count: int
+    """The number of purged orphaned URL records."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +88,9 @@ class LinkCheckService:
     retry_ladder
         Thresholds for the failing-to-broken retry ladder, bound to
         application configuration by the factory.
+    check_retention
+        Age beyond which check records are purged by the scheduled
+        recheck maintenance.
     """
 
     def __init__(
@@ -88,6 +102,7 @@ class LinkCheckService:
         max_urls_per_check: int,
         url_checker: UrlChecker,
         retry_ladder: RetryLadderConfig,
+        check_retention: timedelta,
     ) -> None:
         self._store = linkcheck_store
         self._logger = logger
@@ -95,6 +110,7 @@ class LinkCheckService:
         self._max_urls_per_check = max_urls_per_check
         self._url_checker = url_checker
         self._retry_ladder = retry_ladder
+        self._check_retention = check_retention
 
     async def submit_check(
         self,
@@ -265,6 +281,96 @@ class LinkCheckService:
             check_id=check_id,
             checked_url_count=len(urls),
         )
+
+    async def execute_recheck(self, url_ids: Sequence[int]) -> None:
+        """Execute a scheduled recheck of stored URLs.
+
+        The URLs that are still due are resolved with the URL checker
+        (under its global concurrency cap and per-host politeness
+        schedule) and their states are advanced through the
+        status-transition engine — this is how a failing link's retry
+        ladder progresses to broken over subsequent days.
+
+        Parameters
+        ----------
+        url_ids
+            The ``checked_url`` primary keys to recheck, as enqueued by
+            the scheduled recheck. Recheck requests are delivered at
+            least once and may outlive their URL records, so unknown
+            ids are skipped; URLs whose results have been refreshed
+            since enqueueing are skipped as no longer due.
+        """
+        records = await self._store.get_urls_by_ids(url_ids)
+        if len(records) < len(set(url_ids)):
+            self._logger.warning(
+                "Skipped recheck of unknown URL ids",
+                unknown_count=len(set(url_ids)) - len(records),
+            )
+
+        now = datetime.now(tz=UTC)
+        supported_urls = [
+            record.url for record in records if is_supported_url(record.url)
+        ]
+        states = await self._store.get_url_states(supported_urls)
+        urls = [
+            url for url in supported_urls if self._is_due(states.get(url), now)
+        ]
+
+        outcomes = await asyncio.gather(
+            *(self._url_checker.check(url) for url in urls)
+        )
+        for url, outcome in zip(urls, outcomes, strict=True):
+            state = evaluate_outcome(
+                url=url,
+                prior=states.get(url),
+                outcome=outcome,
+                ladder=self._retry_ladder,
+            )
+            await self._store.upsert_url_state(state)
+
+        self._logger.info(
+            "Completed link recheck", checked_url_count=len(urls)
+        )
+
+    async def list_due_recheck_urls(self) -> list[DueUrl]:
+        """Enumerate due, still-referenced URLs for scheduled recheck.
+
+        Returns
+        -------
+        list of DueUrl
+            The URLs due for a (re)check that still occur on at least
+            one project page, never-checked first, then oldest last
+            check first. These are the URLs the scheduled recheck
+            enqueues as batched Kafka messages.
+        """
+        now = datetime.now(tz=UTC)
+        return await self._store.get_due_urls(
+            now=now, ttl=self._freshness_ttl, referenced_only=True
+        )
+
+    async def purge_expired_records(self) -> PurgeResult:
+        """Purge expired check records and orphaned URL records.
+
+        Checks older than the retention period are deleted first, then
+        URL records with no remaining project-page occurrences and no
+        membership in a retained check.
+
+        Returns
+        -------
+        PurgeResult
+            The counts of purged checks and URL records.
+        """
+        now = datetime.now(tz=UTC)
+        check_count = await self._store.purge_expired_checks(
+            now=now, retention=self._check_retention
+        )
+        url_count = await self._store.purge_orphan_urls()
+        self._logger.info(
+            "Purged expired link-check records",
+            check_count=check_count,
+            url_count=url_count,
+        )
+        return PurgeResult(check_count=check_count, url_count=url_count)
 
     async def get_check_report(self, check_id: int) -> LinkCheckReport | None:
         """Get the status report for a submitted check.

@@ -13,6 +13,7 @@ __all__ = [
     "LtdEditionV1",
     "LtdProjectV1",
     "LtdUrlIngestV2",
+    "RecheckUrlsMessageV1",
     "UrlIngestKeyV1",
 ]
 
@@ -43,6 +44,23 @@ class CheckLinksMessageV1(BaseModel):
 
         namespace = "lsst.square-events.ook"
         schema_name = "check_links_message_v1"
+
+
+class RecheckUrlsMessageV1(BaseModel):
+    """Kafka message value model for a scheduled request to recheck a
+    batch of stored URLs.
+    """
+
+    url_ids: list[int] = Field(
+        ...,
+        description=("Primary keys of the checked-URL records to recheck."),
+    )
+
+    class Meta:
+        """Metadata for the model."""
+
+        namespace = "lsst.square-events.ook"
+        schema_name = "recheck_urls_message_v1"
 
 
 class LtdEditionV1(BaseModel):

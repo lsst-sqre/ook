@@ -223,7 +223,11 @@ def create_project_links_stmt(
 
 
 def create_due_urls_stmt(
-    *, now: datetime, ttl: timedelta, limit: int | None = None
+    *,
+    now: datetime,
+    ttl: timedelta,
+    limit: int | None = None,
+    referenced_only: bool = False,
 ) -> Select:
     """Create a select statement enumerating URLs due for a check.
 
@@ -241,6 +245,9 @@ def create_due_urls_stmt(
         are due.
     limit
         The maximum number of URLs to return, or None for no limit.
+    referenced_only
+        If true, only URLs that still occur on at least one project
+        page are selected.
 
     Returns
     -------
@@ -265,6 +272,12 @@ def create_due_urls_stmt(
             SqlCheckedUrl.id.asc(),
         )
     )
+    if referenced_only:
+        stmt = stmt.where(
+            select(SqlUrlOccurrence.id)
+            .where(SqlUrlOccurrence.checked_url_id == SqlCheckedUrl.id)
+            .exists()
+        )
     if limit is not None:
         stmt = stmt.limit(limit)
     return stmt

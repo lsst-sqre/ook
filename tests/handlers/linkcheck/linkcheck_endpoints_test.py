@@ -65,6 +65,7 @@ async def _execute_check(
             max_urls_per_check=config.linkcheck_max_urls_per_check,
             url_checker=checker,
             retry_ladder=RetryLadderConfig(),
+            check_retention=config.linkcheck_check_retention,
         )
         async with session.begin():
             await service.execute_check(check_id)

@@ -281,6 +281,7 @@ class Factory:
                 min_attempts=config.linkcheck_broken_min_attempts,
                 recheck_intervals=config.linkcheck_recheck_intervals,
             ),
+            check_retention=config.linkcheck_check_retention,
         )
 
     def create_glossary_store(self) -> GlossaryStore:

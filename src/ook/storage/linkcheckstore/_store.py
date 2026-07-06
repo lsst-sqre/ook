@@ -5,14 +5,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Self, override
+from typing import Self, cast, override
 
 from safir.database import (
     CountedPaginatedList,
     CountedPaginatedQueryRunner,
     PaginationCursor,
 )
-from sqlalchemy import Select, delete, select, update
+from sqlalchemy import CursorResult, Select, delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
@@ -552,6 +552,7 @@ class LinkCheckStore:
         now: datetime,
         ttl: timedelta,
         limit: int | None = None,
+        referenced_only: bool = False,
     ) -> list[DueUrl]:
         """Enumerate URLs that are due for a (re)check.
 
@@ -568,6 +569,11 @@ class LinkCheckStore:
             service layer.
         limit
             The maximum number of URLs to return, or None for no limit.
+        referenced_only
+            If true, only URLs that still occur on at least one project
+            page are enumerated. The scheduled recheck uses this so
+            URLs that no longer appear in any documentation build are
+            not rechecked.
 
         Returns
         -------
@@ -576,9 +582,100 @@ class LinkCheckStore:
             first.
         """
         result = await self._session.execute(
-            create_due_urls_stmt(now=now, ttl=ttl, limit=limit)
+            create_due_urls_stmt(
+                now=now, ttl=ttl, limit=limit, referenced_only=referenced_only
+            )
         )
         return [DueUrl(id=row.id, url=row.url) for row in result.all()]
+
+    async def get_urls_by_ids(self, ids: Sequence[int]) -> list[DueUrl]:
+        """Look up checked URLs by their primary keys.
+
+        Parameters
+        ----------
+        ids
+            The ``checked_url`` primary keys to look up.
+
+        Returns
+        -------
+        list of DueUrl
+            The known ``(id, url)`` pairs ordered by id. Unknown ids
+            are omitted: recheck requests are delivered at least once
+            and may outlive their URL records.
+        """
+        unique_ids = list(dict.fromkeys(ids))
+        if not unique_ids:
+            return []
+        result = await self._session.execute(
+            select(SqlCheckedUrl.id, SqlCheckedUrl.url)
+            .where(SqlCheckedUrl.id.in_(unique_ids))
+            .order_by(SqlCheckedUrl.id.asc())
+        )
+        return [DueUrl(id=row.id, url=row.url) for row in result.all()]
+
+    async def purge_expired_checks(
+        self, *, now: datetime, retention: timedelta
+    ) -> int:
+        """Delete check records older than the retention period.
+
+        A check's URL-membership rows are deleted with it (the database
+        cascades the foreign key); the checked-URL records themselves
+        are left in place.
+
+        Parameters
+        ----------
+        now
+            The current time.
+        retention
+            The retention period: checks submitted earlier than
+            ``now - retention`` are deleted.
+
+        Returns
+        -------
+        int
+            The number of deleted checks.
+        """
+        result = await self._session.execute(
+            delete(SqlLinkCheck).where(
+                SqlLinkCheck.date_created < now - retention
+            )
+        )
+        await self._session.flush()
+        count = cast("CursorResult", result).rowcount
+        self._logger.debug("Purged expired link checks", check_count=count)
+        return count
+
+    async def purge_orphan_urls(self) -> int:
+        """Delete checked-URL records that are no longer referenced.
+
+        A URL record is orphaned when it has no remaining project-page
+        occurrences and is not a member of any retained check. URLs
+        that are only members of retained checks are kept so active
+        check reports never lose members; they become orphans once
+        `purge_expired_checks` removes those checks.
+
+        Returns
+        -------
+        int
+            The number of deleted URL records.
+        """
+        has_occurrence = (
+            select(SqlUrlOccurrence.id)
+            .where(SqlUrlOccurrence.checked_url_id == SqlCheckedUrl.id)
+            .exists()
+        )
+        has_membership = (
+            select(SqlLinkCheckUrl.check_id)
+            .where(SqlLinkCheckUrl.checked_url_id == SqlCheckedUrl.id)
+            .exists()
+        )
+        result = await self._session.execute(
+            delete(SqlCheckedUrl).where(~has_occurrence, ~has_membership)
+        )
+        await self._session.flush()
+        count = cast("CursorResult", result).rowcount
+        self._logger.debug("Purged orphaned checked URLs", url_count=count)
+        return count
 
 
 @dataclass(slots=True)
