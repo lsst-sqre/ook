@@ -10,9 +10,12 @@ from ._models import (
     LinkCheckReport,
     LinkState,
     LinkStatus,
+    ProjectLink,
+    ProjectPage,
     RetryLadderConfig,
     SubmittedUrl,
     UrlOccurrence,
+    UrlRecord,
 )
 
 __all__ = [
@@ -24,9 +27,12 @@ __all__ = [
     "LinkCheckReport",
     "LinkState",
     "LinkStatus",
+    "ProjectLink",
+    "ProjectPage",
     "RetryLadderConfig",
     "SubmittedUrl",
     "UrlOccurrence",
+    "UrlRecord",
     "canonicalize_url",
     "evaluate_outcome",
     "is_supported_url",

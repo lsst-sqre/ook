@@ -5,8 +5,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Self, override
 
-from sqlalchemy import delete, select, update
+from safir.database import (
+    CountedPaginatedList,
+    CountedPaginatedQueryRunner,
+    PaginationCursor,
+)
+from sqlalchemy import Select, delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
@@ -19,19 +25,32 @@ from ook.dbschema.linkcheck import (
 )
 from ook.domain.linkcheck import (
     CheckRunStatus,
+    CheckUrlStatus,
     LinkState,
     LinkStatus,
+    ProjectLink,
+    ProjectPage,
     UrlOccurrence,
+    UrlRecord,
 )
 
 from ._query import (
     create_check_urls_stmt,
     create_checked_url_ids_stmt,
     create_due_urls_stmt,
+    create_project_links_stmt,
+    create_url_occurrences_stmt,
+    create_url_record_stmt,
     create_url_states_stmt,
 )
 
-__all__ = ["CheckRecord", "CheckUrlRecord", "DueUrl", "LinkCheckStore"]
+__all__ = [
+    "CheckRecord",
+    "CheckUrlRecord",
+    "DueUrl",
+    "LinkCheckStore",
+    "ProjectLinksCursor",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +243,92 @@ class LinkCheckStore:
             for row in result.all()
             if row.status is not None
         }
+
+    async def get_url_record(self, url: str) -> UrlRecord | None:
+        """Get a URL's full stored record with its occurrences.
+
+        Parameters
+        ----------
+        url
+            The canonical (fragment-stripped) URL to look up.
+
+        Returns
+        -------
+        UrlRecord or None
+            The URL's record with its project-page occurrences ordered
+            by project slug and page path, or None if the URL is
+            unknown. Never-checked URLs are reported with the
+            ``pending`` status.
+        """
+        row = (
+            await self._session.execute(create_url_record_stmt(url))
+        ).first()
+        if row is None:
+            return None
+
+        occurrence_rows = (
+            await self._session.execute(create_url_occurrences_stmt(url))
+        ).all()
+        return UrlRecord(
+            url=row.url,
+            status=(
+                CheckUrlStatus(row.status)
+                if row.status is not None
+                else CheckUrlStatus.pending
+            ),
+            status_code=row.status_code,
+            redirect_status_code=row.redirect_status_code,
+            redirect_url=row.redirect_url,
+            error=row.error,
+            last_checked_at=row.last_checked_at,
+            last_ok_at=row.last_ok_at,
+            failing_since=row.failing_since,
+            failure_count=row.failure_count,
+            next_check_at=row.next_check_at,
+            date_created=row.date_created,
+            occurrences=[
+                ProjectPage(ltd_slug=occ.ltd_slug, path=occ.path)
+                for occ in occurrence_rows
+            ],
+        )
+
+    async def get_project_links(
+        self,
+        ltd_slug: str,
+        *,
+        status: CheckUrlStatus | None = None,
+        cursor: ProjectLinksCursor | None = None,
+        limit: int | None = None,
+    ) -> CountedPaginatedList[ProjectLink, ProjectLinksCursor]:
+        """Get a project's links with their health states, paginated.
+
+        Parameters
+        ----------
+        ltd_slug
+            The LTD project slug whose links are listed.
+        status
+            If given, only links with this status are listed. The
+            ``pending`` status lists never-checked links.
+        cursor
+            The pagination cursor for the query.
+        limit
+            The maximum number of links to return, or None for all.
+
+        Returns
+        -------
+        CountedPaginatedList
+            A paginated list of the project's links, ordered by URL.
+        """
+        runner = CountedPaginatedQueryRunner(
+            entry_type=ProjectLink,
+            cursor_type=ProjectLinksCursor,
+        )
+        return await runner.query_row(
+            session=self._session,
+            stmt=create_project_links_stmt(ltd_slug, status=status),
+            cursor=cursor,
+            limit=limit,
+        )
 
     async def create_check(
         self,
@@ -474,3 +579,116 @@ class LinkCheckStore:
             create_due_urls_stmt(now=now, ttl=ttl, limit=limit)
         )
         return [DueUrl(id=row.id, url=row.url) for row in result.all()]
+
+
+@dataclass(slots=True)
+class ProjectLinksCursor(PaginationCursor[ProjectLink]):
+    """Cursor for paginating a project's links, sorted by URL."""
+
+    url: str
+    """The canonical URL of the link."""
+
+    @override
+    @classmethod
+    def from_entry(cls, entry: ProjectLink, *, reverse: bool = False) -> Self:
+        """Create a cursor from a project-link entry as the bound.
+
+        Parameters
+        ----------
+        entry
+            The project-link entry.
+        reverse
+            Whether the cursor is for the previous page.
+
+        Returns
+        -------
+        ProjectLinksCursor
+            The cursor object.
+        """
+        return cls(url=entry.url, previous=reverse)
+
+    @override
+    @classmethod
+    def from_str(cls, cursor: str) -> Self:
+        """Create a cursor from a string.
+
+        Parameters
+        ----------
+        cursor
+            The cursor string.
+
+        Returns
+        -------
+        ProjectLinksCursor
+            The cursor object.
+        """
+        previous_prefix = "p__"
+        if cursor.startswith(previous_prefix):
+            url = cursor.removeprefix(previous_prefix)
+            previous = True
+        else:
+            url = cursor
+            previous = False
+        return cls(url=url, previous=previous)
+
+    @override
+    @classmethod
+    def apply_order(cls, stmt: Select, *, reverse: bool = False) -> Select:
+        """Apply the sort order of the cursor to a select statement.
+
+        Parameters
+        ----------
+        stmt
+            The SQLAlchemy statement to apply ordering to.
+        reverse
+            Whether the ordering should be reversed.
+
+        Returns
+        -------
+        Select
+            The modified SQLAlchemy statement with ordering applied.
+        """
+        return stmt.order_by(
+            SqlCheckedUrl.url.desc() if reverse else SqlCheckedUrl.url.asc()
+        )
+
+    @override
+    def apply_cursor(self, stmt: Select) -> Select:
+        """Apply the cursor to a select statement.
+
+        Parameters
+        ----------
+        stmt
+            The SQLAlchemy statement to apply the cursor to.
+
+        Returns
+        -------
+        Select
+            The modified SQLAlchemy statement with the cursor applied.
+        """
+        if self.previous:
+            return stmt.where(SqlCheckedUrl.url < self.url)
+
+        # In the forward direction, include the cursor's own URL.
+        return stmt.where(SqlCheckedUrl.url >= self.url)
+
+    @override
+    def invert(self) -> Self:
+        """Invert the cursor.
+
+        Returns
+        -------
+        ProjectLinksCursor
+            The inverted cursor.
+        """
+        return type(self)(url=self.url, previous=not self.previous)
+
+    def __str__(self) -> str:
+        """Convert the cursor to a string.
+
+        Returns
+        -------
+        str
+            The string representation of the cursor.
+        """
+        return f"p__{self.url}" if self.previous else self.url

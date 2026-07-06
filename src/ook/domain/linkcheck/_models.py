@@ -16,9 +16,12 @@ __all__ = [
     "LinkCheckReport",
     "LinkState",
     "LinkStatus",
+    "ProjectLink",
+    "ProjectPage",
     "RetryLadderConfig",
     "SubmittedUrl",
     "UrlOccurrence",
+    "UrlRecord",
 ]
 
 
@@ -323,6 +326,168 @@ class CheckedUrlReport(BaseModel):
             "Time of the check that produced this result, or None while"
             " the URL is pending."
         ),
+    )
+
+
+class ProjectPage(BaseModel):
+    """A documentation page of an LTD project where a URL occurs."""
+
+    ltd_slug: str = Field(description="The LTD project slug.")
+
+    path: str = Field(
+        description=(
+            "The page path where the URL occurs, relative to the"
+            " project's documentation root."
+        )
+    )
+
+
+class UrlRecord(BaseModel):
+    """The stored health record of a checked URL, for the query API."""
+
+    url: str = Field(description="The canonical (fragment-stripped) URL.")
+
+    status: CheckUrlStatus = Field(
+        description=(
+            "The URL's health status; ``pending`` if the URL has never"
+            " been checked."
+        )
+    )
+
+    status_code: int | None = Field(
+        None,
+        description=(
+            "Final HTTP status code from the most recent check, if a"
+            " response was received."
+        ),
+    )
+
+    redirect_status_code: int | None = Field(
+        None,
+        description="HTTP status code of the redirect, if redirected.",
+    )
+
+    redirect_url: str | None = Field(
+        None,
+        description="Final resolved location, if the URL redirected.",
+    )
+
+    error: str | None = Field(
+        None,
+        description=(
+            "Description of the failure from the most recent check,"
+            " if it failed."
+        ),
+    )
+
+    last_checked_at: datetime | None = Field(
+        None,
+        description=(
+            "Time of the most recent check, or None if never checked."
+        ),
+    )
+
+    last_ok_at: datetime | None = Field(
+        None,
+        description=(
+            "Time the URL last resolved successfully, or None if it"
+            " has never been seen OK."
+        ),
+    )
+
+    failing_since: datetime | None = Field(
+        None,
+        description=(
+            "Start of the current consecutive-failure streak, or None"
+            " if the URL is not failing."
+        ),
+    )
+
+    failure_count: int = Field(
+        0,
+        ge=0,
+        description=(
+            "Number of consecutive failed checks in the current streak."
+        ),
+    )
+
+    next_check_at: datetime | None = Field(
+        None,
+        description=(
+            "Time of the next scheduled recheck on the retry ladder,"
+            " or None if the URL is not on the ladder."
+        ),
+    )
+
+    date_created: datetime = Field(
+        description="Time the URL's record was created."
+    )
+
+    occurrences: list[ProjectPage] = Field(
+        default_factory=list,
+        description=(
+            "Project pages where the URL occurs, ordered by project"
+            " slug and page path."
+        ),
+    )
+
+
+class ProjectLink(BaseModel):
+    """A link occurring in an LTD project's documentation, with its
+    health state.
+    """
+
+    url: str = Field(description="The canonical (fragment-stripped) URL.")
+
+    status: CheckUrlStatus = Field(
+        description=(
+            "The URL's health status; ``pending`` if the URL has never"
+            " been checked."
+        )
+    )
+
+    status_code: int | None = Field(
+        None,
+        description=(
+            "Final HTTP status code from the most recent check, if a"
+            " response was received."
+        ),
+    )
+
+    redirect_status_code: int | None = Field(
+        None,
+        description="HTTP status code of the redirect, if redirected.",
+    )
+
+    redirect_url: str | None = Field(
+        None,
+        description=(
+            "Final resolved location, if the URL redirected. For"
+            " permanent redirects this is the location the source"
+            " should be updated to."
+        ),
+    )
+
+    error: str | None = Field(
+        None,
+        description=(
+            "Description of the failure from the most recent check,"
+            " if it failed."
+        ),
+    )
+
+    checked_at: datetime | None = Field(
+        None,
+        description=(
+            "Time of the most recent check, or None if never checked."
+        ),
+    )
+
+    paths: list[str] = Field(
+        description=(
+            "Page paths in the project where the URL occurs, relative"
+            " to the project's documentation root."
+        )
     )
 
 

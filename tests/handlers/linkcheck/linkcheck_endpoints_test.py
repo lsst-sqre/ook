@@ -350,3 +350,223 @@ async def test_get_unknown_check(client: AsyncClient) -> None:
     """Polling an unknown check returns 404."""
     response = await client.get("/ook/linkcheck/checks/123456789")
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_unknown_url_record(client: AsyncClient) -> None:
+    """Looking up a URL that has never been submitted returns 404."""
+    response = await client.get(
+        "/ook/linkcheck/urls",
+        params={"url": "https://example.com/never-submitted"},
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_url_record(client: AsyncClient) -> None:
+    """``GET /ook/linkcheck/urls?url=...`` returns the URL's stored
+    record, including its check state and project-page occurrences. The
+    lookup URL is canonicalized (fragments stripped).
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_url_state(
+        LinkState(
+            url="https://example.com/moved",
+            status=LinkStatus.redirected,
+            checked_at=now,
+            last_ok_at=now,
+            status_code=200,
+            redirect_status_code=301,
+            redirect_url="https://example.com/new-location",
+        )
+    )
+
+    # Establish occurrences via a default-branch submission.
+    response = await client.post(
+        "/ook/linkcheck/checks",
+        json={
+            "ltd_slug": "sqr-000",
+            "default_branch": True,
+            "urls": [
+                {
+                    "url": "https://example.com/moved",
+                    "paths": ["index", "guide"],
+                },
+            ],
+        },
+    )
+    assert response.status_code == 202
+
+    response = await client.get(
+        "/ook/linkcheck/urls",
+        params={"url": "https://example.com/moved#section"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["url"] == "https://example.com/moved"
+    assert data["status"] == "redirected"
+    assert data["status_code"] == 200
+    assert data["redirect_status_code"] == 301
+    assert data["redirect_url"] == "https://example.com/new-location"
+    assert data["error"] is None
+    assert data["last_checked_at"] is not None
+    assert data["occurrences"] == [
+        {"ltd_slug": "sqr-000", "path": "guide"},
+        {"ltd_slug": "sqr-000", "path": "index"},
+    ]
+
+
+async def _seed_project_links(client: AsyncClient) -> None:
+    """Seed three URL states and a default-branch submission that
+    establishes their occurrences for project ``sqr-000``.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_url_state(
+        LinkState(
+            url="https://example.com/a-ok",
+            status=LinkStatus.ok,
+            checked_at=now,
+            last_ok_at=now,
+            status_code=200,
+        )
+    )
+    await _seed_url_state(
+        LinkState(
+            url="https://example.com/b-moved",
+            status=LinkStatus.redirected,
+            checked_at=now,
+            last_ok_at=now,
+            status_code=200,
+            redirect_status_code=301,
+            redirect_url="https://example.com/new-location",
+        )
+    )
+    await _seed_url_state(
+        LinkState(
+            url="https://example.com/c-gone",
+            status=LinkStatus.broken,
+            checked_at=now,
+            failing_since=now,
+            failure_count=1,
+            status_code=404,
+            error="HTTP status 404",
+        )
+    )
+
+    response = await client.post(
+        "/ook/linkcheck/checks",
+        json={
+            "ltd_slug": "sqr-000",
+            "default_branch": True,
+            "urls": [
+                {"url": "https://example.com/a-ok", "paths": ["index"]},
+                {
+                    "url": "https://example.com/b-moved",
+                    "paths": ["index", "guide"],
+                },
+                {"url": "https://example.com/c-gone", "paths": ["changelog"]},
+            ],
+        },
+    )
+    assert response.status_code == 202
+
+
+@pytest.mark.asyncio
+async def test_get_project_links(client: AsyncClient) -> None:
+    """``GET /ook/linkcheck/projects/{slug}/links`` lists all of a
+    project's links with their health states and page paths, ordered by
+    URL.
+    """
+    await _seed_project_links(client)
+
+    response = await client.get("/ook/linkcheck/projects/sqr-000/links")
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "3"
+    data = response.json()
+    assert [link["url"] for link in data] == [
+        "https://example.com/a-ok",
+        "https://example.com/b-moved",
+        "https://example.com/c-gone",
+    ]
+    ok, moved, gone = data
+    assert ok["status"] == "ok"
+    assert ok["status_code"] == 200
+    assert ok["paths"] == ["index"]
+    assert moved["status"] == "redirected"
+    assert moved["redirect_status_code"] == 301
+    assert moved["redirect_url"] == "https://example.com/new-location"
+    assert moved["paths"] == ["guide", "index"]
+    assert gone["status"] == "broken"
+    assert gone["status_code"] == 404
+    assert gone["error"] == "HTTP status 404"
+    assert gone["paths"] == ["changelog"]
+
+    # A project with no recorded occurrences has no links.
+    response = await client.get("/ook/linkcheck/projects/nothing/links")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_get_project_links_status_filter(client: AsyncClient) -> None:
+    """``?status=redirected`` lists permanently-redirected links with
+    their final locations, and ``?status=broken`` filters likewise.
+    """
+    await _seed_project_links(client)
+
+    response = await client.get(
+        "/ook/linkcheck/projects/sqr-000/links",
+        params={"status": "redirected"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "1"
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["url"] == "https://example.com/b-moved"
+    assert data[0]["status"] == "redirected"
+    assert data[0]["redirect_url"] == "https://example.com/new-location"
+
+    response = await client.get(
+        "/ook/linkcheck/projects/sqr-000/links",
+        params={"status": "broken"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert [link["url"] for link in data] == ["https://example.com/c-gone"]
+
+    # An invalid status value is rejected.
+    response = await client.get(
+        "/ook/linkcheck/projects/sqr-000/links",
+        params={"status": "bogus"},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_project_links_pagination(client: AsyncClient) -> None:
+    """The project links listing paginates with a keyset cursor:
+    following the ``Link`` header's next relation walks all entries in
+    URL order, and every page carries the total count.
+    """
+    await _seed_project_links(client)
+
+    urls: list[str] = []
+    next_url: str | None = "/ook/linkcheck/projects/sqr-000/links?limit=1"
+    pages = 0
+    while next_url is not None:
+        response = await client.get(next_url)
+        assert response.status_code == 200
+        assert response.headers["X-Total-Count"] == "3"
+        data = response.json()
+        assert len(data) == 1
+        urls.extend(link["url"] for link in data)
+        pages += 1
+        links = response.links
+        next_url = str(links["next"]["url"]) if "next" in links else None
+
+    assert pages == 3
+    assert urls == [
+        "https://example.com/a-ok",
+        "https://example.com/b-moved",
+        "https://example.com/c-gone",
+    ]

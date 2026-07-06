@@ -14,8 +14,10 @@ from ook.domain.linkcheck import (
     LinkCheckReport,
     LinkState,
     LinkStatus,
+    ProjectLink,
     SubmittedUrl,
     UrlOccurrence,
+    UrlRecord,
     canonicalize_url,
     evaluate_outcome,
     is_supported_url,
@@ -26,10 +28,15 @@ from ook.storage.linkcheckstore import DueUrl
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from safir.database import CountedPaginatedList
     from structlog.stdlib import BoundLogger
 
     from ook.domain.linkcheck import RetryLadderConfig
-    from ook.storage.linkcheckstore import CheckUrlRecord, LinkCheckStore
+    from ook.storage.linkcheckstore import (
+        CheckUrlRecord,
+        LinkCheckStore,
+        ProjectLinksCursor,
+    )
 
     from ._urlchecker import UrlChecker
 
@@ -287,6 +294,56 @@ class LinkCheckService:
                 self._report_url(url_record, record.date_created)
                 for url_record in record.urls
             ],
+        )
+
+    async def get_url_record(self, url: str) -> UrlRecord | None:
+        """Get a URL's stored health record.
+
+        Parameters
+        ----------
+        url
+            The URL to look up. It is canonicalized (fragment stripped)
+            before the lookup.
+
+        Returns
+        -------
+        UrlRecord or None
+            The URL's record with its project-page occurrences, or None
+            if the URL is unknown.
+        """
+        return await self._store.get_url_record(canonicalize_url(url))
+
+    async def get_project_links(
+        self,
+        ltd_slug: str,
+        *,
+        status: CheckUrlStatus | None = None,
+        cursor: ProjectLinksCursor | None = None,
+        limit: int | None = None,
+    ) -> CountedPaginatedList[ProjectLink, ProjectLinksCursor]:
+        """Get a project's links with their health states, paginated.
+
+        Parameters
+        ----------
+        ltd_slug
+            The LTD project slug whose links are listed.
+        status
+            If given, only links with this status are listed. The
+            ``redirected`` status lists links whose sources should be
+            updated to their new locations; ``broken`` is the
+            rot-monitoring view.
+        cursor
+            The pagination cursor for the query.
+        limit
+            The maximum number of links to return, or None for all.
+
+        Returns
+        -------
+        CountedPaginatedList
+            A paginated list of the project's links, ordered by URL.
+        """
+        return await self._store.get_project_links(
+            ltd_slug, status=status, cursor=cursor, limit=limit
         )
 
     def _is_due(self, state: LinkState | None, now: datetime) -> bool:

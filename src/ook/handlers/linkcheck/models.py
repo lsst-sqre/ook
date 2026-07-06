@@ -16,13 +16,19 @@ from ook.domain.linkcheck import (
     LinkCheckReport,
     SubmittedUrl,
 )
+from ook.domain.linkcheck import ProjectLink as ProjectLinkDomain
+from ook.domain.linkcheck import ProjectPage as ProjectPageDomain
+from ook.domain.linkcheck import UrlRecord as UrlRecordDomain
 
 __all__ = [
     "CheckedUrl",
     "LinkCheck",
     "LinkCheckRequest",
     "LinkCheckSummary",
+    "ProjectLink",
+    "ProjectPage",
     "SubmittedUrlModel",
+    "UrlRecord",
 ]
 
 
@@ -188,6 +194,274 @@ class LinkCheckSummary(BaseModel):
         """Compute summary counts from per-URL reports."""
         counts = Counter(url.status.value for url in urls)
         return cls(**counts)
+
+
+class ProjectPage(BaseModel):
+    """A documentation page of an LTD project where a URL occurs."""
+
+    ltd_slug: Annotated[
+        str,
+        Field(
+            description="The LSST the Docs project slug.",
+            examples=["sqr-000"],
+        ),
+    ]
+
+    path: Annotated[
+        str,
+        Field(
+            description=(
+                "The page path where the URL occurs, relative to the"
+                " project's documentation root."
+            ),
+            examples=["index"],
+        ),
+    ]
+
+    @classmethod
+    def from_domain(cls, page: ProjectPageDomain) -> ProjectPage:
+        """Create a ProjectPage from its domain model."""
+        return cls(ltd_slug=page.ltd_slug, path=page.path)
+
+
+class UrlRecord(BaseModel):
+    """The stored health record of a checked URL."""
+
+    url: Annotated[
+        str,
+        Field(description="The canonical (fragment-stripped) URL."),
+    ]
+
+    status: Annotated[
+        CheckUrlStatus,
+        Field(
+            description=(
+                "The URL's health status; ``pending`` if the URL has"
+                " never been checked."
+            )
+        ),
+    ]
+
+    status_code: Annotated[
+        int | None,
+        Field(
+            description=(
+                "Final HTTP status code from the most recent check, if"
+                " a response was received."
+            )
+        ),
+    ] = None
+
+    redirect_status_code: Annotated[
+        int | None,
+        Field(
+            description=(
+                "HTTP status code of the redirect (e.g. 301, 302), if"
+                " the URL redirected."
+            )
+        ),
+    ] = None
+
+    redirect_url: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Final resolved location, if the URL redirected. For"
+                " permanent redirects this is the location the source"
+                " should be updated to."
+            )
+        ),
+    ] = None
+
+    error: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Description of the failure from the most recent"
+                " check, if it failed."
+            )
+        ),
+    ] = None
+
+    last_checked_at: Annotated[
+        datetime | None,
+        Field(
+            description=(
+                "Time of the most recent check, or null if never checked."
+            )
+        ),
+    ] = None
+
+    last_ok_at: Annotated[
+        datetime | None,
+        Field(
+            description=(
+                "Time the URL last resolved successfully, or null if"
+                " it has never been seen OK."
+            )
+        ),
+    ] = None
+
+    failing_since: Annotated[
+        datetime | None,
+        Field(
+            description=(
+                "Start of the current consecutive-failure streak, or"
+                " null if the URL is not failing."
+            )
+        ),
+    ] = None
+
+    failure_count: Annotated[
+        int,
+        Field(
+            description=(
+                "Number of consecutive failed checks in the current streak."
+            )
+        ),
+    ] = 0
+
+    next_check_at: Annotated[
+        datetime | None,
+        Field(
+            description=(
+                "Time of the next scheduled recheck on the retry"
+                " ladder, or null if the URL is not on the ladder."
+            )
+        ),
+    ] = None
+
+    date_created: Annotated[
+        datetime,
+        Field(description="Time the URL's record was created."),
+    ]
+
+    occurrences: Annotated[
+        list[ProjectPage],
+        Field(
+            description=(
+                "Project pages where the URL occurs, ordered by"
+                " project slug and page path."
+            )
+        ),
+    ]
+
+    @classmethod
+    def from_domain(cls, record: UrlRecordDomain) -> UrlRecord:
+        """Create a UrlRecord from its domain model."""
+        return cls(
+            url=record.url,
+            status=record.status,
+            status_code=record.status_code,
+            redirect_status_code=record.redirect_status_code,
+            redirect_url=record.redirect_url,
+            error=record.error,
+            last_checked_at=record.last_checked_at,
+            last_ok_at=record.last_ok_at,
+            failing_since=record.failing_since,
+            failure_count=record.failure_count,
+            next_check_at=record.next_check_at,
+            date_created=record.date_created,
+            occurrences=[
+                ProjectPage.from_domain(page) for page in record.occurrences
+            ],
+        )
+
+
+class ProjectLink(BaseModel):
+    """A link occurring in a project's documentation, with its health
+    state.
+    """
+
+    url: Annotated[
+        str,
+        Field(description="The canonical (fragment-stripped) URL."),
+    ]
+
+    status: Annotated[
+        CheckUrlStatus,
+        Field(
+            description=(
+                "The URL's health status; ``pending`` if the URL has"
+                " never been checked."
+            )
+        ),
+    ]
+
+    status_code: Annotated[
+        int | None,
+        Field(
+            description=(
+                "Final HTTP status code from the most recent check, if"
+                " a response was received."
+            )
+        ),
+    ] = None
+
+    redirect_status_code: Annotated[
+        int | None,
+        Field(
+            description=(
+                "HTTP status code of the redirect (e.g. 301, 302), if"
+                " the URL redirected."
+            )
+        ),
+    ] = None
+
+    redirect_url: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Final resolved location, if the URL redirected. For"
+                " permanent redirects this is the location the source"
+                " should be updated to."
+            )
+        ),
+    ] = None
+
+    error: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Description of the failure from the most recent"
+                " check, if it failed."
+            )
+        ),
+    ] = None
+
+    checked_at: Annotated[
+        datetime | None,
+        Field(
+            description=(
+                "Time of the most recent check, or null if never checked."
+            )
+        ),
+    ] = None
+
+    paths: Annotated[
+        list[str],
+        Field(
+            description=(
+                "Page paths in the project where the URL occurs,"
+                " relative to the project's documentation root."
+            ),
+            examples=[["index", "guide/installation"]],
+        ),
+    ]
+
+    @classmethod
+    def from_domain(cls, link: ProjectLinkDomain) -> ProjectLink:
+        """Create a ProjectLink from its domain model."""
+        return cls(
+            url=link.url,
+            status=link.status,
+            status_code=link.status_code,
+            redirect_status_code=link.redirect_status_code,
+            redirect_url=link.redirect_url,
+            error=link.error,
+            checked_at=link.checked_at,
+            paths=link.paths,
+        )
 
 
 class LinkCheck(BaseModel):
