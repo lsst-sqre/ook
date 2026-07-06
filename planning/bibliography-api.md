@@ -5,7 +5,7 @@ Ook will provide a bibliography API that lists all types of cite-able resources 
 ## Implementation status
 
 > [!NOTE]
-> Status recorded 2026-07-04. The resources API MVP shipped in **Ook 0.18.0 (2025-07-29)** via migration `1ad667eab84e_add_resource_tables`. The resources surface has not changed materially since; later releases added author aliases (0.22.0) and author fuzzy search. Design sections below carry `> **Status:**` callouts where the implementation diverged from the original design. See also the "Design issues and risks" section for defects found in a 2026-07 review.
+> Status recorded 2026-07-04. The resources API MVP shipped in **Ook 0.18.0 (2025-07-29)** via migration `1ad667eab84e_add_resource_tables`. The resources surface has not changed materially since; later releases added author aliases (0.22.0) and author fuzzy search. Design sections below carry `> **Status:**` callouts where the implementation diverged from the original design. See also the "Design issues and risks" section for defects found in a 2026-07 review, and **"Design decisions (2026-07)" + "PRD roadmap"** for the resolutions adopted on 2026-07-05 — those two sections are the source of truth for future work.
 
 ### Entity status
 
@@ -73,7 +73,7 @@ The central entity representing any trackable item in the system. This unified a
 - `date_released`: When this version was released (nullable, for versioned resources)
 - `type_metadata`: JSONB field for type-specific metadata (nullable)
 
-> **Status:** Implemented columns are `id`, `resource_class` (polymorphic discriminator), `title`, `description`, `url`, `doi` (unique), `type` (DataCite resourceTypeGeneral), `version` (free-form string), `date_resource_published`, `date_resource_updated`, plus DB-record `date_created`/`date_updated`. The versioning/citability columns (`is_citable`, `version_identifier`, `version_type`, `is_default_version`, `date_released`) and `type_metadata` JSONB were **not** implemented — versioning is currently expressible only through DataCite relations plus the `version` string. The data model therefore cannot yet answer "what is the default version of DMTN-031"; see design issue 2.1 for the resource-family redesign this implies.
+> **Status:** Implemented columns are `id`, `resource_class` (polymorphic discriminator), `title`, `description`, `url`, `doi` (unique), `type` (DataCite resourceTypeGeneral), `version` (free-form string), `date_resource_published`, `date_resource_updated`, plus DB-record `date_created`/`date_updated`. The versioning/citability columns (`is_citable`, `version_identifier`, `version_type`, `is_default_version`, `date_released`) and `type_metadata` JSONB were **not** implemented — versioning is currently expressible only through DataCite relations plus the `version` string. The data model therefore cannot yet answer "what is the default version of DMTN-031"; see design issue 2.1 for the resource-family redesign this implies. **Decision:** an explicit `resource_family` table was chosen (D2).
 
 **Resource Hierarchy Examples:**
 
@@ -180,7 +180,7 @@ Captures all types of relationships between resources, including citations, refe
 - `citation_context`: Optional context where citation/reference appears (nullable)
 - `date_created`: Timestamp when relationship was established
 
-> **Status:** Implemented as `resource_relation` with `related_resource_id`/`related_external_ref_id` and a `chk_exactly_one_related` check constraint enforcing exactly one target. `citation_context`, `date_created`, and the Ook-specific relation types were dropped; the full DataCite `RelationType` vocabulary (36 values) is implemented. Known defects: the `uq_resource_relation` unique constraint is ineffective because NULL columns never conflict under PostgreSQL's default semantics (design issue 1.2), and `related_resource_id` has no index, so reverse traversals are sequential scans (design issue 3.2).
+> **Status:** Implemented as `resource_relation` with `related_resource_id`/`related_external_ref_id` and a `chk_exactly_one_related` check constraint enforcing exactly one target. `citation_context`, `date_created`, and the Ook-specific relation types were dropped; the full DataCite `RelationType` vocabulary (36 values) is implemented. Known defects: the `uq_resource_relation` unique constraint is ineffective because NULL columns never conflict under PostgreSQL's default semantics (design issue 1.2), and `related_resource_id` has no index, so reverse traversals are sequential scans (design issue 3.2). **Decision:** relation direction is canonicalized on write with inverses synthesized at read (D7); constraints/indexes fixed in the hardening PRD (D3).
 
 **DataCite-Compatible Relationship Types:**
 
@@ -255,7 +255,7 @@ Many-to-many relationship between Resources and Authors/Collaborations. This uni
 - Composite primary key: `(resource_id, author_order)` to ensure unique ordering
 - Alternative composite unique constraint: `(resource_id, author_id)` and `(resource_id, collaboration_id)` to prevent duplicates
 
-> **Status:** Implemented as the `contributor` table with a surrogate primary key and unique `(resource_id, order, role)` — ordering is per role, and roles use the DataCite contributorType vocabulary plus a synthetic `Creator` role for authors. The surrogate key plus delete-and-reinsert upserts sidesteps the reordering trap inherent in the `(resource_id, author_order)` composite PK described above. However, **collaboration support was dropped** (the `collaboration` table was removed in migration `113ced7d2d29` days before the resource tables landed), so the mixed author lists this section describes are currently unrepresentable — see design issue 2.4.
+> **Status:** Implemented as the `contributor` table with a surrogate primary key and unique `(resource_id, order, role)` — ordering is per role, and roles use the DataCite contributorType vocabulary plus a synthetic `Creator` role for authors. The surrogate key plus delete-and-reinsert upserts sidesteps the reordering trap inherent in the `(resource_id, author_order)` composite PK described above. However, **collaboration support was dropped** (the `collaboration` table was removed in migration `113ced7d2d29` days before the resource tables landed), so the mixed author lists this section describes are currently unrepresentable — see design issue 2.4. **Decision:** collaborations return as a kind of author record, not a separate table (D4); unknown authors get provisional records (D5).
 
 #### 7. Affiliation
 
@@ -804,7 +804,7 @@ https://roundtable.lsst.cloud/ook
 Ook uses Gafaelfawr for authentication, although not all resources require authentication to access.
 Mixing authenticated and unauthenticated access needs to be determined.
 
-> **Status:** This is now pressing rather than future work: `POST /ingest/resources/documents` is live, and its write protection rides on Gafaelfawr ingress configuration rather than anything stated in this design. This document should specify the scope model for ingest/admin routes versus anonymous read access.
+> **Status:** This is now pressing rather than future work: `POST /ingest/resources/documents` is live, and its write protection rides on Gafaelfawr ingress configuration rather than anything stated in this design. This document should specify the scope model for ingest/admin routes versus anonymous read access. **Decision:** anonymous reads; `exec:admin` on ingest/admin routes, enforced in handlers (D17).
 
 ### Resource ID Format
 
@@ -846,13 +846,13 @@ The Bibliography API uses Crockford Base32 encoded IDs for all public resource i
 - Database queries use integer comparisons for optimal performance
 - Keyset pagination uses natural integer ordering: `WHERE id > decode_base32($cursor) ORDER BY id`
 
-> **Status:** Implemented in `src/ook/domain/base32id.py` as a `Base32Id` annotated Pydantic type (validators/serializers handle checksums and hyphens), with `base32-lib` doing encode/decode; handlers and storage deal in plain integers. IDs are minted with `base32_lib.generate()` — i.e., **random**, not time-ordered — and currently in the ingest request model (`DocumentRequest.to_domain`) rather than in the storage layer. Two consequences to revisit: keyset ordering over random IDs is a meaningless shuffle (a ULID/Snowflake-style time-ordered integer encoded as Crockford Base32 would keep every stated benefit and restore useful ordering), and minting IDs before checking for an existing record breaks ingest idempotency (design issue 1.1).
+> **Status:** Implemented in `src/ook/domain/base32id.py` as a `Base32Id` annotated Pydantic type (validators/serializers handle checksums and hyphens), with `base32-lib` doing encode/decode; handlers and storage deal in plain integers. IDs are minted with `base32_lib.generate()` — i.e., **random**, not time-ordered — and currently in the ingest request model (`DocumentRequest.to_domain`) rather than in the storage layer. Two consequences to revisit: keyset ordering over random IDs is a meaningless shuffle (a ULID/Snowflake-style time-ordered integer encoded as Crockford Base32 would keep every stated benefit and restore useful ordering), and minting IDs before checking for an existing record breaks ingest idempotency (design issue 1.1). **Decision:** IDs become time-ordered with a re-mint migration, minted in the storage layer (D1, D3).
 
 ### Pagination
 
 The API uses keyset pagination (also known as cursor-based pagination) rather than offset-based pagination for better performance and consistency with large datasets.
 
-> **Status:** Implemented via Safir's `CountedPaginatedQueryRunner` and `PaginationCursor` — live for `/authors`, and built for resources in `ResourceStore.get_resources` (though no list route exposes it yet). Actual cursors are plain Safir-style strings (`"{id}"` / `"p__{id}"`), not the base64-encoded JSON described below. Also note that emitting `X-Total-Count` on every page runs a `COUNT(*)` per request, which undercuts the point of keyset pagination at scale — see design issue 3.3 for making the count opt-in.
+> **Status:** Implemented via Safir's `CountedPaginatedQueryRunner` and `PaginationCursor` — live for `/authors`, and built for resources in `ResourceStore.get_resources` (though no list route exposes it yet). Actual cursors are plain Safir-style strings (`"{id}"` / `"p__{id}"`), not the base64-encoded JSON described below. Also note that emitting `X-Total-Count` on every page runs a `COUNT(*)` per request, which undercuts the point of keyset pagination at scale — see design issue 3.3 for making the count opt-in. **Decision:** opt-in totals (`?include_total=true`) on new resource listings; `/authors` unchanged (D18).
 
 #### Keyset Pagination Implementation
 
@@ -958,7 +958,7 @@ async function fetchAllResources() {
 
 ### Endpoints
 
-> **Status:** Only `GET /resources/{id}` and the (unplanned) `POST /ingest/resources/documents` ingest endpoint are implemented — see the endpoint table in the Implementation status section. The sub-resource endpoints (`/versions`, `/authors`, `/relationships`) were effectively replaced in the MVP by inlining `creators`, `contributors`, and `related` into the detail response; whether to keep that inlined shape or add paginated sub-resource endpoints as author/relation lists grow is an open question. This plan also specifies no write/ingest endpoints at all — the ingest contract (batch semantics, partial-failure reporting, idempotency) needs to be designed here rather than existing only in code.
+> **Status:** Only `GET /resources/{id}` and the (unplanned) `POST /ingest/resources/documents` ingest endpoint are implemented — see the endpoint table in the Implementation status section. The sub-resource endpoints (`/versions`, `/authors`, `/relationships`) were effectively replaced in the MVP by inlining `creators`, `contributors`, and `related` into the detail response; whether to keep that inlined shape or add paginated sub-resource endpoints as author/relation lists grow is an open question. This plan also specifies no write/ingest endpoints at all — the ingest contract (batch semantics, partial-failure reporting, idempotency) needs to be designed here rather than existing only in code. **Decision:** inlined detail shape kept with `/versions` as the only sub-resource endpoint (D13); ingest reports per-item results with partial success (D16).
 
 #### 1. Resources
 
@@ -1090,7 +1090,7 @@ A user can export bibliographic records in various formats using content negotia
 
 The content negotiation is intended to be similar to how [Crossref](https://www.crossref.org/documentation/retrieve-metadata/content-negotiation/) and [DataCite](https://support.datacite.org/docs/datacite-content-resolver) handle content negotiation.
 
-> **Status:** Not implemented. When built, supplement `Accept`-header negotiation with explicit forms — `GET /resources/{id}.bib` and/or `?format=bibtex` — because header-only negotiation is invisible in browsers, hard to share as a link ("here's the BibTeX URL" is a core user need for a bibliography service), and requires `Vary: Accept` at every cache layer. Crossref and DataCite themselves pair negotiation with explicit format URLs.
+> **Status:** Not implemented. When built, supplement `Accept`-header negotiation with explicit forms — `GET /resources/{id}.bib` and/or `?format=bibtex` — because header-only negotiation is invisible in browsers, hard to share as a link ("here's the BibTeX URL" is a core user need for a bibliography service), and requires `Vary: Accept` at every cache layer. Crossref and DataCite themselves pair negotiation with explicit format URLs. **Decision:** adopted; formats are BibTeX, DataCite JSON, CSL JSON, CodeMeta in that order (D15).
 
 ##### GET /resources/{id}/versions
 
@@ -1449,6 +1449,8 @@ X-Total-Count: 15
 
 Full-text search across all resources.
 
+> **Decision (2026-07):** Retained, implemented as Postgres FTS over titles/descriptions/abstracts (D14). Algolia continues to serve the current site; the Agent Search hub adds semantic search later.
+
 **Query Parameters:**
 
 - `q` (required): Search query
@@ -1584,6 +1586,92 @@ A review of this plan against the shipped MVP identified the issues below, ranke
 | 8 | Add rights/publisher/subjects/language/funding fields; design the DOI-minting lifecycle | 2.6, 5.2 |
 | 9 | Document the ingest contract, auth scopes, export-format URLs, and the Algolia-vs-FTS decision in this plan | 4.x |
 
+## Design decisions (2026-07)
+
+Recorded from a design-review session on 2026-07-05 that resolved the design issues above and the questions in "Open questions to explore" (each decision cites the issue/question numbers it settles). These decisions are the source of truth going forward; earlier sections should be read through them.
+
+### Identity and families
+
+**D1 — Resource IDs become time-ordered, and existing IDs are re-minted.** *(Q1; issue 2.3)* IDs switch to a Snowflake-style layout — a millisecond timestamp in the high bits plus random low bits — inside the existing 60-bit / 12-character Crockford Base32 envelope, so the API format is unchanged and keyset ordering becomes creation order. The generator moves into the storage layer (inside the ingest transaction). A one-time migration re-mints existing rows in `date_created` order; this is acceptable now because no external consumer holds resource IDs yet, and it becomes strictly harder after the Agent Search sync and the links FK land.
+
+**D2 — Versioning gets an explicit `resource_family` table.** *(Q2; issues 2.1, 4.2)* A first-class family row with a `default_version_id` FK; every `resource` carries a `family_id` FK. Families are the home for concept DOIs and stable citation identity; default-version promotion is a single atomic UPDATE. DataCite version relations (`HasVersion`/`IsVersionOf`) become derived, export-facing data — never the source of truth for version structure. The migration creates one family per existing resource.
+
+**D3 — The severity-1 fixes ship first as a standalone hardening PRD.** *(issues 1.1–1.4, 3.2, 3.4)* Document identity is resolved by natural key (series/handle, then DOI) before any ID is minted; IDs are minted in the storage layer with `ON CONFLICT DO NOTHING` + retry on collision; `uq_resource_relation` is replaced by partial unique indexes; the missing indexes (`related_resource_id`, composite `(source_resource_id, relation_type)`, `related_external_ref_id`, `contributor.author_id`) are added; the `ON CONFLICT (url)` path gets a real partial unique index on normalized URL and external references require at least one dedup key; `author.email` is no longer selected by resource queries; timestamps standardize on UTC. This PRD lands before all redesign work.
+
+### Authorship
+
+**D4 — Collaborations are modeled as a kind of author.** *(Q3; issue 2.4)* `author` gains a `type` discriminator (`person` | `collaboration`) and a `name` column for collaborations; person-specific columns are nullable. `contributor` is unchanged (single FK, no XOR), mixed ordering works by construction, and the unified `/authors` API with a `type` field follows directly. The separate `collaboration` table is not reinstated.
+
+**D5 — Unknown authors get provisional records.** *(issue 2.4)* When ingest meets an author absent from authordb, it creates a flagged provisional author row rather than skipping (no more holes) or failing. A later authordb sync or manual curation merges provisional records into canonical ones.
+
+**D6 — Author lifecycle and tombstoning.** *(issue 5.3)* Authors carry a status (`provisional` | `active` | `inactive`). The authordb sync tombstones stale authors (marks them `inactive`) instead of deleting; `contributor.author_id` is `RESTRICT`. Citation history is never rewritten by author-database churn.
+
+### Relations and data hygiene
+
+**D7 — Relation direction is canonicalized on write.** *(issue 2.2)* Each bidirectional DataCite pair has one canonical stored member (e.g. `Cites`, `HasPart`, `HasVersion`); writes arriving in the inverse spelling are flipped at ingest via a static pair map, and the inverse label is synthesized at read/export time. This halves the graph and makes the dedup indexes meaningful.
+
+**D8 — Deletion semantics.** *(issue 2.5)* `ON DELETE CASCADE` on `contributor.resource_id` and both `resource_relation` resource FKs; `RESTRICT` on `related_external_ref_id` plus a periodic orphan sweep for external references.
+
+**D9 — Row provenance lands now.** *(issue 5.1)* `resource_relation` (and `contributor`) gain a `provenance` enum (`ingest` | `curated`); ingest replace operations scope to `WHERE provenance = 'ingest'`, so future curated rows survive automated re-ingest.
+
+### DataCite completeness and DOIs
+
+**D10 — All four DataCite field groups are added.** *(Q4; issue 2.6)* Publisher and rights/license (the minimum for valid records); alternate identifiers on first-class resources (arXiv, ADS bibcode, handle); subjects/keywords and language; funding references.
+
+**D11 — DOI minting stays manual; the schema becomes minting-ready.** *(issue 5.2)* Rubin mints DOIs through DOE/OSTI's arrangement with DataCite, manually. Automating minting from Ook is out of scope, but the model prepares fully: concept DOI on the family, version DOI on the resource, fields sufficient to emit a valid DataCite record, and a DataCite JSON export (D15) as the running readiness proof. No state machine yet.
+
+### API surface
+
+**D12 — Listings return summary rows.** *(issue 3.1)* `GET /resources` returns a lightweight one-query projection (id, `self_url`, title, class/type, series/number, dates, DOI); full creators/contributors/relations aggregation is reserved for the detail endpoint. This replaces the N+1 list pipeline.
+
+**D13 — The detail response stays inlined; `/versions` is the only sub-resource endpoint.** *(Q17)* `creators`, `contributors`, and `related` remain inlined (author/relation lists are small at Rubin scale). `GET /resources/{id}/versions` is added because it is family-derived and genuinely list-shaped. Families surface implicitly: resource responses gain a `family` block (family id, `is_default_version`, `versions_url`); the default version's resource URL is the stable citation URL. No `/families` namespace initially.
+
+**D14 — Search is a Postgres FTS `/search` endpoint plus structured filters.** *(Q16; issue 4.3)* The bibliographic API owns a ranked full-text search over titles/descriptions/abstracts (Postgres FTS), alongside rich structured filters on `GET /resources` (series, author, ORCID, DOI, date ranges). Algolia continues to serve the current www.lsst.io during the transition; the Agent Search hub adds semantic search later. Three search systems, three jobs: FTS = the API's own search, Algolia = current site, Agent Search = future hub.
+
+**D15 — Export formats: content negotiation plus explicit forms.** BibTeX, DataCite JSON, CSL JSON, and CodeMeta, in that priority order, each available via `Accept` negotiation *and* explicit forms (`GET /resources/{id}.bib`, `?format=`).
+
+**D16 — Ingest reports per-item results with partial success.** *(issue 4.1)* Each document in a batch runs in its own savepoint; the response lists per-item status (`created` | `updated` | `failed` with error detail). One malformed document no longer blocks the periodic re-ingest, and failures are visible instead of silently dropped.
+
+**D17 — Auth: anonymous reads; `exec:admin` on writes, enforced in handlers.** *(Q18)* All read endpoints are anonymous. `/ingest/*` and admin routes require the `exec:admin` Gafaelfawr scope (consistent with the intersphinx registry in ook#237), checked in handlers rather than relying solely on ingress configuration.
+
+**D18 — `X-Total-Count` is opt-in on new listings.** *(issue 3.3)* New paginated resource endpoints compute totals only with `?include_total=true`; the existing `/authors` behavior is unchanged.
+
+### Links-API correlation
+
+**D19 — The bridge is a nullable `link.resource_id` FK.** *(Q7)* Stamped at ingest time where the ingest knows its site (SDM does), backfilled by the URL resolver otherwise. The links ingest never upserts stub resources.
+
+**D20 — Links attach to the family's default-version resource.** *(Q5)* That is where link `html_url`s actually point (unversioned default editions). Release provenance can live on the link row if ever needed; URLs under `/v/{edition}` paths map to versioned resources via the resolver.
+
+**D21 — URL resolution uses an explicit `resource_url` table.** *(Q6)* Rows of `(resource_id, url_prefix, kind)`, auto-seeded from `Resource.url`/LTD domain at ingest and extensible to versioned editions, subsites (pipelines.lsst.io packages), and mirrors. One indexed longest-prefix lookup serves both the links backfill and the hub's `byUrl` endpoint.
+
+**D22 — SDM schema promotion to citable resources is deferred.** *(Q8)* The link FK and resolver land first; promoting SDM schemas (schema resources with `IsDocumentedBy`/`IsPartOf` edges) is a follow-up PRD once real FK data validates the mapping. SDM tables and columns never become resources.
+
+**D23 — `source_type` stays a links-domain vocabulary.** *(Q9)* It classifies kinds of documentation pages. Only derived, coarse resource-to-resource `Documents` relations use DataCite types.
+
+Additionally, once `DocumentationWebsite` resources exist, the intersphinx source registry from ook#237 can gain the same nullable `resource_id` FK, converging toward the generic documentation-site registry that PRD anticipates.
+
+### Next-generation hub
+
+**D24 — Architecture C is the planning assumption.** *(Q10–Q16)* A blended Agent Search app (advanced website data store + structured bibliographic data store) with an agent that has both Agent Search and the bibliographic API as tools. Ook surfaces as an **OpenAPI tool first** (concise, LLM-friendly responses; good spec descriptions), with an MCP server as a named follow-up. Only **default/latest editions** are indexed. **Algolia is retained during the transition**; retirement is decided only after the hub proves out. The empirical questions (single-domain verification across `*.lsst.io`, blended ranking of handle queries like "DMTN-031", cost/caching for anonymous traffic) become explicit spike items in the hub-enablement PRD.
+
+## PRD roadmap
+
+The decisions above slice into the following PRDs, filed 2026-07-05 as `prd`-labeled GitHub issues (stoker `prd` Issue Form; no Jira tickets assigned yet).
+
+| Issue | PRD | Contents | Depends on |
+| --- | --- | --- | --- |
+| [#238](https://github.com/lsst-sqre/ook/issues/238) | **Resources MVP hardening** | Natural-key ingest identity, storage-layer time-ordered ID minting + re-mint migration, collision retry, partial unique indexes, missing indexes, external-reference URL index + dedup-key requirement, per-item ingest results, `exec:admin` enforcement, email/UTC fixes (D1, D3, D16, D17) | — |
+| [#239](https://github.com/lsst-sqre/ook/issues/239) | **Resource families** | `resource_family` table + `default_version_id`, `family_id` on resource, migration creating families for existing rows, `family` block in responses, `GET /resources/{id}/versions` (D2, D13) | #238 |
+| [#240](https://github.com/lsst-sqre/ook/issues/240) | **Relation canonicalization & hygiene** | Canonical direction + pair map, `provenance` column, `ondelete` behaviors, orphan sweep (D7–D9) | #238 |
+| [#241](https://github.com/lsst-sqre/ook/issues/241) | **Unified authorship** | Collaboration-as-author-type, provisional authors, lifecycle/tombstoning, authordb sync changes, `type` in authors API (D4–D6) | #238 |
+| [#242](https://github.com/lsst-sqre/ook/issues/242) | **DataCite metadata completeness** | Publisher, rights, subjects, language, funding, alternate identifiers — schema, ingest, API (D10, D11) | #238 |
+| [#243](https://github.com/lsst-sqre/ook/issues/243) | **Read API completion** | `GET /resources` summary listing with filters, Postgres FTS `/search`, opt-in totals, `GET /authors/{internal_id}/resources` (D12, D14, D18) | #238, #239 |
+| [#244](https://github.com/lsst-sqre/ook/issues/244) | **Export formats** | Content negotiation + explicit forms; BibTeX, DataCite JSON, CSL JSON, CodeMeta (D15) | #241, #242 |
+| [#245](https://github.com/lsst-sqre/ook/issues/245) | **Links–bibliography correlation** | `DocumentationWebsite` subtype + `LtdProject` table, `resource_url` resolver, `link.resource_id` FK + SDM stamping + backfill, API enrichment (D19–D23) | #239 |
+| [#246](https://github.com/lsst-sqre/ook/issues/246) | **Hub enablement** | Bulk JSONL export with `updated_since`, flat `structData` projection, `byUrl` batch lookup, OpenAPI/LLM polish, hub spikes (D24) | #238, #239, #245 |
+
+Follow-ups noted but not yet PRDs: SDM schema promotion (D22), Ook MCP server (D24), `/families` namespace if concept URLs become a product need (D13), DOI-minting automation (D11).
+
 ## Correlating with the links API (SQR-086)
 
 Ook now has a links API ([SQR-086](https://sqr-086.lsst.io/)) that serves documentation deep links for **domain entities**, organized into information domains modeled on Sphinx/intersphinx domains. The first implemented domain is SDM (Science Data Model) with a schema → table → column hierarchy, served under `GET /ook/links/domains/sdm/...`. This section analyzes how links and bibliographic resources should correlate.
@@ -1661,34 +1749,35 @@ The bibliographic API will be used together with Google Cloud's Agent Search to 
 6. **A bulk export endpoint** (cursor-paginated JSONL of all resources, with `updated_since`) to feed `documents.import INCREMENTAL` cheaply.
 7. **Agent-shaped structured queries** with concise, LLM-friendly JSON: resources by author/affiliation, related resources by relation type, handle resolution — with an OpenAPI spec and/or MCP server wrapper so the same surface serves the frontend and agents. The links API's entity → documentation mapping is also valuable grounding material here.
 
-## Open questions to explore
+## Open questions — resolved 2026-07-05
+
+The questions this section used to hold were resolved in the 2026-07-05 design-review session; full rationale lives in "Design decisions (2026-07)" above. The mapping:
 
 **Data model and identity**
 
-1. Should resource IDs become time-ordered (ULID-style) before significant data accumulates, restoring meaningful keyset ordering while keeping the Base32 format?
-2. What is the resource-family design: separate `resource_family` table with `default_version_id`, or self-referential `family_id` on `resource`? How do concept DOIs attach to families vs. version DOIs to versions?
-3. Should collaborations return as a first-class table with the contributor XOR design, or as a special kind of author record?
-4. Which DataCite fields (rights, publisher, subjects, language, funding) are needed first, and does DOI minting happen via DataCite directly or via Zenodo?
+1. Time-ordered IDs? → **Yes, with re-mint of existing rows** (D1).
+2. Resource-family design? → **Separate `resource_family` table with `default_version_id`; concept DOIs on families, version DOIs on resources** (D2, D11).
+3. Collaborations? → **A special kind of author record (`type` discriminator), not a separate table** (D4).
+4. DataCite fields and minting agent? → **All four field groups; minting is manual via DOE/OSTI + DataCite, automation out of scope, schema fully minting-ready** (D10, D11).
 
 **Links API correlation**
 
-5. Should a link attach to the default-version resource or a versioned snapshot (SDM ingest is release-tagged, but link URLs point at unversioned default docs)?
-6. Is `Resource.url`/`LtdProject.domain` guaranteed prefix-unique, or do subsites (pipelines.lsst.io packages) require explicit URL-prefix records per resource?
-7. Is a nullable `link.resource_id` FK + periodic reconciliation acceptable, or should the links ingest upsert stub resources?
-8. Should SDM schemas get DOIs and become citable resources?
-9. Does `source_type` stay a links-domain vocabulary, or map onto DataCite relation types when projected into the resource graph?
+5. Link attach target? → **The family's default-version resource** (D20).
+6. URL-prefix uniqueness? → **Explicit `resource_url` prefix table** (D21).
+7. Nullable FK vs. stub resources? → **Nullable `link.resource_id` FK + resolver backfill; no stubs** (D19).
+8. SDM schemas citable? → **Deferred to a follow-up PRD; tables/columns never** (D22).
+9. `source_type` vocabulary? → **Stays links-domain; only derived `Documents` relations use DataCite types** (D23).
 
 **Next-generation hub / Agent Search**
 
-10. Can one advanced website data store cover all `*.lsst.io` subdomains under a single domain verification, and what are the quota/cost implications at lsst.io scale?
-11. Is crawl-based metadata freshness sufficient, or does metadata churn force the push path (architecture B/C)?
-12. How well does blended search rank a structured bibliographic record vs. a prose page for queries like "DMTN-031" — is a dedicated handle-lookup fast path needed in front of search?
-13. Agent framework: ADK + Agent Engine hosting vs. calling the Answer/Grounded Generation APIs directly from a FastAPI backend? Is Ook-as-MCP-server the right tool surface?
-14. Cost control for unauthenticated public traffic: per-query pricing plus generative-answer surcharges — what gets cached, and which features are gated behind interaction?
-15. Index only default/latest editions, or all versions with demotion via boost specs?
-16. What happens to the existing Algolia pipeline — retired in favor of Agent Search, kept for the current site during transition, or kept permanently for a subset of use cases?
+10–16. Architecture and policy: **blended app + Ook as OpenAPI tool (C), default editions only, Algolia retained during transition** (D24). Still genuinely open — as spike items in the hub-enablement PRD, not design decisions:
+
+- Can one advanced website data store cover all `*.lsst.io` subdomains under a single domain verification, and what are the quota/cost implications at lsst.io scale?
+- How well does blended search rank a structured bibliographic record vs. a prose page for handle queries like "DMTN-031" — is a dedicated lookup fast path needed in front of search?
+- Cost control for unauthenticated public traffic: what gets cached, and which generative features are gated behind interaction?
+- Agent hosting: ADK + Agent Engine vs. calling the Answer/Grounded Generation APIs directly from a FastAPI backend?
 
 **API surface**
 
-17. Keep the inlined `related`/`contributors` detail-response shape, or add paginated sub-resource endpoints as author/relation lists grow?
-18. What are the auth scopes for ingest/admin routes vs. anonymous reads, and how should per-item ingest status be reported for batch requests?
+17. Inlined vs. sub-resource responses? → **Keep inlined; add only `GET /resources/{id}/versions`** (D13).
+18. Auth scopes and ingest reporting? → **Anonymous reads, `exec:admin` writes enforced in handlers; per-item ingest results with partial success** (D16, D17).
