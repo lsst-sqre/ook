@@ -137,6 +137,26 @@ class Configuration(BaseSettings):
         ),
     )
 
+    linkcheck_freshness_ttl: HumanTimedelta = Field(
+        timedelta(hours=24),
+        validation_alias="OOK_LINKCHECK_FRESHNESS_TTL",
+        description=(
+            "Age below which a URL's stored check result is considered"
+            " fresh. URLs submitted with a fresh result are not"
+            " rechecked; their cached status is reported immediately."
+        ),
+    )
+
+    linkcheck_max_urls_per_check: int = Field(
+        1000,
+        ge=1,
+        validation_alias="OOK_LINKCHECK_MAX_URLS_PER_CHECK",
+        description=(
+            "Maximum number of unique canonical URLs accepted in a"
+            " single link-check submission."
+        ),
+    )
+
     slack_webhook: SecretStr | None = Field(
         None,
         validation_alias="OOK_SLACK_WEBHOOK",

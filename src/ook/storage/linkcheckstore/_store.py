@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
@@ -17,15 +17,21 @@ from ook.dbschema.linkcheck import (
     SqlLinkCheckUrl,
     SqlUrlOccurrence,
 )
-from ook.domain.linkcheck import LinkState, UrlOccurrence
-
-from ._query import (
-    create_checked_url_ids_stmt,
-    create_due_urls_stmt,
-    create_url_state_stmt,
+from ook.domain.linkcheck import (
+    CheckRunStatus,
+    LinkState,
+    LinkStatus,
+    UrlOccurrence,
 )
 
-__all__ = ["DueUrl", "LinkCheckStore"]
+from ._query import (
+    create_check_urls_stmt,
+    create_checked_url_ids_stmt,
+    create_due_urls_stmt,
+    create_url_states_stmt,
+)
+
+__all__ = ["CheckRecord", "CheckUrlRecord", "DueUrl", "LinkCheckStore"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +43,58 @@ class DueUrl:
 
     url: str
     """The canonical (fragment-stripped) URL."""
+
+
+@dataclass(frozen=True, slots=True)
+class CheckUrlRecord:
+    """The stored state of a URL that is a member of a link check."""
+
+    url: str
+    """The canonical (fragment-stripped) URL."""
+
+    status: LinkStatus | None
+    """The URL's health status, or None if it has never been checked."""
+
+    last_checked_at: datetime | None
+    """The time of the most recent check, or None if never checked."""
+
+    status_code: int | None
+    """The final HTTP status code from the most recent check."""
+
+    redirect_status_code: int | None
+    """The redirect's HTTP status code, if the URL redirected."""
+
+    redirect_url: str | None
+    """The final resolved location, if the URL redirected."""
+
+    error: str | None
+    """A description of the failure from the most recent check."""
+
+
+@dataclass(frozen=True, slots=True)
+class CheckRecord:
+    """A stored link check with its member URL states."""
+
+    id: int
+    """The ``linkcheck_check`` primary key."""
+
+    ltd_slug: str
+    """The LTD project slug the check was submitted for."""
+
+    default_branch: bool
+    """Whether the submission is a default-branch build."""
+
+    status: CheckRunStatus
+    """The processing status of the check."""
+
+    date_created: datetime
+    """The time the check was submitted."""
+
+    date_completed: datetime | None
+    """The time the check completed, or None while unfinished."""
+
+    urls: list[CheckUrlRecord]
+    """The check's member URL states, ordered by URL."""
 
 
 class LinkCheckStore:
@@ -139,12 +197,33 @@ class LinkCheckStore:
             been checked (a record created at submission that has no
             check results yet).
         """
-        result = (
-            await self._session.execute(create_url_state_stmt(url))
-        ).first()
-        if result is None or result.status is None:
-            return None
-        return LinkState.model_validate(result, from_attributes=True)
+        states = await self.get_url_states([url])
+        return states.get(url)
+
+    async def get_url_states(
+        self, urls: Sequence[str]
+    ) -> dict[str, LinkState]:
+        """Get the check states of URLs in bulk.
+
+        Parameters
+        ----------
+        urls
+            The canonical (fragment-stripped) URLs to look up.
+
+        Returns
+        -------
+        dict
+            A mapping of URL to state. URLs that are unknown or have
+            never been checked are omitted.
+        """
+        if not urls:
+            return {}
+        result = await self._session.execute(create_url_states_stmt(urls))
+        return {
+            row.url: LinkState.model_validate(row, from_attributes=True)
+            for row in result.all()
+            if row.status is not None
+        }
 
     async def create_check(
         self,
@@ -185,7 +264,7 @@ class LinkCheckStore:
                 .values(
                     ltd_slug=ltd_slug,
                     default_branch=default_branch,
-                    status="pending",
+                    status=CheckRunStatus.pending.value,
                     date_created=now,
                 )
                 .returning(SqlLinkCheck.id)
@@ -211,6 +290,94 @@ class LinkCheckStore:
             url_count=len(unique_url_ids),
         )
         return check_id
+
+    async def update_check_status(
+        self,
+        check_id: int,
+        status: CheckRunStatus,
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        """Advance a check's processing status.
+
+        Parameters
+        ----------
+        check_id
+            The primary key of the check.
+        status
+            The new processing status. Advancing to
+            `~ook.domain.linkcheck.CheckRunStatus.complete` also records
+            the completion time.
+        now
+            The completion time recorded when the status is ``complete``.
+            Defaults to the current time.
+        """
+        values: dict[str, object] = {"status": status.value}
+        if status is CheckRunStatus.complete:
+            values["date_completed"] = now or datetime.now(tz=UTC)
+        await self._session.execute(
+            update(SqlLinkCheck)
+            .where(SqlLinkCheck.id == check_id)
+            .values(**values)
+        )
+        await self._session.flush()
+
+    async def get_check(self, check_id: int) -> CheckRecord | None:
+        """Get a check with its member URL states.
+
+        Parameters
+        ----------
+        check_id
+            The primary key of the check.
+
+        Returns
+        -------
+        CheckRecord or None
+            The check with its member URL states ordered by URL, or None
+            if the check is unknown.
+        """
+        check_row = (
+            await self._session.execute(
+                select(
+                    SqlLinkCheck.id,
+                    SqlLinkCheck.ltd_slug,
+                    SqlLinkCheck.default_branch,
+                    SqlLinkCheck.status,
+                    SqlLinkCheck.date_created,
+                    SqlLinkCheck.date_completed,
+                ).where(SqlLinkCheck.id == check_id)
+            )
+        ).first()
+        if check_row is None:
+            return None
+
+        url_rows = (
+            await self._session.execute(create_check_urls_stmt(check_id))
+        ).all()
+        return CheckRecord(
+            id=check_row.id,
+            ltd_slug=check_row.ltd_slug,
+            default_branch=check_row.default_branch,
+            status=CheckRunStatus(check_row.status),
+            date_created=check_row.date_created,
+            date_completed=check_row.date_completed,
+            urls=[
+                CheckUrlRecord(
+                    url=row.url,
+                    status=(
+                        LinkStatus(row.status)
+                        if row.status is not None
+                        else None
+                    ),
+                    last_checked_at=row.last_checked_at,
+                    status_code=row.status_code,
+                    redirect_status_code=row.redirect_status_code,
+                    redirect_url=row.redirect_url,
+                    error=row.error,
+                )
+                for row in url_rows
+            ],
+        )
 
     async def replace_project_occurrences(
         self,

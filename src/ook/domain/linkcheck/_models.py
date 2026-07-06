@@ -9,12 +9,30 @@ from pydantic import BaseModel, Field
 
 __all__ = [
     "CheckResult",
+    "CheckRunStatus",
+    "CheckUrlStatus",
+    "CheckedUrlReport",
     "LinkCheckOutcome",
+    "LinkCheckReport",
     "LinkState",
     "LinkStatus",
     "RetryLadderConfig",
+    "SubmittedUrl",
     "UrlOccurrence",
 ]
+
+
+class CheckRunStatus(StrEnum):
+    """The processing status of a submitted link check."""
+
+    pending = "pending"
+    """The check has been accepted but execution has not started."""
+
+    in_progress = "in_progress"
+    """The check's due URLs are being checked."""
+
+    complete = "complete"
+    """All of the check's URLs have resolved statuses."""
 
 
 class LinkStatus(StrEnum):
@@ -220,4 +238,120 @@ class UrlOccurrence(BaseModel):
     path: str = Field(
         description="The page path where the URL occurs, relative to the"
         " project's documentation root."
+    )
+
+
+class SubmittedUrl(BaseModel):
+    """A URL submitted for checking, with the pages it occurs on."""
+
+    url: str = Field(
+        description=(
+            "The URL as submitted (any scheme; not yet canonicalized)."
+        )
+    )
+
+    paths: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The page paths where the URL occurs, relative to the"
+            " project's documentation root."
+        ),
+    )
+
+
+class CheckUrlStatus(StrEnum):
+    """The reported status of a URL within a submitted link check.
+
+    Extends `LinkStatus` with ``pending`` for URLs whose check has not
+    completed yet.
+    """
+
+    pending = "pending"
+    """The URL is due for a check that has not completed yet."""
+
+    ok = "ok"
+    """The link resolves successfully."""
+
+    redirected = "redirected"
+    """The link works via a permanent redirect."""
+
+    failing = "failing"
+    """The link is currently failing; the retry ladder is in progress."""
+
+    broken = "broken"
+    """The link is broken."""
+
+    unsupported = "unsupported"
+    """The URL cannot be checked."""
+
+    @classmethod
+    def from_link_status(cls, status: LinkStatus) -> CheckUrlStatus:
+        """Convert a `LinkStatus` to the equivalent check-URL status."""
+        return cls(status.value)
+
+
+class CheckedUrlReport(BaseModel):
+    """The reported result for one URL within a submitted link check."""
+
+    url: str = Field(description="The canonical (fragment-stripped) URL.")
+
+    status: CheckUrlStatus = Field(description="The URL's reported status.")
+
+    status_code: int | None = Field(
+        None,
+        description="Final HTTP status code, if a response was received.",
+    )
+
+    redirect_status_code: int | None = Field(
+        None,
+        description="HTTP status code of the redirect, if redirected.",
+    )
+
+    redirect_url: str | None = Field(
+        None,
+        description="Final resolved location, if the URL redirected.",
+    )
+
+    error: str | None = Field(
+        None,
+        description="Description of the failure, if the check failed.",
+    )
+
+    checked_at: datetime | None = Field(
+        None,
+        description=(
+            "Time of the check that produced this result, or None while"
+            " the URL is pending."
+        ),
+    )
+
+
+class LinkCheckReport(BaseModel):
+    """The status report for a submitted link check."""
+
+    id: int = Field(description="The check's identifier.")
+
+    ltd_slug: str = Field(
+        description="The LTD project slug the check was submitted for."
+    )
+
+    default_branch: bool = Field(
+        description="Whether the submission is a default-branch build."
+    )
+
+    status: CheckRunStatus = Field(
+        description="The processing status of the check."
+    )
+
+    date_created: datetime = Field(
+        description="The time the check was submitted."
+    )
+
+    date_completed: datetime | None = Field(
+        None,
+        description="The time the check completed, or None while unfinished.",
+    )
+
+    urls: list[CheckedUrlReport] = Field(
+        description="Per-URL results, ordered by URL."
     )

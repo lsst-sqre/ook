@@ -8,7 +8,7 @@ checking, persistence, and configuration binding live in other layers.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from urllib.parse import urlsplit
+from urllib.parse import urldefrag, urlsplit
 
 from ._models import (
     CheckResult,
@@ -21,13 +21,32 @@ from ._models import (
 if TYPE_CHECKING:
     from datetime import datetime
 
-__all__ = ["evaluate_outcome", "is_supported_url"]
+__all__ = ["canonicalize_url", "evaluate_outcome", "is_supported_url"]
 
 _SUPPORTED_SCHEMES = frozenset({"http", "https"})
 """URL schemes the link checker is able to check."""
 
 _PERMANENT_REDIRECT_CODES = frozenset({301, 308})
 """Redirect status codes indicating the source should be updated."""
+
+
+def canonicalize_url(url: str) -> str:
+    """Canonicalize a URL for link checking by stripping its fragment.
+
+    Fragments are client-side and never affect what a server returns, so
+    all fragment variants of a URL share one health record.
+
+    Parameters
+    ----------
+    url
+        The URL to canonicalize.
+
+    Returns
+    -------
+    str
+        The URL without its fragment.
+    """
+    return urldefrag(url).url
 
 
 def is_supported_url(url: str) -> bool:

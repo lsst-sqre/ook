@@ -30,7 +30,7 @@ from .services.glossary import GlossaryService
 from .services.ingest.lssttexmf import LsstTexmfIngestService
 from .services.ingest.sdmschemas import SdmSchemasIngestService
 from .services.landerjsonldingest import LtdLanderJsonLdIngestService
-from .services.linkcheck import UrlChecker
+from .services.linkcheck import LinkCheckService, UrlChecker
 from .services.links import LinksService
 from .services.ltdmetadataservice import LtdMetadataService
 from .services.resources import ResourceService
@@ -254,6 +254,15 @@ class Factory:
         return LinkCheckStore(
             session=self._session,
             logger=self._logger,
+        )
+
+    def create_linkcheck_service(self) -> LinkCheckService:
+        """Create a LinkCheckService."""
+        return LinkCheckService(
+            linkcheck_store=self.create_linkcheck_store(),
+            logger=self._logger,
+            freshness_ttl=config.linkcheck_freshness_ttl,
+            max_urls_per_check=config.linkcheck_max_urls_per_check,
         )
 
     def create_glossary_store(self) -> GlossaryStore:

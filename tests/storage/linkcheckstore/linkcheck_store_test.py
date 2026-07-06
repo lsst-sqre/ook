@@ -13,7 +13,12 @@ from ook.dbschema.linkcheck import (
     SqlLinkCheckUrl,
     SqlUrlOccurrence,
 )
-from ook.domain.linkcheck import LinkState, LinkStatus, UrlOccurrence
+from ook.domain.linkcheck import (
+    CheckRunStatus,
+    LinkState,
+    LinkStatus,
+    UrlOccurrence,
+)
 from ook.factory import Factory
 
 
@@ -162,6 +167,129 @@ async def test_create_check_with_membership(factory: Factory) -> None:
             .all()
         )
         assert set(member_url_ids) == set(ids.values())
+
+
+@pytest.mark.asyncio
+async def test_update_check_status(factory: Factory) -> None:
+    """A check's processing status advances pending → in_progress →
+    complete, recording the completion time.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+
+        ids = await store.upsert_checked_urls(["https://example.com/a"])
+        check_id = await store.create_check(
+            ltd_slug="sqr-000",
+            default_branch=True,
+            checked_url_ids=list(ids.values()),
+            now=now,
+        )
+
+        record = await store.get_check(check_id)
+        assert record is not None
+        assert record.status is CheckRunStatus.pending
+        assert record.date_completed is None
+
+        await store.update_check_status(check_id, CheckRunStatus.in_progress)
+        record = await store.get_check(check_id)
+        assert record is not None
+        assert record.status is CheckRunStatus.in_progress
+        assert record.date_completed is None
+
+        completed_at = now + timedelta(minutes=5)
+        await store.update_check_status(
+            check_id, CheckRunStatus.complete, now=completed_at
+        )
+        record = await store.get_check(check_id)
+        assert record is not None
+        assert record.status is CheckRunStatus.complete
+        assert record.date_completed == completed_at
+
+
+@pytest.mark.asyncio
+async def test_get_check(factory: Factory) -> None:
+    """Getting a check returns its metadata and member URL states."""
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+
+        # An unknown check ID resolves to None.
+        assert await store.get_check(123456789) is None
+
+        # One member URL has a state; the other has never been checked.
+        checked_state = LinkState(
+            url="https://example.com/checked",
+            status=LinkStatus.redirected,
+            checked_at=now,
+            last_ok_at=now,
+            status_code=200,
+            redirect_status_code=301,
+            redirect_url="https://example.com/new-location",
+        )
+        await store.upsert_url_state(checked_state, now=now)
+        ids = await store.upsert_checked_urls(
+            ["https://example.com/checked", "https://example.com/unchecked"],
+            now=now,
+        )
+        check_id = await store.create_check(
+            ltd_slug="sqr-000",
+            default_branch=False,
+            checked_url_ids=list(ids.values()),
+            now=now,
+        )
+
+        record = await store.get_check(check_id)
+        assert record is not None
+        assert record.id == check_id
+        assert record.ltd_slug == "sqr-000"
+        assert record.default_branch is False
+        assert record.status is CheckRunStatus.pending
+        assert record.date_created == now
+        assert record.date_completed is None
+
+        # Member URLs are ordered by URL.
+        assert [u.url for u in record.urls] == [
+            "https://example.com/checked",
+            "https://example.com/unchecked",
+        ]
+        checked, unchecked = record.urls
+        assert checked.status is LinkStatus.redirected
+        assert checked.last_checked_at == now
+        assert checked.status_code == 200
+        assert checked.redirect_status_code == 301
+        assert checked.redirect_url == "https://example.com/new-location"
+        assert checked.error is None
+        assert unchecked.status is None
+        assert unchecked.last_checked_at is None
+
+
+@pytest.mark.asyncio
+async def test_get_url_states(factory: Factory) -> None:
+    """Batch state lookup returns states only for checked URLs."""
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+
+        state = LinkState(
+            url="https://example.com/checked",
+            status=LinkStatus.ok,
+            checked_at=now,
+            last_ok_at=now,
+        )
+        await store.upsert_url_state(state, now=now)
+        await store.upsert_checked_urls(
+            ["https://example.com/unchecked"], now=now
+        )
+
+        states = await store.get_url_states(
+            [
+                "https://example.com/checked",
+                "https://example.com/unchecked",
+                "https://example.com/unknown",
+            ]
+        )
+        assert states == {"https://example.com/checked": state}
 
 
 @pytest.mark.asyncio
