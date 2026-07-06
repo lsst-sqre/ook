@@ -274,6 +274,55 @@ async def test_execute_check_skips_fresh_urls(factory: Factory) -> None:
 
 
 @pytest.mark.asyncio
+async def test_submit_check_all_fresh_completes_immediately(
+    factory: Factory,
+) -> None:
+    """A submission whose URLs are all cached-fresh or unsupported has
+    no due URLs, so no execution is enqueued for it; the check is marked
+    complete at submission rather than left pending forever.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            await store.upsert_url_state(
+                LinkState(
+                    url="https://example.com/fresh",
+                    status=LinkStatus.ok,
+                    checked_at=now,
+                    last_ok_at=now,
+                    status_code=200,
+                )
+            )
+            submission = await service.submit_check(
+                ltd_slug="sqr-000",
+                default_branch=True,
+                urls=[
+                    SubmittedUrl(url="https://example.com/fresh", paths=["a"]),
+                    SubmittedUrl(
+                        url="mailto:someone@example.com", paths=["a"]
+                    ),
+                ],
+            )
+            assert submission.due_urls == []
+
+            report = await service.get_check_report(submission.check_id)
+            assert report is not None
+            assert report.status is CheckRunStatus.complete
+            assert report.date_completed is not None
+            statuses = {u.url: u.status for u in report.urls}
+            assert statuses == {
+                "https://example.com/fresh": CheckUrlStatus.ok,
+                "mailto:someone@example.com": CheckUrlStatus.unsupported,
+            }
+
+
+@pytest.mark.asyncio
 async def test_execute_unknown_check_is_noop(factory: Factory) -> None:
     """Executing an unknown check id neither raises nor fetches, so
     at-least-once delivery of stale execution requests is safe.

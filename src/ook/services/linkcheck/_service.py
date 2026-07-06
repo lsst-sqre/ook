@@ -125,7 +125,9 @@ class LinkCheckService:
         unsupported URLs resolve immediately, URLs with a fresh cached
         result keep it, and the rest are due for a check. The check and
         its URL membership are persisted; for default-branch submissions
-        the project's occurrence set is replaced.
+        the project's occurrence set is replaced. A check with no due
+        URLs is already fully resolved and is marked complete
+        immediately, since no execution is enqueued for it.
 
         Parameters
         ----------
@@ -202,6 +204,12 @@ class LinkCheckService:
             checked_url_ids=[url_ids[url] for url in canonical_urls],
             now=now,
         )
+        if not due_urls:
+            # Nothing to execute, and only execution advances a check's
+            # status, so an all-fresh check completes at submission.
+            await self._store.update_check_status(
+                check_id, CheckRunStatus.complete, now=now
+            )
 
         if default_branch:
             occurrences = [
