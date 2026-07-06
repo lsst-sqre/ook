@@ -4,7 +4,7 @@ from ._query import (
     create_check_urls_stmt,
     create_checked_url_ids_stmt,
     create_due_urls_stmt,
-    create_project_links_stmt,
+    create_origin_links_stmt,
     create_url_occurrences_stmt,
     create_url_record_stmt,
     create_url_states_stmt,
@@ -14,7 +14,7 @@ from ._store import (
     CheckUrlRecord,
     DueUrl,
     LinkCheckStore,
-    ProjectLinksCursor,
+    OriginLinksCursor,
 )
 
 __all__ = [
@@ -22,11 +22,11 @@ __all__ = [
     "CheckUrlRecord",
     "DueUrl",
     "LinkCheckStore",
-    "ProjectLinksCursor",
+    "OriginLinksCursor",
     "create_check_urls_stmt",
     "create_checked_url_ids_stmt",
     "create_due_urls_stmt",
-    "create_project_links_stmt",
+    "create_origin_links_stmt",
     "create_url_occurrences_stmt",
     "create_url_record_stmt",
     "create_url_states_stmt",

@@ -16,8 +16,8 @@ __all__ = [
     "LinkCheckReport",
     "LinkState",
     "LinkStatus",
-    "ProjectLink",
-    "ProjectPage",
+    "OriginLink",
+    "OriginPage",
     "RetryLadderConfig",
     "SubmittedUrl",
     "UrlOccurrence",
@@ -232,15 +232,15 @@ class LinkState(BaseModel):
 
 
 class UrlOccurrence(BaseModel):
-    """An occurrence of a checked URL on a documentation page."""
+    """An occurrence of a checked URL on a page of an origin website."""
 
     url: str = Field(
         description="The canonical (fragment-stripped) URL that occurs."
     )
 
-    path: str = Field(
+    origin_path: str = Field(
         description="The page path where the URL occurs, relative to the"
-        " project's documentation root."
+        " origin's base URL."
     )
 
 
@@ -253,11 +253,11 @@ class SubmittedUrl(BaseModel):
         )
     )
 
-    paths: list[str] = Field(
+    origin_paths: list[str] = Field(
         default_factory=list,
         description=(
             "The page paths where the URL occurs, relative to the"
-            " project's documentation root."
+            " origin's base URL."
         ),
     )
 
@@ -329,15 +329,17 @@ class CheckedUrlReport(BaseModel):
     )
 
 
-class ProjectPage(BaseModel):
-    """A documentation page of an LTD project where a URL occurs."""
+class OriginPage(BaseModel):
+    """A page of an origin website where a URL occurs."""
 
-    ltd_slug: str = Field(description="The LTD project slug.")
+    origin_base_url: str = Field(
+        description="The origin's normalized base URL."
+    )
 
-    path: str = Field(
+    origin_path: str = Field(
         description=(
             "The page path where the URL occurs, relative to the"
-            " project's documentation root."
+            " origin's base URL."
         )
     )
 
@@ -423,18 +425,18 @@ class UrlRecord(BaseModel):
         description="Time the URL's record was created."
     )
 
-    occurrences: list[ProjectPage] = Field(
+    occurrences: list[OriginPage] = Field(
         default_factory=list,
         description=(
-            "Project pages where the URL occurs, ordered by project"
-            " slug and page path."
+            "Origin pages where the URL occurs, ordered by origin base"
+            " URL and page path."
         ),
     )
 
 
-class ProjectLink(BaseModel):
-    """A link occurring in an LTD project's documentation, with its
-    health state.
+class OriginLink(BaseModel):
+    """A link occurring on an origin website's pages, with its health
+    state.
     """
 
     url: str = Field(description="The canonical (fragment-stripped) URL.")
@@ -483,10 +485,10 @@ class ProjectLink(BaseModel):
         ),
     )
 
-    paths: list[str] = Field(
+    origin_paths: list[str] = Field(
         description=(
-            "Page paths in the project where the URL occurs, relative"
-            " to the project's documentation root."
+            "Page paths on the origin website where the URL occurs,"
+            " relative to the origin's base URL."
         )
     )
 
@@ -496,12 +498,18 @@ class LinkCheckReport(BaseModel):
 
     id: int = Field(description="The check's identifier.")
 
-    ltd_slug: str = Field(
-        description="The LTD project slug the check was submitted for."
+    origin_base_url: str = Field(
+        description=(
+            "The normalized base URL of the origin website the check"
+            " was submitted for."
+        )
     )
 
-    default_branch: bool = Field(
-        description="Whether the submission is a default-branch build."
+    is_default_version: bool = Field(
+        description=(
+            "Whether the submission is a build of the origin's default"
+            " version."
+        )
     )
 
     status: CheckRunStatus = Field(

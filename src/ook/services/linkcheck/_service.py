@@ -14,7 +14,7 @@ from ook.domain.linkcheck import (
     LinkCheckReport,
     LinkState,
     LinkStatus,
-    ProjectLink,
+    OriginLink,
     SubmittedUrl,
     UrlOccurrence,
     UrlRecord,
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from ook.storage.linkcheckstore import (
         CheckUrlRecord,
         LinkCheckStore,
-        ProjectLinksCursor,
+        OriginLinksCursor,
     )
 
     from ._urlchecker import UrlChecker
@@ -115,8 +115,8 @@ class LinkCheckService:
     async def submit_check(
         self,
         *,
-        ltd_slug: str,
-        default_branch: bool,
+        origin_base_url: str,
+        is_default_version: bool,
         urls: Sequence[SubmittedUrl],
     ) -> SubmittedCheck:
         """Accept a link-check submission.
@@ -124,19 +124,21 @@ class LinkCheckService:
         URLs are canonicalized (fragments stripped) and partitioned:
         unsupported URLs resolve immediately, URLs with a fresh cached
         result keep it, and the rest are due for a check. The check and
-        its URL membership are persisted; for default-branch submissions
-        the project's occurrence set is replaced. A check with no due
-        URLs is already fully resolved and is marked complete
-        immediately, since no execution is enqueued for it.
+        its URL membership are persisted; for default-version
+        submissions the origin's occurrence set is replaced. A check
+        with no due URLs is already fully resolved and is marked
+        complete immediately, since no execution is enqueued for it.
 
         Parameters
         ----------
-        ltd_slug
-            The LTD project slug the check is submitted for.
-        default_branch
-            Whether the submission is a default-branch build. Only
-            default-branch submissions replace the project's occurrence
-            set; all submissions receive full results.
+        origin_base_url
+            The normalized base URL of the origin website the check is
+            submitted for.
+        is_default_version
+            Whether the submission is a build of the origin's default
+            version. Only default-version submissions replace the
+            origin's occurrence set; all submissions receive full
+            results.
         urls
             The submitted URLs with the page paths they occur on.
 
@@ -159,7 +161,7 @@ class LinkCheckService:
         for submitted in urls:
             canonical = canonicalize_url(submitted.url)
             paths = merged_paths.setdefault(canonical, [])
-            for path in submitted.paths:
+            for path in submitted.origin_paths:
                 if path not in paths:
                     paths.append(path)
 
@@ -199,8 +201,8 @@ class LinkCheckService:
         ]
 
         check_id = await self._store.create_check(
-            ltd_slug=ltd_slug,
-            default_branch=default_branch,
+            origin_base_url=origin_base_url,
+            is_default_version=is_default_version,
             checked_url_ids=[url_ids[url] for url in canonical_urls],
             now=now,
         )
@@ -211,21 +213,23 @@ class LinkCheckService:
                 check_id, CheckRunStatus.complete, now=now
             )
 
-        if default_branch:
+        if is_default_version:
             occurrences = [
-                UrlOccurrence(url=url, path=path)
+                UrlOccurrence(url=url, origin_path=path)
                 for url, paths in merged_paths.items()
                 for path in paths
             ]
-            await self._store.replace_project_occurrences(
-                ltd_slug=ltd_slug, occurrences=occurrences, now=now
+            await self._store.replace_origin_occurrences(
+                origin_base_url=origin_base_url,
+                occurrences=occurrences,
+                now=now,
             )
 
         self._logger.info(
             "Accepted link-check submission",
             check_id=check_id,
-            ltd_slug=ltd_slug,
-            default_branch=default_branch,
+            origin_base_url=origin_base_url,
+            is_default_version=is_default_version,
             url_count=len(canonical_urls),
             due_url_count=len(due_urls),
         )
@@ -347,7 +351,7 @@ class LinkCheckService:
         -------
         list of DueUrl
             The URLs due for a (re)check that still occur on at least
-            one project page, never-checked first, then oldest last
+            one origin page, never-checked first, then oldest last
             check first. These are the URLs the scheduled recheck
             enqueues as batched Kafka messages.
         """
@@ -360,7 +364,7 @@ class LinkCheckService:
         """Purge expired check records and orphaned URL records.
 
         Checks older than the retention period are deleted first, then
-        URL records with no remaining project-page occurrences and no
+        URL records with no remaining origin-page occurrences and no
         membership in a retained check.
 
         Returns
@@ -399,8 +403,8 @@ class LinkCheckService:
             return None
         return LinkCheckReport(
             id=record.id,
-            ltd_slug=record.ltd_slug,
-            default_branch=record.default_branch,
+            origin_base_url=record.origin_base_url,
+            is_default_version=record.is_default_version,
             status=record.status,
             date_created=record.date_created,
             date_completed=record.date_completed,
@@ -422,25 +426,26 @@ class LinkCheckService:
         Returns
         -------
         UrlRecord or None
-            The URL's record with its project-page occurrences, or None
+            The URL's record with its origin-page occurrences, or None
             if the URL is unknown.
         """
         return await self._store.get_url_record(canonicalize_url(url))
 
-    async def get_project_links(
+    async def get_origin_links(
         self,
-        ltd_slug: str,
+        origin_base_url: str,
         *,
         status: CheckUrlStatus | None = None,
-        cursor: ProjectLinksCursor | None = None,
+        cursor: OriginLinksCursor | None = None,
         limit: int | None = None,
-    ) -> CountedPaginatedList[ProjectLink, ProjectLinksCursor]:
-        """Get a project's links with their health states, paginated.
+    ) -> CountedPaginatedList[OriginLink, OriginLinksCursor]:
+        """Get an origin's links with their health states, paginated.
 
         Parameters
         ----------
-        ltd_slug
-            The LTD project slug whose links are listed.
+        origin_base_url
+            The normalized base URL of the origin whose links are
+            listed.
         status
             If given, only links with this status are listed. The
             ``redirected`` status lists links whose sources should be
@@ -454,10 +459,10 @@ class LinkCheckService:
         Returns
         -------
         CountedPaginatedList
-            A paginated list of the project's links, ordered by URL.
+            A paginated list of the origin's links, ordered by URL.
         """
-        return await self._store.get_project_links(
-            ltd_slug, status=status, cursor=cursor, limit=limit
+        return await self._store.get_origin_links(
+            origin_base_url, status=status, cursor=cursor, limit=limit
         )
 
     def _is_due(self, state: LinkState | None, now: datetime) -> bool:

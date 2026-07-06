@@ -22,7 +22,7 @@ __all__ = [
     "create_check_urls_stmt",
     "create_checked_url_ids_stmt",
     "create_due_urls_stmt",
-    "create_project_links_stmt",
+    "create_origin_links_stmt",
     "create_url_occurrences_stmt",
     "create_url_record_stmt",
     "create_url_states_stmt",
@@ -141,7 +141,7 @@ def create_url_record_stmt(url: str) -> Select:
 
 
 def create_url_occurrences_stmt(url: str) -> Select:
-    """Create a select statement for a URL's project-page occurrences.
+    """Create a select statement for a URL's origin-page occurrences.
 
     Parameters
     ----------
@@ -151,36 +151,39 @@ def create_url_occurrences_stmt(url: str) -> Select:
     Returns
     -------
     Select
-        A statement selecting ``(ltd_slug, path)`` rows, ordered by
-        project slug and page path.
+        A statement selecting ``(origin_base_url, origin_path)`` rows,
+        ordered by origin base URL and page path.
     """
     return (
-        select(SqlUrlOccurrence.ltd_slug, SqlUrlOccurrence.path)
+        select(SqlUrlOccurrence.origin_base_url, SqlUrlOccurrence.origin_path)
         .join(
             SqlCheckedUrl,
             SqlCheckedUrl.id == SqlUrlOccurrence.checked_url_id,
         )
         .where(SqlCheckedUrl.url == url)
-        .order_by(SqlUrlOccurrence.ltd_slug.asc(), SqlUrlOccurrence.path.asc())
+        .order_by(
+            SqlUrlOccurrence.origin_base_url.asc(),
+            SqlUrlOccurrence.origin_path.asc(),
+        )
     )
 
 
-def create_project_links_stmt(
-    ltd_slug: str, *, status: CheckUrlStatus | None = None
+def create_origin_links_stmt(
+    origin_base_url: str, *, status: CheckUrlStatus | None = None
 ) -> Select:
-    """Create a select statement for a project's links with their
+    """Create a select statement for an origin's links with their
     health states.
 
-    Each row is one canonical URL occurring in the project, with its
-    state columns and the aggregated page paths where it occurs. The
-    columns are labelled to match the field names of the
-    `ook.domain.linkcheck.ProjectLink` domain model; never-checked URLs
+    Each row is one canonical URL occurring on the origin website, with
+    its state columns and the aggregated page paths where it occurs.
+    The columns are labelled to match the field names of the
+    `ook.domain.linkcheck.OriginLink` domain model; never-checked URLs
     report the ``pending`` status.
 
     Parameters
     ----------
-    ltd_slug
-        The LTD project slug whose links are listed.
+    origin_base_url
+        The normalized base URL of the origin whose links are listed.
     status
         If given, only links with this status are selected. The
         ``pending`` status selects never-checked links.
@@ -188,7 +191,7 @@ def create_project_links_stmt(
     Returns
     -------
     Select
-        A statement selecting the project's links, suitable for
+        A statement selecting the origin's links, suitable for
         pagination.
     """
     stmt = (
@@ -204,15 +207,16 @@ def create_project_links_stmt(
             SqlCheckedUrl.last_checked_at.label("checked_at"),
             func.array_agg(
                 aggregate_order_by(
-                    SqlUrlOccurrence.path, SqlUrlOccurrence.path.asc()
+                    SqlUrlOccurrence.origin_path,
+                    SqlUrlOccurrence.origin_path.asc(),
                 )
-            ).label("paths"),
+            ).label("origin_paths"),
         )
         .join(
             SqlUrlOccurrence,
             SqlUrlOccurrence.checked_url_id == SqlCheckedUrl.id,
         )
-        .where(SqlUrlOccurrence.ltd_slug == ltd_slug)
+        .where(SqlUrlOccurrence.origin_base_url == origin_base_url)
         .group_by(SqlCheckedUrl.id)
     )
     if status is CheckUrlStatus.pending:
@@ -246,7 +250,7 @@ def create_due_urls_stmt(
     limit
         The maximum number of URLs to return, or None for no limit.
     referenced_only
-        If true, only URLs that still occur on at least one project
+        If true, only URLs that still occur on at least one origin
         page are selected.
 
     Returns

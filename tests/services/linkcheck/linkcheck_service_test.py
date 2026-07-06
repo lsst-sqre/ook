@@ -80,10 +80,12 @@ async def test_execute_check_completes_with_ok_result(
         service = make_service(factory, hc)
         async with factory.db_session.begin():
             submission = await service.submit_check(
-                ltd_slug="sqr-000",
-                default_branch=True,
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
                 urls=[
-                    SubmittedUrl(url="https://example.com/page", paths=["a"])
+                    SubmittedUrl(
+                        url="https://example.com/page", origin_paths=["a"]
+                    )
                 ],
             )
             await service.execute_check(submission.check_id)
@@ -115,10 +117,12 @@ async def test_execute_check_never_ok_failure_is_broken(
         store = factory.create_linkcheck_store()
         async with factory.db_session.begin():
             submission = await service.submit_check(
-                ltd_slug="sqr-000",
-                default_branch=True,
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
                 urls=[
-                    SubmittedUrl(url="https://example.com/gone", paths=["a"])
+                    SubmittedUrl(
+                        url="https://example.com/gone", origin_paths=["a"]
+                    )
                 ],
             )
             await service.execute_check(submission.check_id)
@@ -167,10 +171,12 @@ async def test_execute_check_previously_ok_failure_bookkeeping(
                 )
             )
             submission = await service.submit_check(
-                ltd_slug="sqr-000",
-                default_branch=True,
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
                 urls=[
-                    SubmittedUrl(url="https://example.com/flaky", paths=["a"])
+                    SubmittedUrl(
+                        url="https://example.com/flaky", origin_paths=["a"]
+                    )
                 ],
             )
             await service.execute_check(submission.check_id)
@@ -210,10 +216,12 @@ async def test_execute_check_persists_redirect_metadata(
         service = make_service(factory, hc)
         async with factory.db_session.begin():
             submission = await service.submit_check(
-                ltd_slug="sqr-000",
-                default_branch=True,
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
                 urls=[
-                    SubmittedUrl(url="https://example.com/old", paths=["a"])
+                    SubmittedUrl(
+                        url="https://example.com/old", origin_paths=["a"]
+                    )
                 ],
             )
             await service.execute_check(submission.check_id)
@@ -253,11 +261,15 @@ async def test_execute_check_skips_fresh_urls(factory: Factory) -> None:
                 )
             )
             submission = await service.submit_check(
-                ltd_slug="sqr-000",
-                default_branch=True,
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
                 urls=[
-                    SubmittedUrl(url="https://example.com/fresh", paths=["a"]),
-                    SubmittedUrl(url="https://example.com/due", paths=["a"]),
+                    SubmittedUrl(
+                        url="https://example.com/fresh", origin_paths=["a"]
+                    ),
+                    SubmittedUrl(
+                        url="https://example.com/due", origin_paths=["a"]
+                    ),
                 ],
             )
             await service.execute_check(submission.check_id)
@@ -300,12 +312,14 @@ async def test_submit_check_all_fresh_completes_immediately(
                 )
             )
             submission = await service.submit_check(
-                ltd_slug="sqr-000",
-                default_branch=True,
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
                 urls=[
-                    SubmittedUrl(url="https://example.com/fresh", paths=["a"]),
                     SubmittedUrl(
-                        url="mailto:someone@example.com", paths=["a"]
+                        url="https://example.com/fresh", origin_paths=["a"]
+                    ),
+                    SubmittedUrl(
+                        url="mailto:someone@example.com", origin_paths=["a"]
                     ),
                 ],
             )
@@ -427,7 +441,7 @@ async def test_list_due_recheck_urls_referenced_only(
     factory: Factory,
 ) -> None:
     """The scheduled recheck enumeration lists only due URLs that
-    still occur on a project page.
+    still occur on an origin page.
     """
     now = datetime.now(tz=UTC).replace(microsecond=0)
 
@@ -452,16 +466,18 @@ async def test_list_due_recheck_urls_referenced_only(
                         status_code=200,
                     )
                 )
-            # Only one stale URL still occurs on a project page; a
+            # Only one stale URL still occurs on an origin page; a
             # fresh referenced URL is not due.
-            await store.replace_project_occurrences(
-                ltd_slug="sqr-000",
+            await store.replace_origin_occurrences(
+                origin_base_url="https://sqr-000.lsst.io",
                 occurrences=[
                     UrlOccurrence(
-                        url="https://example.com/referenced-stale", path="a"
+                        url="https://example.com/referenced-stale",
+                        origin_path="a",
                     ),
                     UrlOccurrence(
-                        url="https://example.com/referenced-fresh", path="a"
+                        url="https://example.com/referenced-fresh",
+                        origin_path="a",
                     ),
                 ],
             )
@@ -501,16 +517,18 @@ async def test_purge_expired_records(factory: Factory) -> None:
                 ["https://example.com/forgotten"]
             )
             await store.create_check(
-                ltd_slug="sqr-000",
-                default_branch=False,
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=False,
                 checked_url_ids=list(ids.values()),
                 now=now - config.linkcheck_check_retention - timedelta(days=1),
             )
             # A referenced URL survives the purge.
-            await store.replace_project_occurrences(
-                ltd_slug="sqr-000",
+            await store.replace_origin_occurrences(
+                origin_base_url="https://sqr-000.lsst.io",
                 occurrences=[
-                    UrlOccurrence(url="https://example.com/kept", path="a")
+                    UrlOccurrence(
+                        url="https://example.com/kept", origin_path="a"
+                    )
                 ],
             )
 

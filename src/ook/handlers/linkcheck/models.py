@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import Request
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 
 from ook.domain.linkcheck import (
     CheckedUrlReport,
@@ -15,9 +15,10 @@ from ook.domain.linkcheck import (
     CheckUrlStatus,
     LinkCheckReport,
     SubmittedUrl,
+    normalize_origin_base_url,
 )
-from ook.domain.linkcheck import ProjectLink as ProjectLinkDomain
-from ook.domain.linkcheck import ProjectPage as ProjectPageDomain
+from ook.domain.linkcheck import OriginLink as OriginLinkDomain
+from ook.domain.linkcheck import OriginPage as OriginPageDomain
 from ook.domain.linkcheck import UrlRecord as UrlRecordDomain
 
 __all__ = [
@@ -25,8 +26,8 @@ __all__ = [
     "LinkCheck",
     "LinkCheckRequest",
     "LinkCheckSummary",
-    "ProjectLink",
-    "ProjectPage",
+    "OriginLink",
+    "OriginPage",
     "SubmittedUrlModel",
     "UrlRecord",
 ]
@@ -47,12 +48,12 @@ class SubmittedUrlModel(BaseModel):
         ),
     ]
 
-    paths: Annotated[
+    origin_paths: Annotated[
         list[str],
         Field(
             description=(
                 "Page paths where the URL occurs, relative to the"
-                " project's documentation root."
+                " origin's base URL."
             ),
             examples=[["index", "guide/installation"]],
             default_factory=list,
@@ -61,30 +62,34 @@ class SubmittedUrlModel(BaseModel):
 
     def to_domain(self) -> SubmittedUrl:
         """Convert to the domain submission model."""
-        return SubmittedUrl(url=self.url, paths=self.paths)
+        return SubmittedUrl(url=self.url, origin_paths=self.origin_paths)
 
 
 class LinkCheckRequest(BaseModel):
     """Schema for `post_linkcheck_check`."""
 
-    ltd_slug: Annotated[
+    origin_base_url: Annotated[
         str,
+        AfterValidator(normalize_origin_base_url),
         Field(
             description=(
-                "The LSST the Docs project slug the submission is for."
+                "The base URL of the website the submission is for."
+                " Must be an absolute http(s) URL without a query or"
+                " fragment; path-bearing bases are allowed. The host is"
+                " lowercased and any trailing slash is stripped."
             ),
-            examples=["sqr-000"],
+            examples=["https://sqr-000.lsst.io"],
         ),
     ]
 
-    default_branch: Annotated[
+    is_default_version: Annotated[
         bool,
         Field(
             description=(
-                "Whether the submission is a default-branch build. Only"
-                " default-branch submissions replace the project's"
-                " recorded URL occurrences; all submissions receive"
-                " full results."
+                "Whether the submission is a build of the origin's"
+                " default version. Only default-version submissions"
+                " replace the origin's recorded URL occurrences; all"
+                " submissions receive full results."
             ),
         ),
     ]
@@ -196,32 +201,35 @@ class LinkCheckSummary(BaseModel):
         return cls(**counts)
 
 
-class ProjectPage(BaseModel):
-    """A documentation page of an LTD project where a URL occurs."""
+class OriginPage(BaseModel):
+    """A page of an origin website where a URL occurs."""
 
-    ltd_slug: Annotated[
+    origin_base_url: Annotated[
         str,
         Field(
-            description="The LSST the Docs project slug.",
-            examples=["sqr-000"],
+            description="The origin website's normalized base URL.",
+            examples=["https://sqr-000.lsst.io"],
         ),
     ]
 
-    path: Annotated[
+    origin_path: Annotated[
         str,
         Field(
             description=(
                 "The page path where the URL occurs, relative to the"
-                " project's documentation root."
+                " origin's base URL."
             ),
             examples=["index"],
         ),
     ]
 
     @classmethod
-    def from_domain(cls, page: ProjectPageDomain) -> ProjectPage:
-        """Create a ProjectPage from its domain model."""
-        return cls(ltd_slug=page.ltd_slug, path=page.path)
+    def from_domain(cls, page: OriginPageDomain) -> OriginPage:
+        """Create an OriginPage from its domain model."""
+        return cls(
+            origin_base_url=page.origin_base_url,
+            origin_path=page.origin_path,
+        )
 
 
 class UrlRecord(BaseModel):
@@ -337,11 +345,11 @@ class UrlRecord(BaseModel):
     ]
 
     occurrences: Annotated[
-        list[ProjectPage],
+        list[OriginPage],
         Field(
             description=(
-                "Project pages where the URL occurs, ordered by"
-                " project slug and page path."
+                "Origin pages where the URL occurs, ordered by origin"
+                " base URL and page path."
             )
         ),
     ]
@@ -363,13 +371,13 @@ class UrlRecord(BaseModel):
             next_check_at=record.next_check_at,
             date_created=record.date_created,
             occurrences=[
-                ProjectPage.from_domain(page) for page in record.occurrences
+                OriginPage.from_domain(page) for page in record.occurrences
             ],
         )
 
 
-class ProjectLink(BaseModel):
-    """A link occurring in a project's documentation, with its health
+class OriginLink(BaseModel):
+    """A link occurring on an origin website's pages, with its health
     state.
     """
 
@@ -438,20 +446,20 @@ class ProjectLink(BaseModel):
         ),
     ] = None
 
-    paths: Annotated[
+    origin_paths: Annotated[
         list[str],
         Field(
             description=(
-                "Page paths in the project where the URL occurs,"
-                " relative to the project's documentation root."
+                "Page paths on the origin website where the URL occurs,"
+                " relative to the origin's base URL."
             ),
             examples=[["index", "guide/installation"]],
         ),
     ]
 
     @classmethod
-    def from_domain(cls, link: ProjectLinkDomain) -> ProjectLink:
-        """Create a ProjectLink from its domain model."""
+    def from_domain(cls, link: OriginLinkDomain) -> OriginLink:
+        """Create an OriginLink from its domain model."""
         return cls(
             url=link.url,
             status=link.status,
@@ -460,7 +468,7 @@ class ProjectLink(BaseModel):
             redirect_url=link.redirect_url,
             error=link.error,
             checked_at=link.checked_at,
-            paths=link.paths,
+            origin_paths=link.origin_paths,
         )
 
 
@@ -474,19 +482,23 @@ class LinkCheck(BaseModel):
         Field(description="URL to access this check in the API."),
     ]
 
-    ltd_slug: Annotated[
+    origin_base_url: Annotated[
         str,
         Field(
             description=(
-                "The LSST the Docs project slug the check was submitted for."
+                "The normalized base URL of the origin website the"
+                " check was submitted for."
             )
         ),
     ]
 
-    default_branch: Annotated[
+    is_default_version: Annotated[
         bool,
         Field(
-            description=("Whether the submission is a default-branch build.")
+            description=(
+                "Whether the submission is a build of the origin's"
+                " default version."
+            )
         ),
     ]
 
@@ -527,8 +539,8 @@ class LinkCheck(BaseModel):
             self_url=str(
                 request.url_for("get_linkcheck_check", check_id=report.id)
             ),
-            ltd_slug=report.ltd_slug,
-            default_branch=report.default_branch,
+            origin_base_url=report.origin_base_url,
+            is_default_version=report.is_default_version,
             status=report.status,
             date_created=report.date_created,
             date_completed=report.date_completed,

@@ -3,16 +3,17 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query, Response
+from pydantic import AfterValidator
 from safir.models import ErrorModel
 
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 from ook.domain.kafka import CheckLinksMessageV1
-from ook.domain.linkcheck import CheckUrlStatus
+from ook.domain.linkcheck import CheckUrlStatus, normalize_origin_base_url
 from ook.exceptions import NotFoundError
-from ook.storage.linkcheckstore import ProjectLinksCursor
+from ook.storage.linkcheckstore import OriginLinksCursor
 
-from .models import LinkCheck, LinkCheckRequest, ProjectLink, UrlRecord
+from .models import LinkCheck, LinkCheckRequest, OriginLink, UrlRecord
 
 router = APIRouter(
     prefix=f"{config.path_prefix}/linkcheck", tags=["linkcheck"]
@@ -24,9 +25,9 @@ router = APIRouter(
     "/checks",
     summary="Submit a link check",
     description=(
-        "Submit a documentation build's external URLs for checking."
-        " URLs are canonicalized (fragments stripped) and partitioned:"
-        " URLs with a fresh cached result and unsupported URLs resolve"
+        "Submit a website build's external URLs for checking. URLs are"
+        " canonicalized (fragments stripped) and partitioned: URLs with"
+        " a fresh cached result and unsupported URLs resolve"
         " immediately, while the rest are checked asynchronously. Poll"
         " the check at the returned Location header. This endpoint is"
         " write-protected by Gafaelfawr at the ingress."
@@ -42,15 +43,15 @@ async def post_linkcheck_check(
     """Accept a link-check submission and return its polling location."""
     context.logger.info(
         "Received link-check submission",
-        ltd_slug=check_request.ltd_slug,
-        default_branch=check_request.default_branch,
+        origin_base_url=check_request.origin_base_url,
+        is_default_version=check_request.is_default_version,
         url_count=len(check_request.urls),
     )
     async with context.session.begin():
         service = context.factory.create_linkcheck_service()
         submission = await service.submit_check(
-            ltd_slug=check_request.ltd_slug,
-            default_branch=check_request.default_branch,
+            origin_base_url=check_request.origin_base_url,
+            is_default_version=check_request.is_default_version,
             urls=[url.to_domain() for url in check_request.urls],
         )
     if submission.due_urls:
@@ -104,7 +105,7 @@ async def get_linkcheck_check(
     description=(
         "Look up the stored health record of a single canonical URL:"
         " its status, HTTP status code, redirect location, check"
-        " timestamps, and the project pages it occurs on. The lookup"
+        " timestamps, and the origin pages it occurs on. The lookup"
         " URL is canonicalized (fragment stripped) first."
     ),
     responses={404: {"description": "Not found", "model": ErrorModel}},
@@ -133,26 +134,31 @@ async def get_linkcheck_url(
 
 
 @router.get(
-    "/projects/{slug}/links",
-    summary="List a project's links",
+    "/links",
+    summary="List an origin's links",
     description=(
-        "List the links recorded for an LSST the Docs project's"
-        " documentation with their health states and the page paths"
-        " where they occur, ordered by URL. Results are paginated with"
-        " a cursor (`Link` header with next/prev URLs and an"
-        " `X-Total-Count` header). Filter by status:"
-        " `?status=redirected` lists links whose sources should be"
-        " updated to their new locations; `?status=broken` is the"
+        "List the links recorded for an origin website with their"
+        " health states and the page paths where they occur, ordered"
+        " by URL. Results are paginated with a cursor (`Link` header"
+        " with next/prev URLs and an `X-Total-Count` header). Filter by"
+        " status: `?status=redirected` lists links whose sources should"
+        " be updated to their new locations; `?status=broken` is the"
         " rot-monitoring view."
     ),
 )
-async def get_project_links(
+async def get_origin_links(
     *,
-    slug: Annotated[
+    origin: Annotated[
         str,
-        Path(
-            title="Project slug",
-            description="The LSST the Docs project slug.",
+        AfterValidator(normalize_origin_base_url),
+        Query(
+            title="Origin base URL",
+            description=(
+                "The base URL of the origin website whose links are"
+                " listed. It is normalized (lowercased host, trailing"
+                " slash stripped) before the lookup."
+            ),
+            examples=["https://sqr-000.lsst.io"],
         ),
     ],
     status: Annotated[
@@ -185,15 +191,15 @@ async def get_project_links(
         ),
     ] = 100,
     context: Annotated[RequestContext, Depends(context_dependency)],
-) -> list[ProjectLink]:
-    """List a project's links with their health states."""
+) -> list[OriginLink]:
+    """List an origin's links with their health states."""
     async with context.session.begin():
         service = context.factory.create_linkcheck_service()
-        results = await service.get_project_links(
-            slug,
+        results = await service.get_origin_links(
+            origin,
             status=status,
             cursor=(
-                ProjectLinksCursor.from_str(cursor)
+                OriginLinksCursor.from_str(cursor)
                 if cursor is not None
                 else None
             ),
@@ -202,4 +208,4 @@ async def get_project_links(
         response = context.response
         response.headers["Link"] = results.link_header(context.request.url)
         response.headers["X-Total-Count"] = str(results.count)
-        return [ProjectLink.from_domain(link) for link in results.entries]
+        return [OriginLink.from_domain(link) for link in results.entries]

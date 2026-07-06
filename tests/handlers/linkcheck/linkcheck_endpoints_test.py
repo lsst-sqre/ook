@@ -18,6 +18,9 @@ from ook.domain.linkcheck import LinkState, LinkStatus, RetryLadderConfig
 from ook.services.linkcheck import LinkCheckService, UrlChecker
 from ook.storage.linkcheckstore import LinkCheckStore
 
+ORIGIN = "https://sqr-000.lsst.io"
+"""The origin base URL used for test submissions."""
+
 
 async def _seed_url_state(state: LinkState) -> None:
     """Write a URL's check state directly to the test database."""
@@ -73,8 +76,8 @@ async def _execute_check(
     await engine.dispose()
 
 
-async def _get_occurrences(ltd_slug: str) -> set[tuple[str, str]]:
-    """Get a project's occurrence set as (url, path) tuples."""
+async def _get_occurrences(origin_base_url: str) -> set[tuple[str, str]]:
+    """Get an origin's occurrence set as (url, origin_path) tuples."""
     engine = create_database_engine(
         config.database_url, config.database_password
     )
@@ -82,17 +85,17 @@ async def _get_occurrences(ltd_slug: str) -> set[tuple[str, str]]:
     async with session.begin():
         rows = (
             await session.execute(
-                select(SqlCheckedUrl.url, SqlUrlOccurrence.path)
+                select(SqlCheckedUrl.url, SqlUrlOccurrence.origin_path)
                 .join(
                     SqlCheckedUrl,
                     SqlCheckedUrl.id == SqlUrlOccurrence.checked_url_id,
                 )
-                .where(SqlUrlOccurrence.ltd_slug == ltd_slug)
+                .where(SqlUrlOccurrence.origin_base_url == origin_base_url)
             )
         ).all()
     await session.close()
     await engine.dispose()
-    return {(row.url, row.path) for row in rows}
+    return {(row.url, row.origin_path) for row in rows}
 
 
 @pytest.mark.asyncio
@@ -103,16 +106,63 @@ async def test_post_check_accepted(client: AsyncClient) -> None:
     response = await client.post(
         "/ook/linkcheck/checks",
         json={
-            "ltd_slug": "sqr-000",
-            "default_branch": True,
+            "origin_base_url": ORIGIN,
+            "is_default_version": True,
             "urls": [
-                {"url": "https://example.com/page", "paths": ["index"]},
+                {
+                    "url": "https://example.com/page",
+                    "origin_paths": ["index"],
+                },
             ],
         },
     )
     assert response.status_code == 202
     location = response.headers["Location"]
     assert "/ook/linkcheck/checks/" in location
+
+
+@pytest.mark.asyncio
+async def test_post_check_origin_normalization(client: AsyncClient) -> None:
+    """Origin base URLs are normalized (host lowercased, trailing slash
+    stripped) so equivalent spellings map to one origin, and invalid
+    origins are rejected with 422.
+    """
+    response = await client.post(
+        "/ook/linkcheck/checks",
+        json={
+            "origin_base_url": "HTTPS://SQR-000.LSST.IO/",
+            "is_default_version": True,
+            "urls": [
+                {"url": "https://example.com/a", "origin_paths": ["index"]},
+            ],
+        },
+    )
+    assert response.status_code == 202
+    assert await _get_occurrences(ORIGIN) == {
+        ("https://example.com/a", "index"),
+    }
+
+    for bad_origin in (
+        "sqr-000.lsst.io",  # missing scheme
+        "ftp://sqr-000.lsst.io",  # unsupported scheme
+        "https://sqr-000.lsst.io?branch=main",  # query forbidden
+        "https://sqr-000.lsst.io#section",  # fragment forbidden
+        "https://",  # missing host
+    ):
+        response = await client.post(
+            "/ook/linkcheck/checks",
+            json={
+                "origin_base_url": bad_origin,
+                "is_default_version": True,
+                "urls": [
+                    {
+                        "url": "https://example.com/a",
+                        "origin_paths": ["index"],
+                    },
+                ],
+            },
+        )
+        assert response.status_code == 422, bad_origin
 
 
 @pytest.mark.asyncio
@@ -135,13 +185,19 @@ async def test_submit_and_poll_mixed_urls(client: AsyncClient) -> None:
     response = await client.post(
         "/ook/linkcheck/checks",
         json={
-            "ltd_slug": "sqr-000",
-            "default_branch": True,
+            "origin_base_url": ORIGIN,
+            "is_default_version": True,
             "urls": [
                 # Fragment variant of the seeded fresh URL.
-                {"url": "https://example.com/fresh#section", "paths": ["a"]},
-                {"url": "https://example.com/unknown", "paths": ["a", "b"]},
-                {"url": "mailto:someone@example.com", "paths": ["a"]},
+                {
+                    "url": "https://example.com/fresh#section",
+                    "origin_paths": ["a"],
+                },
+                {
+                    "url": "https://example.com/unknown",
+                    "origin_paths": ["a", "b"],
+                },
+                {"url": "mailto:someone@example.com", "origin_paths": ["a"]},
             ],
         },
     )
@@ -151,8 +207,8 @@ async def test_submit_and_poll_mixed_urls(client: AsyncClient) -> None:
     response = await client.get(location)
     assert response.status_code == 200
     data = response.json()
-    assert data["ltd_slug"] == "sqr-000"
-    assert data["default_branch"] is True
+    assert data["origin_base_url"] == ORIGIN
+    assert data["is_default_version"] is True
     assert data["status"] == "pending"
     assert data["date_completed"] is None
     assert data["summary"] == {
@@ -183,27 +239,33 @@ async def test_submit_and_poll_mixed_urls(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_occurrences_replaced_only_for_default_branch(
+async def test_occurrences_replaced_only_for_default_version(
     client: AsyncClient,
 ) -> None:
-    """Only default-branch submissions replace the project's occurrence
+    """Only default-version submissions replace the origin's occurrence
     set; PR-build submissions leave it untouched but still receive full
     results.
     """
-    # Default-branch submission establishes the occurrence set.
+    # Default-version submission establishes the occurrence set.
     response = await client.post(
         "/ook/linkcheck/checks",
         json={
-            "ltd_slug": "sqr-000",
-            "default_branch": True,
+            "origin_base_url": ORIGIN,
+            "is_default_version": True,
             "urls": [
-                {"url": "https://example.com/a#frag", "paths": ["index"]},
-                {"url": "https://example.com/b", "paths": ["index", "guide"]},
+                {
+                    "url": "https://example.com/a#frag",
+                    "origin_paths": ["index"],
+                },
+                {
+                    "url": "https://example.com/b",
+                    "origin_paths": ["index", "guide"],
+                },
             ],
         },
     )
     assert response.status_code == 202
-    assert await _get_occurrences("sqr-000") == {
+    assert await _get_occurrences(ORIGIN) == {
         ("https://example.com/a", "index"),
         ("https://example.com/b", "index"),
         ("https://example.com/b", "guide"),
@@ -213,16 +275,16 @@ async def test_occurrences_replaced_only_for_default_branch(
     response = await client.post(
         "/ook/linkcheck/checks",
         json={
-            "ltd_slug": "sqr-000",
-            "default_branch": False,
+            "origin_base_url": ORIGIN,
+            "is_default_version": False,
             "urls": [
-                {"url": "https://example.com/c", "paths": ["newpage"]},
+                {"url": "https://example.com/c", "origin_paths": ["newpage"]},
             ],
         },
     )
     assert response.status_code == 202
     pr_location = response.headers["Location"]
-    assert await _get_occurrences("sqr-000") == {
+    assert await _get_occurrences(ORIGIN) == {
         ("https://example.com/a", "index"),
         ("https://example.com/b", "index"),
         ("https://example.com/b", "guide"),
@@ -234,19 +296,22 @@ async def test_occurrences_replaced_only_for_default_branch(
     data = response.json()
     assert [u["url"] for u in data["urls"]] == ["https://example.com/c"]
 
-    # A later default-branch submission replaces the occurrence set.
+    # A later default-version submission replaces the occurrence set.
     response = await client.post(
         "/ook/linkcheck/checks",
         json={
-            "ltd_slug": "sqr-000",
-            "default_branch": True,
+            "origin_base_url": ORIGIN,
+            "is_default_version": True,
             "urls": [
-                {"url": "https://example.com/b", "paths": ["changelog"]},
+                {
+                    "url": "https://example.com/b",
+                    "origin_paths": ["changelog"],
+                },
             ],
         },
     )
     assert response.status_code == 202
-    assert await _get_occurrences("sqr-000") == {
+    assert await _get_occurrences(ORIGIN) == {
         ("https://example.com/b", "changelog"),
     }
 
@@ -263,10 +328,10 @@ async def test_url_cap_rejected(
     response = await client.post(
         "/ook/linkcheck/checks",
         json={
-            "ltd_slug": "sqr-000",
-            "default_branch": True,
+            "origin_base_url": ORIGIN,
+            "is_default_version": True,
             "urls": [
-                {"url": f"https://example.com/{i}", "paths": ["index"]}
+                {"url": f"https://example.com/{i}", "origin_paths": ["index"]}
                 for i in range(3)
             ],
         },
@@ -281,12 +346,18 @@ async def test_url_cap_rejected(
     response = await client.post(
         "/ook/linkcheck/checks",
         json={
-            "ltd_slug": "sqr-000",
-            "default_branch": True,
+            "origin_base_url": ORIGIN,
+            "is_default_version": True,
             "urls": [
-                {"url": "https://example.com/a#one", "paths": ["index"]},
-                {"url": "https://example.com/a#two", "paths": ["index"]},
-                {"url": "https://example.com/b", "paths": ["index"]},
+                {
+                    "url": "https://example.com/a#one",
+                    "origin_paths": ["index"],
+                },
+                {
+                    "url": "https://example.com/a#two",
+                    "origin_paths": ["index"],
+                },
+                {"url": "https://example.com/b", "origin_paths": ["index"]},
             ],
         },
     )
@@ -303,11 +374,11 @@ async def test_poll_after_execution_reflects_results(
     response = await client.post(
         "/ook/linkcheck/checks",
         json={
-            "ltd_slug": "sqr-000",
-            "default_branch": True,
+            "origin_base_url": ORIGIN,
+            "is_default_version": True,
             "urls": [
-                {"url": "https://example.com/ok", "paths": ["index"]},
-                {"url": "https://example.com/gone", "paths": ["index"]},
+                {"url": "https://example.com/ok", "origin_paths": ["index"]},
+                {"url": "https://example.com/gone", "origin_paths": ["index"]},
             ],
         },
     )
@@ -366,7 +437,7 @@ async def test_get_unknown_url_record(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_get_url_record(client: AsyncClient) -> None:
     """``GET /ook/linkcheck/urls?url=...`` returns the URL's stored
-    record, including its check state and project-page occurrences. The
+    record, including its check state and origin-page occurrences. The
     lookup URL is canonicalized (fragments stripped).
     """
     now = datetime.now(tz=UTC).replace(microsecond=0)
@@ -382,16 +453,16 @@ async def test_get_url_record(client: AsyncClient) -> None:
         )
     )
 
-    # Establish occurrences via a default-branch submission.
+    # Establish occurrences via a default-version submission.
     response = await client.post(
         "/ook/linkcheck/checks",
         json={
-            "ltd_slug": "sqr-000",
-            "default_branch": True,
+            "origin_base_url": ORIGIN,
+            "is_default_version": True,
             "urls": [
                 {
                     "url": "https://example.com/moved",
-                    "paths": ["index", "guide"],
+                    "origin_paths": ["index", "guide"],
                 },
             ],
         },
@@ -412,14 +483,14 @@ async def test_get_url_record(client: AsyncClient) -> None:
     assert data["error"] is None
     assert data["last_checked_at"] is not None
     assert data["occurrences"] == [
-        {"ltd_slug": "sqr-000", "path": "guide"},
-        {"ltd_slug": "sqr-000", "path": "index"},
+        {"origin_base_url": ORIGIN, "origin_path": "guide"},
+        {"origin_base_url": ORIGIN, "origin_path": "index"},
     ]
 
 
-async def _seed_project_links(client: AsyncClient) -> None:
-    """Seed three URL states and a default-branch submission that
-    establishes their occurrences for project ``sqr-000``.
+async def _seed_origin_links(client: AsyncClient) -> None:
+    """Seed three URL states and a default-version submission that
+    establishes their occurrences for the test origin.
     """
     now = datetime.now(tz=UTC).replace(microsecond=0)
     await _seed_url_state(
@@ -457,15 +528,18 @@ async def _seed_project_links(client: AsyncClient) -> None:
     response = await client.post(
         "/ook/linkcheck/checks",
         json={
-            "ltd_slug": "sqr-000",
-            "default_branch": True,
+            "origin_base_url": ORIGIN,
+            "is_default_version": True,
             "urls": [
-                {"url": "https://example.com/a-ok", "paths": ["index"]},
+                {"url": "https://example.com/a-ok", "origin_paths": ["index"]},
                 {
                     "url": "https://example.com/b-moved",
-                    "paths": ["index", "guide"],
+                    "origin_paths": ["index", "guide"],
                 },
-                {"url": "https://example.com/c-gone", "paths": ["changelog"]},
+                {
+                    "url": "https://example.com/c-gone",
+                    "origin_paths": ["changelog"],
+                },
             ],
         },
     )
@@ -473,14 +547,16 @@ async def _seed_project_links(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_project_links(client: AsyncClient) -> None:
-    """``GET /ook/linkcheck/projects/{slug}/links`` lists all of a
-    project's links with their health states and page paths, ordered by
-    URL.
+async def test_get_origin_links(client: AsyncClient) -> None:
+    """``GET /ook/linkcheck/links?origin=...`` lists all of an origin's
+    links with their health states and page paths, ordered by URL. The
+    origin is normalized before the lookup.
     """
-    await _seed_project_links(client)
+    await _seed_origin_links(client)
 
-    response = await client.get("/ook/linkcheck/projects/sqr-000/links")
+    response = await client.get(
+        "/ook/linkcheck/links", params={"origin": ORIGIN}
+    )
     assert response.status_code == 200
     assert response.headers["X-Total-Count"] == "3"
     data = response.json()
@@ -492,32 +568,49 @@ async def test_get_project_links(client: AsyncClient) -> None:
     ok, moved, gone = data
     assert ok["status"] == "ok"
     assert ok["status_code"] == 200
-    assert ok["paths"] == ["index"]
+    assert ok["origin_paths"] == ["index"]
     assert moved["status"] == "redirected"
     assert moved["redirect_status_code"] == 301
     assert moved["redirect_url"] == "https://example.com/new-location"
-    assert moved["paths"] == ["guide", "index"]
+    assert moved["origin_paths"] == ["guide", "index"]
     assert gone["status"] == "broken"
     assert gone["status_code"] == 404
     assert gone["error"] == "HTTP status 404"
-    assert gone["paths"] == ["changelog"]
+    assert gone["origin_paths"] == ["changelog"]
 
-    # A project with no recorded occurrences has no links.
-    response = await client.get("/ook/linkcheck/projects/nothing/links")
+    # An equivalent origin spelling normalizes to the same origin.
+    response = await client.get(
+        "/ook/linkcheck/links",
+        params={"origin": "HTTPS://SQR-000.LSST.IO/"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "3"
+
+    # An origin with no recorded occurrences has no links.
+    response = await client.get(
+        "/ook/linkcheck/links",
+        params={"origin": "https://nothing.lsst.io"},
+    )
     assert response.status_code == 200
     assert response.json() == []
 
+    # An invalid origin is rejected.
+    response = await client.get(
+        "/ook/linkcheck/links", params={"origin": "sqr-000.lsst.io"}
+    )
+    assert response.status_code == 422
+
 
 @pytest.mark.asyncio
-async def test_get_project_links_status_filter(client: AsyncClient) -> None:
+async def test_get_origin_links_status_filter(client: AsyncClient) -> None:
     """``?status=redirected`` lists permanently-redirected links with
     their final locations, and ``?status=broken`` filters likewise.
     """
-    await _seed_project_links(client)
+    await _seed_origin_links(client)
 
     response = await client.get(
-        "/ook/linkcheck/projects/sqr-000/links",
-        params={"status": "redirected"},
+        "/ook/linkcheck/links",
+        params={"origin": ORIGIN, "status": "redirected"},
     )
     assert response.status_code == 200
     assert response.headers["X-Total-Count"] == "1"
@@ -528,8 +621,8 @@ async def test_get_project_links_status_filter(client: AsyncClient) -> None:
     assert data[0]["redirect_url"] == "https://example.com/new-location"
 
     response = await client.get(
-        "/ook/linkcheck/projects/sqr-000/links",
-        params={"status": "broken"},
+        "/ook/linkcheck/links",
+        params={"origin": ORIGIN, "status": "broken"},
     )
     assert response.status_code == 200
     data = response.json()
@@ -537,22 +630,22 @@ async def test_get_project_links_status_filter(client: AsyncClient) -> None:
 
     # An invalid status value is rejected.
     response = await client.get(
-        "/ook/linkcheck/projects/sqr-000/links",
-        params={"status": "bogus"},
+        "/ook/linkcheck/links",
+        params={"origin": ORIGIN, "status": "bogus"},
     )
     assert response.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_get_project_links_pagination(client: AsyncClient) -> None:
-    """The project links listing paginates with a keyset cursor:
+async def test_get_origin_links_pagination(client: AsyncClient) -> None:
+    """The origin links listing paginates with a keyset cursor:
     following the ``Link`` header's next relation walks all entries in
     URL order, and every page carries the total count.
     """
-    await _seed_project_links(client)
+    await _seed_origin_links(client)
 
     urls: list[str] = []
-    next_url: str | None = "/ook/linkcheck/projects/sqr-000/links?limit=1"
+    next_url: str | None = f"/ook/linkcheck/links?origin={ORIGIN}&limit=1"
     pages = 0
     while next_url is not None:
         response = await client.get(next_url)

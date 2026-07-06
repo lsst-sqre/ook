@@ -29,7 +29,7 @@ async def test_run_linkcheck_recheck(factory: Factory) -> None:
     store = factory.create_linkcheck_store()
 
     async with factory.db_session.begin():
-        # Two stale URLs still referenced by a project: enqueued.
+        # Two stale URLs still referenced by an origin: enqueued.
         for url in (
             "https://example.com/stale-a",
             "https://example.com/stale-b",
@@ -43,12 +43,18 @@ async def test_run_linkcheck_recheck(factory: Factory) -> None:
                     status_code=200,
                 )
             )
-        await store.replace_project_occurrences(
-            ltd_slug="sqr-000",
+        await store.replace_origin_occurrences(
+            origin_base_url="https://sqr-000.lsst.io",
             occurrences=[
-                UrlOccurrence(url="https://example.com/stale-a", path="a"),
-                UrlOccurrence(url="https://example.com/stale-b", path="a"),
-                UrlOccurrence(url="https://example.com/fresh", path="a"),
+                UrlOccurrence(
+                    url="https://example.com/stale-a", origin_path="a"
+                ),
+                UrlOccurrence(
+                    url="https://example.com/stale-b", origin_path="a"
+                ),
+                UrlOccurrence(
+                    url="https://example.com/fresh", origin_path="a"
+                ),
             ],
         )
         # A fresh referenced URL: not due, not enqueued.
@@ -74,8 +80,8 @@ async def test_run_linkcheck_recheck(factory: Factory) -> None:
             ["https://example.com/orphan"]
         )
         await store.create_check(
-            ltd_slug="sqr-000",
-            default_branch=False,
+            origin_base_url="https://sqr-000.lsst.io",
+            is_default_version=False,
             checked_url_ids=list(orphan_ids.values()),
             now=now - config.linkcheck_check_retention - timedelta(days=1),
         )

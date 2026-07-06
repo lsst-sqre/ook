@@ -70,11 +70,11 @@ async def test_post_enqueues_and_consumer_executes(
     response = await client.post(
         "/ook/linkcheck/checks",
         json={
-            "ltd_slug": "sqr-000",
-            "default_branch": True,
+            "origin_base_url": "https://sqr-000.lsst.io",
+            "is_default_version": True,
             "urls": [
-                {"url": "https://example.com/ok", "paths": ["index"]},
-                {"url": "https://example.com/gone", "paths": ["index"]},
+                {"url": "https://example.com/ok", "origin_paths": ["index"]},
+                {"url": "https://example.com/gone", "origin_paths": ["index"]},
             ],
         },
     )
@@ -128,7 +128,7 @@ async def test_recheck_message_advances_ladder(
             )
             async with session.begin():
                 # A failing URL past the broken threshold, due for its
-                # scheduled recheck and still referenced by a project.
+                # scheduled recheck and still referenced by an origin.
                 await store.upsert_url_state(
                     LinkState(
                         url=url,
@@ -143,9 +143,9 @@ async def test_recheck_message_advances_ladder(
                     )
                 )
                 ids = await store.upsert_checked_urls([url])
-                await store.replace_project_occurrences(
-                    ltd_slug="sqr-000",
-                    occurrences=[UrlOccurrence(url=url, path="index")],
+                await store.replace_origin_occurrences(
+                    origin_base_url="https://sqr-000.lsst.io",
+                    occurrences=[UrlOccurrence(url=url, origin_path="index")],
                 )
         finally:
             await session.close()

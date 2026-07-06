@@ -28,8 +28,8 @@ from ook.domain.linkcheck import (
     CheckUrlStatus,
     LinkState,
     LinkStatus,
-    ProjectLink,
-    ProjectPage,
+    OriginLink,
+    OriginPage,
     UrlOccurrence,
     UrlRecord,
 )
@@ -38,7 +38,7 @@ from ._query import (
     create_check_urls_stmt,
     create_checked_url_ids_stmt,
     create_due_urls_stmt,
-    create_project_links_stmt,
+    create_origin_links_stmt,
     create_url_occurrences_stmt,
     create_url_record_stmt,
     create_url_states_stmt,
@@ -49,7 +49,7 @@ __all__ = [
     "CheckUrlRecord",
     "DueUrl",
     "LinkCheckStore",
-    "ProjectLinksCursor",
+    "OriginLinksCursor",
 ]
 
 
@@ -97,11 +97,15 @@ class CheckRecord:
     id: int
     """The ``linkcheck_check`` primary key."""
 
-    ltd_slug: str
-    """The LTD project slug the check was submitted for."""
+    origin_base_url: str
+    """The normalized base URL of the origin website the check was
+    submitted for.
+    """
 
-    default_branch: bool
-    """Whether the submission is a default-branch build."""
+    is_default_version: bool
+    """Whether the submission is a build of the origin's default
+    version.
+    """
 
     status: CheckRunStatus
     """The processing status of the check."""
@@ -255,8 +259,8 @@ class LinkCheckStore:
         Returns
         -------
         UrlRecord or None
-            The URL's record with its project-page occurrences ordered
-            by project slug and page path, or None if the URL is
+            The URL's record with its origin-page occurrences ordered
+            by origin base URL and page path, or None if the URL is
             unknown. Never-checked URLs are reported with the
             ``pending`` status.
         """
@@ -287,25 +291,29 @@ class LinkCheckStore:
             next_check_at=row.next_check_at,
             date_created=row.date_created,
             occurrences=[
-                ProjectPage(ltd_slug=occ.ltd_slug, path=occ.path)
+                OriginPage(
+                    origin_base_url=occ.origin_base_url,
+                    origin_path=occ.origin_path,
+                )
                 for occ in occurrence_rows
             ],
         )
 
-    async def get_project_links(
+    async def get_origin_links(
         self,
-        ltd_slug: str,
+        origin_base_url: str,
         *,
         status: CheckUrlStatus | None = None,
-        cursor: ProjectLinksCursor | None = None,
+        cursor: OriginLinksCursor | None = None,
         limit: int | None = None,
-    ) -> CountedPaginatedList[ProjectLink, ProjectLinksCursor]:
-        """Get a project's links with their health states, paginated.
+    ) -> CountedPaginatedList[OriginLink, OriginLinksCursor]:
+        """Get an origin's links with their health states, paginated.
 
         Parameters
         ----------
-        ltd_slug
-            The LTD project slug whose links are listed.
+        origin_base_url
+            The normalized base URL of the origin whose links are
+            listed.
         status
             If given, only links with this status are listed. The
             ``pending`` status lists never-checked links.
@@ -317,15 +325,15 @@ class LinkCheckStore:
         Returns
         -------
         CountedPaginatedList
-            A paginated list of the project's links, ordered by URL.
+            A paginated list of the origin's links, ordered by URL.
         """
         runner = CountedPaginatedQueryRunner(
-            entry_type=ProjectLink,
-            cursor_type=ProjectLinksCursor,
+            entry_type=OriginLink,
+            cursor_type=OriginLinksCursor,
         )
         return await runner.query_row(
             session=self._session,
-            stmt=create_project_links_stmt(ltd_slug, status=status),
+            stmt=create_origin_links_stmt(origin_base_url, status=status),
             cursor=cursor,
             limit=limit,
         )
@@ -333,8 +341,8 @@ class LinkCheckStore:
     async def create_check(
         self,
         *,
-        ltd_slug: str,
-        default_branch: bool,
+        origin_base_url: str,
+        is_default_version: bool,
         checked_url_ids: Sequence[int],
         now: datetime | None = None,
     ) -> int:
@@ -344,10 +352,12 @@ class LinkCheckStore:
 
         Parameters
         ----------
-        ltd_slug
-            The LTD project slug the check is submitted for.
-        default_branch
-            Whether the submission is a default-branch build.
+        origin_base_url
+            The normalized base URL of the origin website the check is
+            submitted for.
+        is_default_version
+            Whether the submission is a build of the origin's default
+            version.
         checked_url_ids
             Primary keys of the ``checked_url`` records that are members
             of this check (from `upsert_checked_urls`).
@@ -367,8 +377,8 @@ class LinkCheckStore:
             await self._session.execute(
                 pg_insert(SqlLinkCheck)
                 .values(
-                    ltd_slug=ltd_slug,
-                    default_branch=default_branch,
+                    origin_base_url=origin_base_url,
+                    is_default_version=is_default_version,
                     status=CheckRunStatus.pending.value,
                     date_created=now,
                 )
@@ -391,7 +401,7 @@ class LinkCheckStore:
         self._logger.debug(
             "Created link check",
             check_id=check_id,
-            ltd_slug=ltd_slug,
+            origin_base_url=origin_base_url,
             url_count=len(unique_url_ids),
         )
         return check_id
@@ -445,8 +455,8 @@ class LinkCheckStore:
             await self._session.execute(
                 select(
                     SqlLinkCheck.id,
-                    SqlLinkCheck.ltd_slug,
-                    SqlLinkCheck.default_branch,
+                    SqlLinkCheck.origin_base_url,
+                    SqlLinkCheck.is_default_version,
                     SqlLinkCheck.status,
                     SqlLinkCheck.date_created,
                     SqlLinkCheck.date_completed,
@@ -461,8 +471,8 @@ class LinkCheckStore:
         ).all()
         return CheckRecord(
             id=check_row.id,
-            ltd_slug=check_row.ltd_slug,
-            default_branch=check_row.default_branch,
+            origin_base_url=check_row.origin_base_url,
+            is_default_version=check_row.is_default_version,
             status=CheckRunStatus(check_row.status),
             date_created=check_row.date_created,
             date_completed=check_row.date_completed,
@@ -484,26 +494,27 @@ class LinkCheckStore:
             ],
         )
 
-    async def replace_project_occurrences(
+    async def replace_origin_occurrences(
         self,
         *,
-        ltd_slug: str,
+        origin_base_url: str,
         occurrences: Sequence[UrlOccurrence],
         now: datetime | None = None,
     ) -> None:
-        """Replace a project's URL occurrence set.
+        """Replace an origin's URL occurrence set.
 
-        The project's existing occurrences are deleted and replaced with
-        the given set (this happens when a default-branch submission
+        The origin's existing occurrences are deleted and replaced with
+        the given set (this happens when a default-version submission
         arrives). Checked-URL records are created for any URLs that
         don't have them yet.
 
         Parameters
         ----------
-        ltd_slug
-            The LTD project slug whose occurrence set is replaced.
+        origin_base_url
+            The normalized base URL of the origin whose occurrence set
+            is replaced.
         occurrences
-            The project's new occurrence set. Duplicate occurrences
+            The origin's new occurrence set. Duplicate occurrences
             collapse to a single row.
         now
             The creation time recorded for new checked-URL rows.
@@ -515,13 +526,13 @@ class LinkCheckStore:
 
         await self._session.execute(
             delete(SqlUrlOccurrence).where(
-                SqlUrlOccurrence.ltd_slug == ltd_slug
+                SqlUrlOccurrence.origin_base_url == origin_base_url
             )
         )
 
         occurrence_rows = list(
             dict.fromkeys(
-                (url_ids[occurrence.url], occurrence.path)
+                (url_ids[occurrence.url], occurrence.origin_path)
                 for occurrence in occurrences
             )
         )
@@ -530,19 +541,19 @@ class LinkCheckStore:
                 pg_insert(SqlUrlOccurrence).values(
                     [
                         {
-                            "ltd_slug": ltd_slug,
+                            "origin_base_url": origin_base_url,
                             "checked_url_id": checked_url_id,
-                            "path": path,
+                            "origin_path": origin_path,
                         }
-                        for checked_url_id, path in occurrence_rows
+                        for checked_url_id, origin_path in occurrence_rows
                     ]
                 )
             )
         await self._session.flush()
 
         self._logger.debug(
-            "Replaced project URL occurrences",
-            ltd_slug=ltd_slug,
+            "Replaced origin URL occurrences",
+            origin_base_url=origin_base_url,
             occurrence_count=len(occurrence_rows),
         )
 
@@ -570,7 +581,7 @@ class LinkCheckStore:
         limit
             The maximum number of URLs to return, or None for no limit.
         referenced_only
-            If true, only URLs that still occur on at least one project
+            If true, only URLs that still occur on at least one origin
             page are enumerated. The scheduled recheck uses this so
             URLs that no longer appear in any documentation build are
             not rechecked.
@@ -648,7 +659,7 @@ class LinkCheckStore:
     async def purge_orphan_urls(self) -> int:
         """Delete checked-URL records that are no longer referenced.
 
-        A URL record is orphaned when it has no remaining project-page
+        A URL record is orphaned when it has no remaining origin-page
         occurrences and is not a member of any retained check. URLs
         that are only members of retained checks are kept so active
         check reports never lose members; they become orphans once
@@ -679,27 +690,27 @@ class LinkCheckStore:
 
 
 @dataclass(slots=True)
-class ProjectLinksCursor(PaginationCursor[ProjectLink]):
-    """Cursor for paginating a project's links, sorted by URL."""
+class OriginLinksCursor(PaginationCursor[OriginLink]):
+    """Cursor for paginating an origin's links, sorted by URL."""
 
     url: str
     """The canonical URL of the link."""
 
     @override
     @classmethod
-    def from_entry(cls, entry: ProjectLink, *, reverse: bool = False) -> Self:
-        """Create a cursor from a project-link entry as the bound.
+    def from_entry(cls, entry: OriginLink, *, reverse: bool = False) -> Self:
+        """Create a cursor from an origin-link entry as the bound.
 
         Parameters
         ----------
         entry
-            The project-link entry.
+            The origin-link entry.
         reverse
             Whether the cursor is for the previous page.
 
         Returns
         -------
-        ProjectLinksCursor
+        OriginLinksCursor
             The cursor object.
         """
         return cls(url=entry.url, previous=reverse)
@@ -716,7 +727,7 @@ class ProjectLinksCursor(PaginationCursor[ProjectLink]):
 
         Returns
         -------
-        ProjectLinksCursor
+        OriginLinksCursor
             The cursor object.
         """
         previous_prefix = "p__"
@@ -775,7 +786,7 @@ class ProjectLinksCursor(PaginationCursor[ProjectLink]):
 
         Returns
         -------
-        ProjectLinksCursor
+        OriginLinksCursor
             The inverted cursor.
         """
         return type(self)(url=self.url, previous=not self.previous)

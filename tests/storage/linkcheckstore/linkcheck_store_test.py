@@ -23,20 +23,20 @@ from ook.factory import Factory
 
 
 async def _get_occurrences(
-    factory: Factory, ltd_slug: str
+    factory: Factory, origin_base_url: str
 ) -> set[tuple[str, str]]:
-    """Get a project's occurrence set as (url, path) tuples."""
+    """Get an origin's occurrence set as (url, origin_path) tuples."""
     rows = (
         await factory.db_session.execute(
-            select(SqlCheckedUrl.url, SqlUrlOccurrence.path)
+            select(SqlCheckedUrl.url, SqlUrlOccurrence.origin_path)
             .join(
                 SqlCheckedUrl,
                 SqlCheckedUrl.id == SqlUrlOccurrence.checked_url_id,
             )
-            .where(SqlUrlOccurrence.ltd_slug == ltd_slug)
+            .where(SqlUrlOccurrence.origin_base_url == origin_base_url)
         )
     ).all()
-    return {(row.url, row.path) for row in rows}
+    return {(row.url, row.origin_path) for row in rows}
 
 
 @pytest.mark.asyncio
@@ -138,8 +138,8 @@ async def test_create_check_with_membership(factory: Factory) -> None:
             ["https://example.com/a", "https://example.com/b"]
         )
         check_id = await store.create_check(
-            ltd_slug="sqr-000",
-            default_branch=True,
+            origin_base_url="https://sqr-000.lsst.io",
+            is_default_version=True,
             checked_url_ids=list(ids.values()),
             now=now,
         )
@@ -149,8 +149,8 @@ async def test_create_check_with_membership(factory: Factory) -> None:
                 select(SqlLinkCheck).where(SqlLinkCheck.id == check_id)
             )
         ).scalar_one()
-        assert check.ltd_slug == "sqr-000"
-        assert check.default_branch is True
+        assert check.origin_base_url == "https://sqr-000.lsst.io"
+        assert check.is_default_version is True
         assert check.status == "pending"
         assert check.date_created == now
         assert check.date_completed is None
@@ -180,8 +180,8 @@ async def test_update_check_status(factory: Factory) -> None:
 
         ids = await store.upsert_checked_urls(["https://example.com/a"])
         check_id = await store.create_check(
-            ltd_slug="sqr-000",
-            default_branch=True,
+            origin_base_url="https://sqr-000.lsst.io",
+            is_default_version=True,
             checked_url_ids=list(ids.values()),
             now=now,
         )
@@ -233,8 +233,8 @@ async def test_get_check(factory: Factory) -> None:
             now=now,
         )
         check_id = await store.create_check(
-            ltd_slug="sqr-000",
-            default_branch=False,
+            origin_base_url="https://sqr-000.lsst.io",
+            is_default_version=False,
             checked_url_ids=list(ids.values()),
             now=now,
         )
@@ -242,8 +242,8 @@ async def test_get_check(factory: Factory) -> None:
         record = await store.get_check(check_id)
         assert record is not None
         assert record.id == check_id
-        assert record.ltd_slug == "sqr-000"
-        assert record.default_branch is False
+        assert record.origin_base_url == "https://sqr-000.lsst.io"
+        assert record.is_default_version is False
         assert record.status is CheckRunStatus.pending
         assert record.date_created == now
         assert record.date_completed is None
@@ -293,56 +293,70 @@ async def test_get_url_states(factory: Factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_replace_project_occurrences(factory: Factory) -> None:
-    """A project's occurrence set is replaced without affecting other
-    projects.
+async def test_replace_origin_occurrences(factory: Factory) -> None:
+    """An origin's occurrence set is replaced without affecting other
+    origins.
     """
     async with factory.db_session.begin():
         store = factory.create_linkcheck_store()
 
         # Occurrences of URLs that have no records yet create them,
         # and duplicate occurrences collapse to one row.
-        await store.replace_project_occurrences(
-            ltd_slug="sqr-000",
+        await store.replace_origin_occurrences(
+            origin_base_url="https://sqr-000.lsst.io",
             occurrences=[
-                UrlOccurrence(url="https://example.com/a", path="index"),
-                UrlOccurrence(url="https://example.com/a", path="index"),
-                UrlOccurrence(url="https://example.com/a", path="guide"),
-                UrlOccurrence(url="https://example.com/b", path="index"),
+                UrlOccurrence(
+                    url="https://example.com/a", origin_path="index"
+                ),
+                UrlOccurrence(
+                    url="https://example.com/a", origin_path="index"
+                ),
+                UrlOccurrence(
+                    url="https://example.com/a", origin_path="guide"
+                ),
+                UrlOccurrence(
+                    url="https://example.com/b", origin_path="index"
+                ),
             ],
         )
-        await store.replace_project_occurrences(
-            ltd_slug="sqr-001",
+        await store.replace_origin_occurrences(
+            origin_base_url="https://sqr-001.lsst.io",
             occurrences=[
-                UrlOccurrence(url="https://example.com/a", path="notes"),
+                UrlOccurrence(
+                    url="https://example.com/a", origin_path="notes"
+                ),
             ],
         )
-        assert await _get_occurrences(factory, "sqr-000") == {
+        assert await _get_occurrences(factory, "https://sqr-000.lsst.io") == {
             ("https://example.com/a", "index"),
             ("https://example.com/a", "guide"),
             ("https://example.com/b", "index"),
         }
 
-        # Replacing sqr-000's set removes stale occurrences and leaves
-        # sqr-001 untouched.
-        await store.replace_project_occurrences(
-            ltd_slug="sqr-000",
+        # Replacing sqr-000's set removes stale occurrences and
+        # leaves sqr-001 untouched.
+        await store.replace_origin_occurrences(
+            origin_base_url="https://sqr-000.lsst.io",
             occurrences=[
-                UrlOccurrence(url="https://example.com/b", path="changelog"),
+                UrlOccurrence(
+                    url="https://example.com/b", origin_path="changelog"
+                ),
             ],
         )
-        assert await _get_occurrences(factory, "sqr-000") == {
+        assert await _get_occurrences(factory, "https://sqr-000.lsst.io") == {
             ("https://example.com/b", "changelog"),
         }
-        assert await _get_occurrences(factory, "sqr-001") == {
+        assert await _get_occurrences(factory, "https://sqr-001.lsst.io") == {
             ("https://example.com/a", "notes"),
         }
 
-        # Replacing with an empty set clears the project's occurrences.
-        await store.replace_project_occurrences(
-            ltd_slug="sqr-000", occurrences=[]
+        # Replacing with an empty set clears the origin's occurrences.
+        await store.replace_origin_occurrences(
+            origin_base_url="https://sqr-000.lsst.io", occurrences=[]
         )
-        assert await _get_occurrences(factory, "sqr-000") == set()
+        assert (
+            await _get_occurrences(factory, "https://sqr-000.lsst.io") == set()
+        )
 
 
 @pytest.mark.asyncio
@@ -434,19 +448,20 @@ async def test_get_due_urls(factory: Factory) -> None:
 @pytest.mark.asyncio
 async def test_get_due_urls_referenced_only(factory: Factory) -> None:
     """Referenced-only due-URL enumeration excludes URLs that no longer
-    occur on any project page.
+    occur on any origin page.
     """
     async with factory.db_session.begin():
         store = factory.create_linkcheck_store()
         now = datetime.now(tz=UTC).replace(microsecond=0)
         ttl = timedelta(hours=24)
 
-        # A never-checked URL occurring on a project page: due.
-        await store.replace_project_occurrences(
-            ltd_slug="sqr-000",
+        # A never-checked URL occurring on an origin page: due.
+        await store.replace_origin_occurrences(
+            origin_base_url="https://sqr-000.lsst.io",
             occurrences=[
                 UrlOccurrence(
-                    url="https://due.example.com/referenced", path="index"
+                    url="https://due.example.com/referenced",
+                    origin_path="index",
                 )
             ],
         )
@@ -479,14 +494,14 @@ async def test_purge_expired_checks(factory: Factory) -> None:
 
         ids = await store.upsert_checked_urls(["https://example.com/a"])
         old_check_id = await store.create_check(
-            ltd_slug="sqr-000",
-            default_branch=False,
+            origin_base_url="https://sqr-000.lsst.io",
+            is_default_version=False,
             checked_url_ids=list(ids.values()),
             now=now - timedelta(days=31),
         )
         recent_check_id = await store.create_check(
-            ltd_slug="sqr-000",
-            default_branch=False,
+            origin_base_url="https://sqr-000.lsst.io",
+            is_default_version=False,
             checked_url_ids=list(ids.values()),
             now=now - timedelta(days=1),
         )
@@ -520,11 +535,13 @@ async def test_purge_orphan_urls(factory: Factory) -> None:
         store = factory.create_linkcheck_store()
         now = datetime.now(tz=UTC).replace(microsecond=0)
 
-        # A URL occurring on a project page is kept.
-        await store.replace_project_occurrences(
-            ltd_slug="sqr-000",
+        # A URL occurring on an origin page is kept.
+        await store.replace_origin_occurrences(
+            origin_base_url="https://sqr-000.lsst.io",
             occurrences=[
-                UrlOccurrence(url="https://example.com/referenced", path="a")
+                UrlOccurrence(
+                    url="https://example.com/referenced", origin_path="a"
+                )
             ],
         )
         # A URL that is only a member of a (recent) check is kept, so
@@ -533,8 +550,8 @@ async def test_purge_orphan_urls(factory: Factory) -> None:
             ["https://example.com/member"]
         )
         await store.create_check(
-            ltd_slug="sqr-000",
-            default_branch=False,
+            origin_base_url="https://sqr-000.lsst.io",
+            is_default_version=False,
             checked_url_ids=list(member_ids.values()),
             now=now,
         )

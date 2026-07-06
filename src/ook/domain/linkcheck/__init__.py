@@ -1,6 +1,11 @@
 """Domain for external link checking."""
 
-from ._engine import canonicalize_url, evaluate_outcome, is_supported_url
+from ._engine import (
+    canonicalize_url,
+    evaluate_outcome,
+    is_supported_url,
+    normalize_origin_base_url,
+)
 from ._models import (
     CheckedUrlReport,
     CheckResult,
@@ -10,8 +15,8 @@ from ._models import (
     LinkCheckReport,
     LinkState,
     LinkStatus,
-    ProjectLink,
-    ProjectPage,
+    OriginLink,
+    OriginPage,
     RetryLadderConfig,
     SubmittedUrl,
     UrlOccurrence,
@@ -27,8 +32,8 @@ __all__ = [
     "LinkCheckReport",
     "LinkState",
     "LinkStatus",
-    "ProjectLink",
-    "ProjectPage",
+    "OriginLink",
+    "OriginPage",
     "RetryLadderConfig",
     "SubmittedUrl",
     "UrlOccurrence",
@@ -36,4 +41,5 @@ __all__ = [
     "canonicalize_url",
     "evaluate_outcome",
     "is_supported_url",
+    "normalize_origin_base_url",
 ]

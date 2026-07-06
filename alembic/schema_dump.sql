@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict uuBfTwSfSGjhROYlm2wcSfr2J2qjinL3n4YkzzS5VJDTeY12DQK3W1GPvpyqCns
+\restrict WbXZQuq8OR83rg5xUsg1cPY0yfzg0NNcRE3szxErMq4UJ5DXF56F33hsPA3tdSE
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -369,8 +369,8 @@ ALTER SEQUENCE public.link_id_seq OWNED BY public.link.id;
 
 CREATE TABLE public.linkcheck_check (
     id bigint NOT NULL,
-    ltd_slug text NOT NULL,
-    default_branch boolean NOT NULL,
+    origin_base_url text NOT NULL,
+    is_default_version boolean NOT NULL,
     status text NOT NULL,
     date_created timestamp with time zone NOT NULL,
     date_completed timestamp with time zone
@@ -684,8 +684,8 @@ ALTER TABLE public.term_relationships OWNER TO test;
 
 CREATE TABLE public.url_occurrence (
     id bigint NOT NULL,
-    ltd_slug text NOT NULL,
-    path text NOT NULL,
+    origin_base_url text NOT NULL,
+    origin_path text NOT NULL,
     checked_url_id bigint NOT NULL
 );
 
@@ -824,7 +824,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-c1ddff6dff7a
+97e2df2ad883
 \.
 
 
@@ -896,7 +896,7 @@ COPY public.link (id, type, html_url, source_type, source_title, source_collecti
 -- Data for Name: linkcheck_check; Type: TABLE DATA; Schema: public; Owner: test
 --
 
-COPY public.linkcheck_check (id, ltd_slug, default_branch, status, date_created, date_completed) FROM stdin;
+COPY public.linkcheck_check (id, origin_base_url, is_default_version, status, date_created, date_completed) FROM stdin;
 \.
 
 
@@ -992,7 +992,7 @@ COPY public.term_relationships (source_term_id, related_term_id) FROM stdin;
 -- Data for Name: url_occurrence; Type: TABLE DATA; Schema: public; Owner: test
 --
 
-COPY public.url_occurrence (id, ltd_slug, path, checked_url_id) FROM stdin;
+COPY public.url_occurrence (id, origin_base_url, origin_path, checked_url_id) FROM stdin;
 \.
 
 
@@ -1403,7 +1403,7 @@ ALTER TABLE ONLY public.term
 --
 
 ALTER TABLE ONLY public.url_occurrence
-    ADD CONSTRAINT uq_url_occurrence UNIQUE (ltd_slug, path, checked_url_id);
+    ADD CONSTRAINT uq_url_occurrence UNIQUE (origin_base_url, origin_path, checked_url_id);
 
 
 --
@@ -1569,10 +1569,10 @@ CREATE INDEX ix_linkcheck_check_date_created ON public.linkcheck_check USING btr
 
 
 --
--- Name: ix_linkcheck_check_ltd_slug; Type: INDEX; Schema: public; Owner: test
+-- Name: ix_linkcheck_check_origin_base_url; Type: INDEX; Schema: public; Owner: test
 --
 
-CREATE INDEX ix_linkcheck_check_ltd_slug ON public.linkcheck_check USING btree (ltd_slug);
+CREATE INDEX ix_linkcheck_check_origin_base_url ON public.linkcheck_check USING btree (origin_base_url);
 
 
 --
@@ -1667,10 +1667,10 @@ CREATE INDEX ix_url_occurrence_checked_url_id ON public.url_occurrence USING btr
 
 
 --
--- Name: ix_url_occurrence_ltd_slug; Type: INDEX; Schema: public; Owner: test
+-- Name: ix_url_occurrence_origin_base_url; Type: INDEX; Schema: public; Owner: test
 --
 
-CREATE INDEX ix_url_occurrence_ltd_slug ON public.url_occurrence USING btree (ltd_slug);
+CREATE INDEX ix_url_occurrence_origin_base_url ON public.url_occurrence USING btree (origin_base_url);
 
 
 --
@@ -1853,5 +1853,5 @@ ALTER TABLE ONLY public.url_occurrence
 -- PostgreSQL database dump complete
 --
 
-\unrestrict uuBfTwSfSGjhROYlm2wcSfr2J2qjinL3n4YkzzS5VJDTeY12DQK3W1GPvpyqCns
+\unrestrict WbXZQuq8OR83rg5xUsg1cPY0yfzg0NNcRE3szxErMq4UJ5DXF56F33hsPA3tdSE
 

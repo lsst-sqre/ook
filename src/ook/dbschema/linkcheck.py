@@ -34,7 +34,7 @@ class SqlCheckedUrl(Base):
     """A SQLAlchemy model for the health record of a checked URL.
 
     Each row tracks one canonical (fragment-stripped) URL across checks,
-    builds, and projects. The state columns mirror the
+    builds, and origins. The state columns mirror the
     `ook.domain.linkcheck.LinkState` domain model; the state columns are
     null until the URL has been checked for the first time.
     """
@@ -126,23 +126,23 @@ class SqlCheckedUrl(Base):
         back_populates="checked_url",
         cascade="all, delete-orphan",
     )
-    """The project-page occurrences of this URL."""
+    """The origin-page occurrences of this URL."""
 
 
 class SqlUrlOccurrence(Base):
     """A SQLAlchemy model for an occurrence of a checked URL on a page
-    of an LTD project's documentation.
+    of an origin website.
 
-    A project's occurrence set is replaced wholesale when a
-    default-branch submission arrives.
+    An origin's occurrence set is replaced wholesale when a
+    default-version submission arrives.
     """
 
     __tablename__ = "url_occurrence"
 
     __table_args__ = (
         UniqueConstraint(
-            "ltd_slug",
-            "path",
+            "origin_base_url",
+            "origin_path",
             "checked_url_id",
             name="uq_url_occurrence",
         ),
@@ -153,14 +153,14 @@ class SqlUrlOccurrence(Base):
     )
     """The primary key."""
 
-    ltd_slug: Mapped[str] = mapped_column(
+    origin_base_url: Mapped[str] = mapped_column(
         UnicodeText, nullable=False, index=True
     )
-    """The LTD project slug."""
+    """The origin website's normalized base URL."""
 
-    path: Mapped[str] = mapped_column(UnicodeText, nullable=False)
-    """The page path where the URL occurs, relative to the project's
-    documentation root.
+    origin_path: Mapped[str] = mapped_column(UnicodeText, nullable=False)
+    """The page path where the URL occurs, relative to the origin's
+    base URL.
     """
 
     checked_url_id: Mapped[int] = mapped_column(
@@ -191,14 +191,16 @@ class SqlLinkCheck(Base):
     )
     """The primary key."""
 
-    ltd_slug: Mapped[str] = mapped_column(
+    origin_base_url: Mapped[str] = mapped_column(
         UnicodeText, nullable=False, index=True
     )
-    """The LTD project slug the check was submitted for."""
+    """The normalized base URL of the origin website the check was
+    submitted for.
+    """
 
-    default_branch: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    """Whether the submission is a default-branch build (only those
-    replace the project's occurrence set).
+    is_default_version: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    """Whether the submission is a build of the origin's default version
+    (only those replace the origin's occurrence set).
     """
 
     status: Mapped[str] = mapped_column(

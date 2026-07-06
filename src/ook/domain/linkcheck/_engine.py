@@ -8,7 +8,7 @@ checking, persistence, and configuration binding live in other layers.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from urllib.parse import urldefrag, urlsplit
+from urllib.parse import urldefrag, urlsplit, urlunsplit
 
 from ._models import (
     CheckResult,
@@ -21,7 +21,12 @@ from ._models import (
 if TYPE_CHECKING:
     from datetime import datetime
 
-__all__ = ["canonicalize_url", "evaluate_outcome", "is_supported_url"]
+__all__ = [
+    "canonicalize_url",
+    "evaluate_outcome",
+    "is_supported_url",
+    "normalize_origin_base_url",
+]
 
 _SUPPORTED_SCHEMES = frozenset({"http", "https"})
 """URL schemes the link checker is able to check."""
@@ -47,6 +52,47 @@ def canonicalize_url(url: str) -> str:
         The URL without its fragment.
     """
     return urldefrag(url).url
+
+
+def normalize_origin_base_url(url: str) -> str:
+    """Normalize an origin's base URL to its canonical form.
+
+    An origin identifies the website a link check is submitted for
+    (e.g. ``https://documenteer.lsst.io``). Path-bearing bases are
+    allowed (e.g. ``https://rsp.lsst.io/guides``). Normalization
+    lowercases the host and strips any trailing slash so equivalent
+    spellings map to one origin.
+
+    Parameters
+    ----------
+    url
+        The origin base URL to normalize.
+
+    Returns
+    -------
+    str
+        The normalized origin base URL.
+
+    Raises
+    ------
+    ValueError
+        Raised if the URL is not an absolute http(s) URL with a host,
+        or if it carries a query or fragment.
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in _SUPPORTED_SCHEMES:
+        raise ValueError(
+            f"Origin base URL {url!r} must use the http or https scheme."
+        )
+    if not parts.netloc:
+        raise ValueError(f"Origin base URL {url!r} must include a host.")
+    if parts.query or parts.fragment:
+        raise ValueError(
+            f"Origin base URL {url!r} must not have a query or fragment."
+        )
+    return urlunsplit(
+        (parts.scheme, parts.netloc.lower(), parts.path.rstrip("/"), "", "")
+    )
 
 
 def is_supported_url(url: str) -> bool:
