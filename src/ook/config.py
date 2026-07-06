@@ -78,6 +78,14 @@ class Configuration(BaseSettings):
         description="The name of the Kafka topic for the ingest queue.",
     )
 
+    linkcheck_kafka_topic: str = Field(
+        "ook.linkcheck",
+        validation_alias="OOK_LINKCHECK_KAFKA_TOPIC",
+        description=(
+            "The name of the Kafka topic for link-check execution requests."
+        ),
+    )
+
     kafka_consumer_group_id: str = Field(
         "ook",
         validation_alias="OOK_GROUP_ID",

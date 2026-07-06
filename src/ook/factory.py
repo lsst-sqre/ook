@@ -60,6 +60,9 @@ class ProcessContext:
 
     kafka_ingest_publisher: DefaultPublisher
 
+    kafka_linkcheck_publisher: DefaultPublisher
+    """Publisher for link-check execution request messages."""
+
     algolia_client: SearchClient
     """Algolia client."""
 
@@ -97,6 +100,9 @@ class ProcessContext:
             kafka_broker=broker,
             kafka_ingest_publisher=broker.publisher(
                 config.ingest_kafka_topic, title="ook-ingest-requests"
+            ),
+            kafka_linkcheck_publisher=broker.publisher(
+                config.linkcheck_kafka_topic, title="ook-linkcheck-requests"
             ),
             algolia_client=algolia_client,
             url_checker=url_checker,
@@ -207,6 +213,11 @@ class Factory:
     def db_session(self) -> AsyncSession:
         """The database session."""
         return self._session
+
+    @property
+    def kafka_linkcheck_publisher(self) -> DefaultPublisher:
+        """The Kafka publisher for link-check execution requests."""
+        return self._process_context.kafka_linkcheck_publisher
 
     def create_github_client_factory(self) -> GitHubAppClientFactory:
         """Create a GitHub client factory.

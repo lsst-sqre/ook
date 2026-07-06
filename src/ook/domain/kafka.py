@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from ook.domain.algoliarecord import DocumentSourceType
 
 __all__ = [
+    "CheckLinksMessageV1",
     "LtdEditionV1",
     "LtdProjectV1",
     "LtdUrlIngestV2",
@@ -26,6 +27,22 @@ class UrlIngestKeyV1(BaseModel):
 
         namespace = "lsst.square-events.ook"
         schema_name = "url_ingest_key_v1"
+
+
+class CheckLinksMessageV1(BaseModel):
+    """Kafka message value model for a request to execute a submitted
+    link check.
+    """
+
+    check_id: int = Field(
+        ..., description="The identifier of the link check to execute."
+    )
+
+    class Meta:
+        """Metadata for the model."""
+
+        namespace = "lsst.square-events.ook"
+        schema_name = "check_links_message_v1"
 
 
 class LtdEditionV1(BaseModel):

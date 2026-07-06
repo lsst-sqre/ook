@@ -7,6 +7,7 @@ from safir.models import ErrorModel
 
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
+from ook.domain.kafka import CheckLinksMessageV1
 from ook.exceptions import NotFoundError
 
 from .models import LinkCheck, LinkCheckRequest
@@ -49,6 +50,13 @@ async def post_linkcheck_check(
             ltd_slug=check_request.ltd_slug,
             default_branch=check_request.default_branch,
             urls=[url.to_domain() for url in check_request.urls],
+        )
+    if submission.due_urls:
+        # Enqueue execution only after the transaction commits so the
+        # consumer never sees a check id before its row is visible.
+        message = CheckLinksMessageV1(check_id=submission.check_id)
+        await context.factory.kafka_linkcheck_publisher.publish(
+            message.model_dump(mode="json")
         )
     location = str(
         context.request.url_for(

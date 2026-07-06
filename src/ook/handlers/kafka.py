@@ -10,10 +10,10 @@ from ook.dependencies.consumercontext import (
     consumer_context_dependency,
 )
 from ook.domain.algoliarecord import DocumentSourceType
-from ook.domain.kafka import LtdUrlIngestV2
+from ook.domain.kafka import CheckLinksMessageV1, LtdUrlIngestV2
 from ook.kafkarouter import kafka_router
 
-__all__ = ["handle_ltd_document_ingest"]
+__all__ = ["handle_linkcheck_execution", "handle_ltd_document_ingest"]
 
 
 @kafka_router.subscriber(
@@ -60,3 +60,24 @@ async def handle_ltd_document_ingest(
         )
 
     logger.info("Finished processing LTD document ingest request.")
+
+
+@kafka_router.subscriber(
+    config.linkcheck_kafka_topic, group_id=config.kafka_consumer_group_id
+)
+async def handle_linkcheck_execution(
+    message: CheckLinksMessageV1,
+    context: Annotated[ConsumerContext, Depends(consumer_context_dependency)],
+) -> None:
+    """Handle a message requesting execution of a submitted link check."""
+    context.rebind_logger(check_id=message.check_id)
+    logger = context.logger
+
+    logger.info("Starting link-check execution request.")
+
+    factory = context.factory
+    service = factory.create_linkcheck_service()
+    async with factory.db_session.begin():
+        await service.execute_check(message.check_id)
+
+    logger.info("Finished link-check execution request.")

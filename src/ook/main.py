@@ -53,6 +53,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator:
         bootstrap_servers=config.kafka.bootstrap_servers,
         security_protocol=config.kafka.security_protocol.name,
         ingest_topic=config.ingest_kafka_topic,
+        linkcheck_topic=config.linkcheck_kafka_topic,
         consumer_group=config.kafka_consumer_group_id,
     )
 
