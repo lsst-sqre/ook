@@ -7,6 +7,7 @@ from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from typing import Self
 
+import structlog
 from algoliasearch.search_client import SearchClient
 from faststream.kafka import KafkaBroker
 from faststream.kafka.publisher import DefaultPublisher
@@ -29,6 +30,7 @@ from .services.glossary import GlossaryService
 from .services.ingest.lssttexmf import LsstTexmfIngestService
 from .services.ingest.sdmschemas import SdmSchemasIngestService
 from .services.landerjsonldingest import LtdLanderJsonLdIngestService
+from .services.linkcheck import UrlChecker
 from .services.links import LinksService
 from .services.ltdmetadataservice import LtdMetadataService
 from .services.resources import ResourceService
@@ -60,6 +62,13 @@ class ProcessContext:
     algolia_client: SearchClient
     """Algolia client."""
 
+    url_checker: UrlChecker
+    """Process-wide URL checker for external link checking.
+
+    A singleton so that its global concurrency cap and per-host
+    politeness schedule apply across all consumers in the process.
+    """
+
     @classmethod
     async def create(cls, kafka_broker: KafkaBroker | None = None) -> Self:
         """Create a ProcessContext."""
@@ -74,6 +83,14 @@ class ProcessContext:
 
         algolia_client = await algolia_client_dependency()
 
+        url_checker = UrlChecker(
+            http_client=http_client,
+            logger=structlog.get_logger("ook"),
+            request_timeout=config.linkcheck_request_timeout,
+            max_concurrency=config.linkcheck_max_concurrency,
+            host_interval=config.linkcheck_host_interval,
+        )
+
         return cls(
             http_client=http_client,
             kafka_broker=broker,
@@ -81,6 +98,7 @@ class ProcessContext:
                 config.ingest_kafka_topic, title="ook-ingest-requests"
             ),
             algolia_client=algolia_client,
+            url_checker=url_checker,
         )
 
     async def aclose(self) -> None:
@@ -178,6 +196,11 @@ class Factory:
     def http_client(self) -> AsyncClient:
         """The shared HTTP client."""
         return self._process_context.http_client
+
+    @property
+    def url_checker(self) -> UrlChecker:
+        """The process-wide URL checker for external link checking."""
+        return self._process_context.url_checker
 
     @property
     def db_session(self) -> AsyncSession:

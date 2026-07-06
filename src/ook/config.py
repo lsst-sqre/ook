@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings
 from safir.kafka import KafkaConnectionSettings
 from safir.logging import LogLevel, Profile
-from safir.pydantic import EnvAsyncPostgresDsn
+from safir.pydantic import EnvAsyncPostgresDsn, HumanTimedelta
 
 __all__ = [
     "Configuration",
@@ -109,6 +111,31 @@ class Configuration(BaseSettings):
     """The GitHub app private key. See
     https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps
     """
+
+    linkcheck_request_timeout: HumanTimedelta = Field(
+        timedelta(seconds=30),
+        validation_alias="OOK_LINKCHECK_REQUEST_TIMEOUT",
+        description=("Total timeout applied to each link-check HTTP request."),
+    )
+
+    linkcheck_max_concurrency: int = Field(
+        10,
+        ge=1,
+        validation_alias="OOK_LINKCHECK_MAX_CONCURRENCY",
+        description=(
+            "Maximum number of concurrent link-check HTTP requests"
+            " across all hosts."
+        ),
+    )
+
+    linkcheck_host_interval: HumanTimedelta = Field(
+        timedelta(seconds=1),
+        validation_alias="OOK_LINKCHECK_HOST_INTERVAL",
+        description=(
+            "Minimum politeness interval between link-check requests to"
+            " the same host."
+        ),
+    )
 
     slack_webhook: SecretStr | None = Field(
         None,
