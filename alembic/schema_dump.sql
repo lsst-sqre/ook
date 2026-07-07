@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict WbXZQuq8OR83rg5xUsg1cPY0yfzg0NNcRE3szxErMq4UJ5DXF56F33hsPA3tdSE
+\restrict wbmD8GmGTDr5Rwb8CwWfhGukCNu0rzDEyGMKTbsKCiHxPkHiziRet9ASoH56OEY
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -406,7 +406,8 @@ ALTER SEQUENCE public.linkcheck_check_id_seq OWNED BY public.linkcheck_check.id;
 
 CREATE TABLE public.linkcheck_check_url (
     check_id bigint NOT NULL,
-    checked_url_id bigint NOT NULL
+    checked_url_id bigint NOT NULL,
+    origin_paths text[] DEFAULT '{}'::text[] NOT NULL
 );
 
 
@@ -824,7 +825,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-97e2df2ad883
+e3224f7fa2cb
 \.
 
 
@@ -904,7 +905,7 @@ COPY public.linkcheck_check (id, origin_base_url, is_default_version, status, da
 -- Data for Name: linkcheck_check_url; Type: TABLE DATA; Schema: public; Owner: test
 --
 
-COPY public.linkcheck_check_url (check_id, checked_url_id) FROM stdin;
+COPY public.linkcheck_check_url (check_id, checked_url_id, origin_paths) FROM stdin;
 \.
 
 
@@ -1853,5 +1854,5 @@ ALTER TABLE ONLY public.url_occurrence
 -- PostgreSQL database dump complete
 --
 
-\unrestrict WbXZQuq8OR83rg5xUsg1cPY0yfzg0NNcRE3szxErMq4UJ5DXF56F33hsPA3tdSE
+\unrestrict wbmD8GmGTDr5Rwb8CwWfhGukCNu0rzDEyGMKTbsKCiHxPkHiziRet9ASoH56OEY
 

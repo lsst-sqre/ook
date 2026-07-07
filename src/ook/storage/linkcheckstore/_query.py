@@ -101,6 +101,7 @@ def create_check_urls_stmt(check_id: int) -> Select:
             SqlCheckedUrl.redirect_status_code,
             SqlCheckedUrl.redirect_url,
             SqlCheckedUrl.error,
+            SqlLinkCheckUrl.origin_paths,
         )
         .join(
             SqlLinkCheckUrl,

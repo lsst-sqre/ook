@@ -204,6 +204,9 @@ class LinkCheckService:
             origin_base_url=origin_base_url,
             is_default_version=is_default_version,
             checked_url_ids=[url_ids[url] for url in canonical_urls],
+            origin_paths={
+                url_ids[url]: paths for url, paths in merged_paths.items()
+            },
             now=now,
         )
         if not due_urls:
@@ -496,7 +499,9 @@ class LinkCheckService:
             or checked_at < submitted_at - self._freshness_ttl
         ):
             return CheckedUrlReport(
-                url=url_record.url, status=CheckUrlStatus.pending
+                url=url_record.url,
+                status=CheckUrlStatus.pending,
+                origin_paths=url_record.origin_paths,
             )
         return CheckedUrlReport(
             url=url_record.url,
@@ -506,4 +511,5 @@ class LinkCheckService:
             redirect_url=url_record.redirect_url,
             error=url_record.error,
             checked_at=checked_at,
+            origin_paths=url_record.origin_paths,
         )

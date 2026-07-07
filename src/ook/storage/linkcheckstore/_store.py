@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Self, cast, override
@@ -88,6 +88,11 @@ class CheckUrlRecord:
 
     error: str | None
     """A description of the failure from the most recent check."""
+
+    origin_paths: list[str]
+    """The origin page paths this URL was submitted with in this check,
+    sorted and de-duplicated.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,6 +349,7 @@ class LinkCheckStore:
         origin_base_url: str,
         is_default_version: bool,
         checked_url_ids: Sequence[int],
+        origin_paths: Mapping[int, Sequence[str]] | None = None,
         now: datetime | None = None,
     ) -> int:
         """Create a link check with its URL membership.
@@ -361,6 +367,11 @@ class LinkCheckStore:
         checked_url_ids
             Primary keys of the ``checked_url`` records that are members
             of this check (from `upsert_checked_urls`).
+        origin_paths
+            The origin page paths each member URL was submitted with,
+            keyed by ``checked_url`` primary key. Each URL's paths are
+            stored sorted and de-duplicated on its membership row; a URL
+            absent from the mapping gets an empty array.
         now
             The submission time recorded for the check. Defaults to the
             current time.
@@ -388,10 +399,15 @@ class LinkCheckStore:
 
         unique_url_ids = list(dict.fromkeys(checked_url_ids))
         if unique_url_ids:
+            paths = origin_paths or {}
             await self._session.execute(
                 pg_insert(SqlLinkCheckUrl).values(
                     [
-                        {"check_id": check_id, "checked_url_id": url_id}
+                        {
+                            "check_id": check_id,
+                            "checked_url_id": url_id,
+                            "origin_paths": sorted(set(paths.get(url_id, []))),
+                        }
                         for url_id in unique_url_ids
                     ]
                 )
@@ -489,6 +505,7 @@ class LinkCheckStore:
                     redirect_status_code=row.redirect_status_code,
                     redirect_url=row.redirect_url,
                     error=row.error,
+                    origin_paths=list(row.origin_paths),
                 )
                 for row in url_rows
             ],

@@ -155,6 +155,17 @@ class CheckedUrl(BaseModel):
         ),
     ] = None
 
+    origin_paths: Annotated[
+        list[str],
+        Field(
+            description=(
+                "Page paths where the URL was submitted in this check,"
+                " relative to the origin's base URL."
+            ),
+            examples=[["index", "guide/installation"]],
+        ),
+    ]
+
     @classmethod
     def from_domain(cls, report: CheckedUrlReport) -> CheckedUrl:
         """Create a CheckedUrl from a domain per-URL report."""
@@ -166,6 +177,7 @@ class CheckedUrl(BaseModel):
             redirect_url=report.redirect_url,
             error=report.error,
             checked_at=report.checked_at,
+            origin_paths=report.origin_paths,
         )
 
 

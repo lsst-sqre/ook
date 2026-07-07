@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    ARRAY,
     BigInteger,
     Boolean,
     DateTime,
@@ -17,6 +18,7 @@ from sqlalchemy import (
     Integer,
     UnicodeText,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -247,6 +249,16 @@ class SqlLinkCheckUrl(Base):
         index=True,
     )
     """The checked URL that is a member of the check."""
+
+    origin_paths: Mapped[list[str]] = mapped_column(
+        ARRAY(UnicodeText), nullable=False, server_default=text("'{}'")
+    )
+    """The origin page paths this URL was submitted with in this check.
+
+    Recorded per-check from the submission (not derived from the origin's
+    ``url_occurrence`` set), so a PR-build submission reports the pages
+    from its own build rather than the origin's default-version set.
+    """
 
     check: Mapped[SqlLinkCheck] = relationship(
         "SqlLinkCheck", back_populates="urls"

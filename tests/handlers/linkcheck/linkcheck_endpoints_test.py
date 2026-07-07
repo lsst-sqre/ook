@@ -192,6 +192,119 @@ async def test_post_check_all_fresh_returns_complete(
 
 
 @pytest.mark.asyncio
+async def test_check_poll_origin_paths_all_fresh(client: AsyncClient) -> None:
+    """A completed-at-submission check echoes each URL's submitted
+    origin paths, sorted and de-duplicated across fragment variants, on
+    the 200 fast path — sourced from the submission itself, not the
+    origin's occurrence set (this is a non-default PR build).
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_url_state(
+        LinkState(
+            url="https://example.com/fresh",
+            status=LinkStatus.ok,
+            checked_at=now,
+            last_ok_at=now,
+            status_code=200,
+        )
+    )
+
+    response = await client.post(
+        "/ook/linkcheck/checks",
+        json={
+            "origin_base_url": ORIGIN,
+            "is_default_version": False,
+            "urls": [
+                # Fragment variants of one canonical URL, whose page
+                # paths merge (and the duplicate collapses).
+                {
+                    "url": "https://example.com/fresh#a",
+                    "origin_paths": ["guide"],
+                },
+                {
+                    "url": "https://example.com/fresh#b",
+                    "origin_paths": ["index", "guide"],
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "complete"
+    results = {u["url"]: u for u in data["urls"]}
+    assert results["https://example.com/fresh"]["origin_paths"] == [
+        "guide",
+        "index",
+    ]
+
+    # The PR build did not replace the origin's occurrence set, so the
+    # paths can only have come from the per-check submission record.
+    assert await _get_occurrences(ORIGIN) == set()
+
+    # The poll GET carries the same origin paths.
+    get_response = await client.get(response.headers["Location"])
+    assert get_response.json() == data
+
+
+@pytest.mark.asyncio
+async def test_check_poll_origin_paths_after_execution(
+    client: AsyncClient,
+) -> None:
+    """After execution, polling a check still reports each URL's
+    submitted origin paths alongside its resolved status.
+    """
+    response = await client.post(
+        "/ook/linkcheck/checks",
+        json={
+            "origin_base_url": ORIGIN,
+            "is_default_version": False,
+            "urls": [
+                {
+                    "url": "https://example.com/ok",
+                    "origin_paths": ["index", "guide"],
+                },
+                {
+                    "url": "https://example.com/gone",
+                    "origin_paths": ["changelog"],
+                },
+            ],
+        },
+    )
+    assert response.status_code == 202
+    location = response.headers["Location"]
+    check_id = int(location.rstrip("/").rsplit("/", 1)[-1])
+
+    # Pending URLs already carry their submitted paths before execution.
+    pending = {
+        u["url"]: u for u in (await client.get(location)).json()["urls"]
+    }
+    assert pending["https://example.com/ok"]["origin_paths"] == [
+        "guide",
+        "index",
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/gone":
+            return httpx.Response(404)
+        return httpx.Response(200)
+
+    await _execute_check(check_id, handler)
+
+    response = await client.get(location)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "complete"
+    results = {u["url"]: u for u in data["urls"]}
+    assert results["https://example.com/ok"]["status"] == "ok"
+    assert results["https://example.com/ok"]["origin_paths"] == [
+        "guide",
+        "index",
+    ]
+    assert results["https://example.com/gone"]["status"] == "broken"
+    assert results["https://example.com/gone"]["origin_paths"] == ["changelog"]
+
+
+@pytest.mark.asyncio
 async def test_post_check_origin_normalization(client: AsyncClient) -> None:
     """Origin base URLs are normalized (host lowercased, trailing slash
     stripped) so equivalent spellings map to one origin, and invalid

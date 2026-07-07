@@ -170,6 +170,66 @@ async def test_create_check_with_membership(factory: Factory) -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_check_persists_origin_paths(factory: Factory) -> None:
+    """create_check records each URL's submitted origin paths on its
+    membership row, and get_check returns them per URL, sorted and
+    de-duplicated.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+
+        ids = await store.upsert_checked_urls(
+            ["https://example.com/a", "https://example.com/b"], now=now
+        )
+        check_id = await store.create_check(
+            origin_base_url="https://sqr-000.lsst.io",
+            is_default_version=False,
+            checked_url_ids=list(ids.values()),
+            origin_paths={
+                # Unsorted with a duplicate: stored sorted and unique.
+                ids["https://example.com/a"]: ["index", "guide", "index"],
+                # A URL with no submitted paths has an empty array.
+                ids["https://example.com/b"]: [],
+            },
+            now=now,
+        )
+
+        record = await store.get_check(check_id)
+        assert record is not None
+        by_url = {u.url: u for u in record.urls}
+        assert by_url["https://example.com/a"].origin_paths == [
+            "guide",
+            "index",
+        ]
+        assert by_url["https://example.com/b"].origin_paths == []
+
+
+@pytest.mark.asyncio
+async def test_create_check_without_origin_paths(factory: Factory) -> None:
+    """Omitting origin_paths defaults every membership row to an empty
+    array.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+
+        ids = await store.upsert_checked_urls(
+            ["https://example.com/a"], now=now
+        )
+        check_id = await store.create_check(
+            origin_base_url="https://sqr-000.lsst.io",
+            is_default_version=False,
+            checked_url_ids=list(ids.values()),
+            now=now,
+        )
+
+        record = await store.get_check(check_id)
+        assert record is not None
+        assert record.urls[0].origin_paths == []
+
+
+@pytest.mark.asyncio
 async def test_update_check_status(factory: Factory) -> None:
     """A check's processing status advances pending → in_progress →
     complete, recording the completion time.

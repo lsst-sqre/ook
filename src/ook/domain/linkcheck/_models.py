@@ -328,6 +328,14 @@ class CheckedUrlReport(BaseModel):
         ),
     )
 
+    origin_paths: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The origin page paths this URL was submitted with in this"
+            " check, sorted and de-duplicated."
+        ),
+    )
+
 
 class OriginPage(BaseModel):
     """A page of an origin website where a URL occurs."""
