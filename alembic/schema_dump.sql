@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict upiAMfROE1lPf581U9EsKQDtKUkhU8J00acJtOuuJQGGr6aYy6uemp71tJkFBW8
+\restrict WajQNxC5xYTrPRkJldxooTFWCCfJPXe4F6eNR6tLrpJ2pLdhuU1lKKGYleaxQPk
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -797,7 +797,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-cf936213314d
+3b66bd60b53f
 \.
 
 
@@ -1325,14 +1325,6 @@ ALTER TABLE ONLY public.document_resource
 
 
 --
--- Name: resource_relation uq_resource_relation; Type: CONSTRAINT; Schema: public; Owner: test
---
-
-ALTER TABLE ONLY public.resource_relation
-    ADD CONSTRAINT uq_resource_relation UNIQUE (source_resource_id, related_resource_id, related_external_ref_id, relation_type);
-
-
---
 -- Name: sdm_column uq_sdm_column_table_name; Type: CONSTRAINT; Schema: public; Owner: test
 --
 
@@ -1402,6 +1394,13 @@ CREATE INDEX idx_author_surname_trgm ON public.author USING gin (surname public.
 
 
 --
+-- Name: idx_contributor_author; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_contributor_author ON public.contributor USING btree (author_id);
+
+
+--
 -- Name: idx_document_series_number; Type: INDEX; Schema: public; Owner: test
 --
 
@@ -1430,10 +1429,31 @@ CREATE INDEX idx_resource_date_updated ON public.resource USING btree (date_reso
 
 
 --
+-- Name: idx_resource_relation_related_external_ref; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_resource_relation_related_external_ref ON public.resource_relation USING btree (related_external_ref_id);
+
+
+--
+-- Name: idx_resource_relation_related_resource; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_resource_relation_related_resource ON public.resource_relation USING btree (related_resource_id);
+
+
+--
 -- Name: idx_resource_relation_source; Type: INDEX; Schema: public; Owner: test
 --
 
 CREATE INDEX idx_resource_relation_source ON public.resource_relation USING btree (source_resource_id);
+
+
+--
+-- Name: idx_resource_relation_source_type; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX idx_resource_relation_source_type ON public.resource_relation USING btree (source_resource_id, relation_type);
 
 
 --
@@ -1640,6 +1660,20 @@ CREATE INDEX ix_url_occurrence_origin_base_url ON public.url_occurrence USING bt
 
 
 --
+-- Name: uq_resource_relation_external; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE UNIQUE INDEX uq_resource_relation_external ON public.resource_relation USING btree (source_resource_id, related_external_ref_id, relation_type) WHERE (related_external_ref_id IS NOT NULL);
+
+
+--
+-- Name: uq_resource_relation_internal; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE UNIQUE INDEX uq_resource_relation_internal ON public.resource_relation USING btree (source_resource_id, related_resource_id, relation_type) WHERE (related_resource_id IS NOT NULL);
+
+
+--
 -- Name: author_affiliations author_affiliations_affiliation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
 --
 
@@ -1819,5 +1853,5 @@ ALTER TABLE ONLY public.url_occurrence
 -- PostgreSQL database dump complete
 --
 
-\unrestrict upiAMfROE1lPf581U9EsKQDtKUkhU8J00acJtOuuJQGGr6aYy6uemp71tJkFBW8
+\unrestrict WajQNxC5xYTrPRkJldxooTFWCCfJPXe4F6eNR6tLrpJ2pLdhuU1lKKGYleaxQPk
 
