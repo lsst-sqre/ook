@@ -152,7 +152,9 @@ async def test_head_success(
     respx_mock: respx.Router,
 ) -> None:
     """A URL whose HEAD request succeeds resolves in one request."""
-    respx_mock.head("https://example.com/page").respond(200)
+    respx_mock.route(
+        method="HEAD", path="/page", headers={"Host": "example.com"}
+    ).respond(200)
 
     checker = make_checker(http_client)
     outcome = await checker.check("https://example.com/page")
@@ -165,13 +167,45 @@ async def test_head_success(
 
 
 @pytest.mark.asyncio
+async def test_request_pinned_to_validated_address(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The outbound request connects to the exact address the SSRF guard
+    validated, while the Host header preserves the original hostname.
+
+    This is the regression test for the DNS-rebinding TOCTOU fix: the
+    socket target must be the guard-validated IP so httpx cannot
+    re-resolve the hostname to an internal address at connect time.
+    """
+    pinned_ip = "93.184.216.34"
+    respx_mock.route(
+        method="HEAD", path="/page", headers={"Host": "example.com"}
+    ).respond(200)
+
+    checker = make_checker(http_client, ip_map={"example.com": [pinned_ip]})
+    outcome = await checker.check("https://example.com/page")
+    assert outcome.result is CheckResult.success
+    assert len(respx_mock.calls) == 1
+    request = respx_mock.calls.last.request
+    # The socket target is the validated IP...
+    assert request.url.host == pinned_ip
+    # ...while the Host header (and TLS SNI) stay the hostname.
+    assert request.headers["Host"] == "example.com"
+
+
+@pytest.mark.asyncio
 async def test_get_fallback_success(
     http_client: httpx.AsyncClient,
     respx_mock: respx.Router,
 ) -> None:
     """A URL whose HEAD request errors falls back to GET."""
-    respx_mock.head("https://example.com/no-head").respond(405)
-    respx_mock.get("https://example.com/no-head").respond(200)
+    respx_mock.route(
+        method="HEAD", path="/no-head", headers={"Host": "example.com"}
+    ).respond(405)
+    respx_mock.route(
+        method="GET", path="/no-head", headers={"Host": "example.com"}
+    ).respond(200)
 
     checker = make_checker(http_client)
     outcome = await checker.check("https://example.com/no-head")
@@ -189,8 +223,12 @@ async def test_get_fallback_failure(
     """A URL failing both HEAD and GET is a failure with the GET's
     status code.
     """
-    respx_mock.head("https://example.com/missing").respond(405)
-    respx_mock.get("https://example.com/missing").respond(404)
+    respx_mock.route(
+        method="HEAD", path="/missing", headers={"Host": "example.com"}
+    ).respond(405)
+    respx_mock.route(
+        method="GET", path="/missing", headers={"Host": "example.com"}
+    ).respond(404)
 
     checker = make_checker(http_client)
     outcome = await checker.check("https://example.com/missing")
@@ -208,10 +246,12 @@ async def test_network_error_falls_back_to_get(
     """A transport error on HEAD (e.g. a server that drops HEAD
     requests) falls back to GET.
     """
-    respx_mock.head("https://example.com/drops-head").mock(
-        side_effect=httpx.RemoteProtocolError
-    )
-    respx_mock.get("https://example.com/drops-head").respond(200)
+    respx_mock.route(
+        method="HEAD", path="/drops-head", headers={"Host": "example.com"}
+    ).mock(side_effect=httpx.RemoteProtocolError)
+    respx_mock.route(
+        method="GET", path="/drops-head", headers={"Host": "example.com"}
+    ).respond(200)
 
     checker = make_checker(http_client)
     outcome = await checker.check("https://example.com/drops-head")
@@ -227,9 +267,9 @@ async def test_timeout_is_failure_without_get_fallback(
     """A timeout on the HEAD request is an immediate failure; the GET
     fallback is not attempted (it would double the worst-case wait).
     """
-    respx_mock.head("https://example.com/slow").mock(
-        side_effect=httpx.ConnectTimeout
-    )
+    respx_mock.route(
+        method="HEAD", path="/slow", headers={"Host": "example.com"}
+    ).mock(side_effect=httpx.ConnectTimeout)
 
     checker = make_checker(http_client)
     outcome = await checker.check("https://example.com/slow")
@@ -248,10 +288,12 @@ async def test_permanent_redirect_captured(
     """A permanent redirect resolves with the final location and the
     permanent redirect status code.
     """
-    respx_mock.head("https://example.com/old").respond(
-        301, headers={"Location": "https://example.com/new"}
-    )
-    respx_mock.head("https://example.com/new").respond(200)
+    respx_mock.route(
+        method="HEAD", path="/old", headers={"Host": "example.com"}
+    ).respond(301, headers={"Location": "https://example.com/new"})
+    respx_mock.route(
+        method="HEAD", path="/new", headers={"Host": "example.com"}
+    ).respond(200)
 
     checker = make_checker(http_client)
     outcome = await checker.check("https://example.com/old")
@@ -269,10 +311,12 @@ async def test_temporary_redirect_captured(
     """A temporary redirect resolves with the final location and the
     temporary redirect status code.
     """
-    respx_mock.head("https://example.com/moved").respond(
-        302, headers={"Location": "https://example.com/elsewhere"}
-    )
-    respx_mock.head("https://example.com/elsewhere").respond(200)
+    respx_mock.route(
+        method="HEAD", path="/moved", headers={"Host": "example.com"}
+    ).respond(302, headers={"Location": "https://example.com/elsewhere"})
+    respx_mock.route(
+        method="HEAD", path="/elsewhere", headers={"Host": "example.com"}
+    ).respond(200)
 
     checker = make_checker(http_client)
     outcome = await checker.check("https://example.com/moved")
@@ -290,13 +334,15 @@ async def test_mixed_redirect_chain_is_temporary(
     """A chain mixing permanent and temporary redirects is reported as
     temporary: the source cannot safely be updated past a temporary hop.
     """
-    respx_mock.head("https://example.com/a").respond(
-        301, headers={"Location": "https://example.com/b"}
-    )
-    respx_mock.head("https://example.com/b").respond(
-        307, headers={"Location": "https://example.com/c"}
-    )
-    respx_mock.head("https://example.com/c").respond(200)
+    respx_mock.route(
+        method="HEAD", path="/a", headers={"Host": "example.com"}
+    ).respond(301, headers={"Location": "https://example.com/b"})
+    respx_mock.route(
+        method="HEAD", path="/b", headers={"Host": "example.com"}
+    ).respond(307, headers={"Location": "https://example.com/c"})
+    respx_mock.route(
+        method="HEAD", path="/c", headers={"Host": "example.com"}
+    ).respond(200)
 
     checker = make_checker(http_client)
     outcome = await checker.check("https://example.com/a")
@@ -311,10 +357,12 @@ async def test_relative_redirect_location(
     respx_mock: respx.Router,
 ) -> None:
     """A relative Location header is resolved against the request URL."""
-    respx_mock.head("https://example.com/dir/old").respond(
-        308, headers={"Location": "/dir/new"}
-    )
-    respx_mock.head("https://example.com/dir/new").respond(200)
+    respx_mock.route(
+        method="HEAD", path="/dir/old", headers={"Host": "example.com"}
+    ).respond(308, headers={"Location": "/dir/new"})
+    respx_mock.route(
+        method="HEAD", path="/dir/new", headers={"Host": "example.com"}
+    ).respond(200)
 
     checker = make_checker(http_client)
     outcome = await checker.check("https://example.com/dir/old")
@@ -331,9 +379,9 @@ async def test_redirect_to_private_host_blocked(
     """A redirect target resolving to a private address is never
     fetched; the SSRF guard applies to every hop.
     """
-    respx_mock.head("https://example.com/sneaky").respond(
-        302, headers={"Location": "http://internal.example.com/secrets"}
-    )
+    respx_mock.route(
+        method="HEAD", path="/sneaky", headers={"Host": "example.com"}
+    ).respond(302, headers={"Location": "http://internal.example.com/secrets"})
 
     checker = make_checker(
         http_client, ip_map={"internal.example.com": ["192.168.0.10"]}
@@ -351,9 +399,9 @@ async def test_too_many_redirects_is_failure(
     respx_mock: respx.Router,
 ) -> None:
     """A redirect loop is reported as a failure."""
-    respx_mock.head("https://example.com/loop").respond(
-        302, headers={"Location": "https://example.com/loop"}
-    )
+    respx_mock.route(
+        method="HEAD", path="/loop", headers={"Host": "example.com"}
+    ).respond(302, headers={"Location": "https://example.com/loop"})
 
     checker = make_checker(http_client)
     outcome = await checker.check("https://example.com/loop")

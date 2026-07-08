@@ -95,6 +95,12 @@ class UrlChecker:
     through this instance, and spaces requests to the same host by a
     politeness interval.
 
+    To close a DNS-rebinding TOCTOU gap, each request connects to the
+    exact address the SSRF guard validated: the guard resolves and
+    validates the host, and the outbound socket is pinned to that
+    address while the original hostname is preserved for the ``Host``
+    header and for TLS SNI plus certificate verification.
+
     Parameters
     ----------
     http_client
@@ -109,7 +115,10 @@ class UrlChecker:
         Minimum politeness interval between requests to the same host.
     resolve_host
         Hostname resolver used by the SSRF guard, mainly injectable for
-        testing. Defaults to asyncio's ``getaddrinfo``.
+        testing. Defaults to asyncio's ``getaddrinfo``. The address it
+        returns is both validated by the guard and pinned as the socket
+        connection target, so the request connects to the exact address
+        that was checked.
     """
 
     def __init__(
@@ -148,8 +157,8 @@ class UrlChecker:
             status-transition engine.
         """
         try:
-            await self._ensure_allowed(url)
-            result = await self._head_then_get(url)
+            pinned = await self._resolve_and_validate(url)
+            result = await self._head_then_get(url, pinned)
         except _UnsupportedUrlError as e:
             return self._unsupported_outcome(str(e))
         except socket.gaierror as e:
@@ -164,7 +173,7 @@ class UrlChecker:
             return self._failure_outcome(_describe_error(e))
         return self._response_outcome(result)
 
-    async def _head_then_get(self, url: str) -> _FetchResult:
+    async def _head_then_get(self, url: str, pinned: str) -> _FetchResult:
         """Fetch with HEAD, falling back to GET when the response
         suggests the server mishandles HEAD (error status or dropped
         connection).
@@ -172,9 +181,16 @@ class UrlChecker:
         Timeouts propagate immediately without a GET fallback: a fresh
         GET after a timed-out HEAD would double the worst-case wait per
         URL for a server that is most likely equally slow either way.
+
+        Parameters
+        ----------
+        url
+            The hostname URL to fetch.
+        pinned
+            The guard-validated address to connect to for the first hop.
         """
         try:
-            result = await self._fetch(url, "HEAD")
+            result = await self._fetch(url, "HEAD", pinned)
             if result.is_success:
                 return result
         except TimeoutError, httpx.TimeoutException:
@@ -185,23 +201,34 @@ class UrlChecker:
                 url=url,
                 error=str(e),
             )
-        return await self._fetch(url, "GET")
+        return await self._fetch(url, "GET", pinned)
 
-    async def _fetch(self, url: str, method: str) -> _FetchResult:
+    async def _fetch(self, url: str, method: str, pinned: str) -> _FetchResult:
         """Fetch a URL, following redirects manually so that every hop
         passes the SSRF guard, and return the terminal response.
+
+        Parameters
+        ----------
+        url
+            The hostname URL to fetch.
+        method
+            The HTTP method for each hop.
+        pinned
+            The guard-validated address to connect to for the first hop.
         """
         current_url = url
+        current_pinned = pinned
         hops: list[int] = []
         for _ in range(_MAX_REDIRECTS + 1):
-            response = await self._send(method, current_url)
+            response = await self._send(method, current_url, current_pinned)
             location = response.headers.get("Location")
             if response.status_code in _REDIRECT_CODES and location:
                 hops.append(response.status_code)
                 current_url = str(httpx.URL(current_url).join(location))
-                # The caller guards the original URL; guard each
-                # redirect target before it is fetched.
-                await self._ensure_allowed(current_url)
+                # The caller guards the original URL; guard each redirect
+                # target before it is fetched, pinning the next hop's
+                # connection to the address the guard validated.
+                current_pinned = await self._resolve_and_validate(current_url)
                 continue
             return _FetchResult(
                 status_code=response.status_code,
@@ -210,16 +237,49 @@ class UrlChecker:
             )
         raise _TooManyRedirectsError
 
-    async def _send(self, method: str, url: str) -> httpx.Response:
+    async def _send(
+        self, method: str, url: str, pinned: str
+    ) -> httpx.Response:
         """Make one HTTP request under the concurrency cap and the
-        per-host politeness interval.
+        per-host politeness interval, connecting to the guard-validated
+        address while preserving the hostname for Host and TLS.
+
+        Parameters
+        ----------
+        method
+            The HTTP method.
+        url
+            The hostname URL. Politeness is keyed on this hostname, not
+            the pinned IP, so per-host spacing stays correct.
+        pinned
+            The guard-validated address to connect to.
         """
+        # Key politeness on the original hostname, not the pinned IP, so
+        # spacing tracks the logical host rather than the resolved
+        # address.
         host = urlsplit(url).hostname or ""
         await self._wait_for_host_slot(host)
+        # Pin the socket to the guard-validated address while keeping the
+        # original hostname for routing and TLS: the URL host becomes the
+        # validated IP (so the socket connects there), the ``Host`` header
+        # preserves virtual-host routing, and the ``sni_hostname``
+        # extension drives both TLS SNI and certificate hostname
+        # verification against the original hostname. A DNS-rebinding
+        # answer at httpx-connect time therefore cannot redirect the
+        # socket to an internal address. Link-check targets carry no
+        # proxy or userinfo, so pinning the first validated address
+        # (trading httpx's multi-address failover for SSRF safety) is
+        # acceptable.
+        original = httpx.URL(url)
+        sni_host = original.host  # original hostname (bare, unbracketed)
+        authority = original.netloc.decode("ascii")  # host[:port], v6 in []
+        request_url = original.copy_with(host=pinned)
         async with self._semaphore:
             return await self._http_client.request(
                 method,
-                url,
+                request_url,
+                headers={"Host": authority},
+                extensions={"sni_hostname": sni_host},
                 follow_redirects=False,
                 timeout=self._timeout_seconds,
             )
@@ -266,9 +326,20 @@ class UrlChecker:
             error=f"HTTP {result.status_code}",
         )
 
-    async def _ensure_allowed(self, url: str) -> None:
-        """Raise `_UnsupportedUrlError` unless the URL is an http(s) URL
-        whose host resolves only to globally-routable addresses.
+    async def _resolve_and_validate(self, url: str) -> str:
+        """Validate the URL against the SSRF guard and return the address
+        the connection should be pinned to.
+
+        The URL must be a well-formed http(s) URL whose host resolves
+        only to globally-routable addresses. The returned address is the
+        exact one validated here, so the caller can connect to it and
+        close the DNS-rebinding TOCTOU gap.
+
+        Returns
+        -------
+        str
+            The validated address to connect to: the host itself when it
+            is an IP literal, otherwise the first resolved address.
 
         Raises
         ------
@@ -290,9 +361,10 @@ class UrlChecker:
             addresses = [ipaddress.ip_address(host)]
         except ValueError:
             # Not an IP literal: resolve the hostname.
-            addresses = [
-                ipaddress.ip_address(a) for a in await self._resolve_host(host)
-            ]
+            resolved = list(await self._resolve_host(host))
+            addresses = [ipaddress.ip_address(a) for a in resolved]
+        else:
+            resolved = [host]
         if not addresses:
             raise socket.gaierror(
                 socket.EAI_NODATA, f"No addresses found for {host!r}"
@@ -311,6 +383,9 @@ class UrlChecker:
                     f"Host {host!r} resolves to the non-public address"
                     f" {address}"
                 )
+        # Pin to the first validated address as resolved (for a literal,
+        # the host itself). The socket connects to this exact address.
+        return resolved[0]
 
     def _unsupported_outcome(self, error: str) -> LinkCheckOutcome:
         return LinkCheckOutcome(
