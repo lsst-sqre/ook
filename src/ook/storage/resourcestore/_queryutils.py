@@ -49,8 +49,6 @@ def create_resource_with_relations_stmt(resource_id: int) -> Select:
                                 SqlAuthor.given_name,
                                 "orcid",
                                 SqlAuthor.orcid,
-                                "email",
-                                SqlAuthor.email,
                                 "notes",
                                 SqlAuthor.notes,
                                 "affiliations",
