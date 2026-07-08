@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from ook.config import config
 from ook.dbschema.linkcheck import SqlCheckedUrl, SqlUrlOccurrence
+from ook.domain.base32id import serialize_ook_base32_id, validate_base32_id
 from ook.domain.linkcheck import LinkState, LinkStatus, RetryLadderConfig
 from ook.services.linkcheck import LinkCheckService, UrlChecker
 from ook.storage.linkcheckstore import LinkCheckStore
@@ -139,6 +140,39 @@ async def test_post_check_accepted(client: AsyncClient) -> None:
     assert [u["url"] for u in get_data["urls"]] == [
         u["url"] for u in data["urls"]
     ]
+
+
+@pytest.mark.asyncio
+async def test_check_id_is_base32(client: AsyncClient) -> None:
+    """A check is exposed by a hyphenated Crockford base32 id (not the
+    raw auto-increment PK), and that id round-trips through the Location
+    header back to the same check.
+    """
+    response = await client.post(
+        "/ook/linkcheck/checks",
+        json={
+            "origin_base_url": ORIGIN,
+            "is_default_version": True,
+            "urls": [
+                {"url": "https://example.com/page", "origin_paths": ["index"]},
+            ],
+        },
+    )
+    assert response.status_code == 202
+    check_id = response.json()["id"]
+
+    # The id is the hyphenated base32 string form, not a raw integer.
+    assert isinstance(check_id, str)
+    assert "-" in check_id
+    # It decodes with a valid checksum and re-serializes to the same form.
+    assert serialize_ook_base32_id(validate_base32_id(check_id)) == check_id
+
+    # The Location targets that id and round-trips to the same check.
+    location = response.headers["Location"]
+    assert location.endswith(f"/ook/linkcheck/checks/{check_id}")
+    get_response = await client.get(location)
+    assert get_response.status_code == 200
+    assert get_response.json()["id"] == check_id
 
 
 @pytest.mark.asyncio
@@ -272,7 +306,7 @@ async def test_check_poll_origin_paths_after_execution(
     )
     assert response.status_code == 202
     location = response.headers["Location"]
-    check_id = int(location.rstrip("/").rsplit("/", 1)[-1])
+    check_id = validate_base32_id(location.rstrip("/").rsplit("/", 1)[-1])
 
     # Pending URLs already carry their submitted paths before execution.
     pending = {
@@ -568,7 +602,7 @@ async def test_poll_after_execution_reflects_results(
     )
     assert response.status_code == 202
     location = response.headers["Location"]
-    check_id = int(location.rstrip("/").rsplit("/", 1)[-1])
+    check_id = validate_base32_id(location.rstrip("/").rsplit("/", 1)[-1])
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/gone":
@@ -603,9 +637,17 @@ async def test_poll_after_execution_reflects_results(
 
 @pytest.mark.asyncio
 async def test_get_unknown_check(client: AsyncClient) -> None:
-    """Polling an unknown check returns 404."""
-    response = await client.get("/ook/linkcheck/checks/123456789")
+    """Polling a well-formed but unknown check id returns 404, while a
+    malformed base32 id is rejected with 422.
+    """
+    unknown_id = serialize_ook_base32_id(123456789)
+    response = await client.get(f"/ook/linkcheck/checks/{unknown_id}")
     assert response.status_code == 404
+
+    # A malformed id (bad checksum) fails path validation before the
+    # lookup.
+    response = await client.get("/ook/linkcheck/checks/not-a-valid-id")
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio

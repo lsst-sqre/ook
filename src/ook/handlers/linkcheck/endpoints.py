@@ -8,6 +8,7 @@ from safir.models import ErrorModel
 
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
+from ook.domain.base32id import Base32Id, serialize_ook_base32_id
 from ook.domain.kafka import CheckLinksMessageV1
 from ook.domain.linkcheck import (
     CheckRunStatus,
@@ -91,7 +92,8 @@ async def post_linkcheck_check(
         )
     location = str(
         context.request.url_for(
-            "get_linkcheck_check", check_id=submission.check_id
+            "get_linkcheck_check",
+            check_id=serialize_ook_base32_id(submission.check_id),
         )
     )
     context.response.headers["Location"] = location
@@ -115,10 +117,11 @@ async def post_linkcheck_check(
 async def get_linkcheck_check(
     *,
     check_id: Annotated[
-        int,
+        Base32Id,
         Path(
             title="Check ID",
-            description="Identifier of the link check.",
+            description="The Crockford Base32 identifier of the link check.",
+            examples=["1234-5678-90ab-cd2f"],
         ),
     ],
     context: Annotated[RequestContext, Depends(context_dependency)],

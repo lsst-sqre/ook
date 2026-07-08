@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict wbmD8GmGTDr5Rwb8CwWfhGukCNu0rzDEyGMKTbsKCiHxPkHiziRet9ASoH56OEY
+\restrict pfzXwwTA2NbXLpTRTs5w8sxGlgNq67hzyIxUc8e0al6anD3oqhqdfr9gX6YCOUf
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -380,27 +380,6 @@ CREATE TABLE public.linkcheck_check (
 ALTER TABLE public.linkcheck_check OWNER TO test;
 
 --
--- Name: linkcheck_check_id_seq; Type: SEQUENCE; Schema: public; Owner: test
---
-
-CREATE SEQUENCE public.linkcheck_check_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.linkcheck_check_id_seq OWNER TO test;
-
---
--- Name: linkcheck_check_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: test
---
-
-ALTER SEQUENCE public.linkcheck_check_id_seq OWNED BY public.linkcheck_check.id;
-
-
---
 -- Name: linkcheck_check_url; Type: TABLE; Schema: public; Owner: test
 --
 
@@ -764,13 +743,6 @@ ALTER TABLE ONLY public.link ALTER COLUMN id SET DEFAULT nextval('public.link_id
 
 
 --
--- Name: linkcheck_check id; Type: DEFAULT; Schema: public; Owner: test
---
-
-ALTER TABLE ONLY public.linkcheck_check ALTER COLUMN id SET DEFAULT nextval('public.linkcheck_check_id_seq'::regclass);
-
-
---
 -- Name: resource_relation id; Type: DEFAULT; Schema: public; Owner: test
 --
 
@@ -825,7 +797,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-e3224f7fa2cb
+a62deab01a9b
 \.
 
 
@@ -1044,13 +1016,6 @@ SELECT pg_catalog.setval('public.external_reference_id_seq', 1, false);
 --
 
 SELECT pg_catalog.setval('public.link_id_seq', 1, false);
-
-
---
--- Name: linkcheck_check_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
---
-
-SELECT pg_catalog.setval('public.linkcheck_check_id_seq', 1, false);
 
 
 --
@@ -1854,5 +1819,5 @@ ALTER TABLE ONLY public.url_occurrence
 -- PostgreSQL database dump complete
 --
 
-\unrestrict wbmD8GmGTDr5Rwb8CwWfhGukCNu0rzDEyGMKTbsKCiHxPkHiziRet9ASoH56OEY
+\unrestrict pfzXwwTA2NbXLpTRTs5w8sxGlgNq67hzyIxUc8e0al6anD3oqhqdfr9gX6YCOUf
 

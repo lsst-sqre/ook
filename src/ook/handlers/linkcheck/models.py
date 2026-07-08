@@ -9,6 +9,7 @@ from typing import Annotated
 from fastapi import Request
 from pydantic import AfterValidator, BaseModel, Field
 
+from ook.domain.base32id import Base32Id, serialize_ook_base32_id
 from ook.domain.linkcheck import (
     CheckedUrlReport,
     CheckRunStatus,
@@ -487,7 +488,7 @@ class OriginLink(BaseModel):
 class LinkCheck(BaseModel):
     """A submitted link check with its per-URL results."""
 
-    id: Annotated[int, Field(description="The check's identifier.")]
+    id: Annotated[Base32Id, Field(description="The check's identifier.")]
 
     self_url: Annotated[
         str,
@@ -549,7 +550,10 @@ class LinkCheck(BaseModel):
         return cls(
             id=report.id,
             self_url=str(
-                request.url_for("get_linkcheck_check", check_id=report.id)
+                request.url_for(
+                    "get_linkcheck_check",
+                    check_id=serialize_ook_base32_id(report.id),
+                )
             ),
             origin_base_url=report.origin_base_url,
             is_default_version=report.is_default_version,

@@ -189,9 +189,14 @@ class SqlLinkCheck(Base):
     __tablename__ = "linkcheck_check"
 
     id: Mapped[int] = mapped_column(
-        BigInteger, primary_key=True, autoincrement=True
+        BigInteger, primary_key=True, autoincrement=False
     )
-    """The primary key."""
+    """The primary key (the Crockford Base32 ID as an integer).
+
+    Minted from the shared ``ook.domain.base32id`` generator at check
+    creation rather than from a database sequence, so the id is safe to
+    publish as the check's public API identifier.
+    """
 
     origin_base_url: Mapped[str] = mapped_column(
         UnicodeText, nullable=False, index=True

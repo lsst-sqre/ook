@@ -23,6 +23,7 @@ from ook.dbschema.linkcheck import (
     SqlLinkCheckUrl,
     SqlUrlOccurrence,
 )
+from ook.domain.base32id import generate_base32_id, validate_base32_id
 from ook.domain.linkcheck import (
     CheckRunStatus,
     CheckUrlStatus,
@@ -386,23 +387,25 @@ class LinkCheckStore:
         Returns
         -------
         int
-            The primary key of the created check.
+            The primary key of the created check (a Crockford Base32 ID
+            as an integer).
         """
         if now is None:
             now = datetime.now(tz=UTC)
 
-        check_id = (
-            await self._session.execute(
-                pg_insert(SqlLinkCheck)
-                .values(
-                    origin_base_url=origin_base_url,
-                    is_default_version=is_default_version,
-                    status=CheckRunStatus.pending.value,
-                    date_created=now,
-                )
-                .returning(SqlLinkCheck.id)
+        # Mint the primary key from the shared Base32 ID generator rather
+        # than a database sequence, so the check is published by a public
+        # identifier instead of an auto-increment PK.
+        check_id = validate_base32_id(generate_base32_id())
+        await self._session.execute(
+            pg_insert(SqlLinkCheck).values(
+                id=check_id,
+                origin_base_url=origin_base_url,
+                is_default_version=is_default_version,
+                status=CheckRunStatus.pending.value,
+                date_created=now,
             )
-        ).scalar_one()
+        )
 
         unique_url_ids = list(dict.fromkeys(checked_url_ids))
         if unique_url_ids:

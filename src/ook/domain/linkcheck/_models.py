@@ -7,6 +7,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from ook.domain.base32id import Base32Id
+
 __all__ = [
     "CheckResult",
     "CheckRunStatus",
@@ -504,7 +506,7 @@ class OriginLink(BaseModel):
 class LinkCheckReport(BaseModel):
     """The status report for a submitted link check."""
 
-    id: int = Field(description="The check's identifier.")
+    id: Base32Id = Field(description="The check's identifier.")
 
     origin_base_url: str = Field(
         description=(
