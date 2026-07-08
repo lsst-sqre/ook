@@ -18,6 +18,7 @@ __all__ = [
     "ConflictError",
     "DocumentParsingError",
     "DuplicateOrcidError",
+    "LinkCheckTooManyUrlsError",
     "LtdSlugClassificationError",
     "NotFoundError",
 ]
@@ -67,6 +68,13 @@ class NotFoundError(ClientRequestError):
 
     error = "not_found"
     status_code = status.HTTP_404_NOT_FOUND
+
+
+class LinkCheckTooManyUrlsError(ClientRequestError):
+    """Raised when a link-check submission exceeds the URL cap."""
+
+    error = "too_many_urls"
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 class ConflictError(ClientRequestError):

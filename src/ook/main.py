@@ -34,6 +34,7 @@ from .handlers.internal import internal_router
 
 # Import kafka router and also load the handler functions.
 from .handlers.kafka import kafka_router  # type: ignore [attr-defined]
+from .handlers.linkcheck import linkcheck_router
 from .handlers.links import links_router
 from .handlers.resources import resources_router
 from .handlers.root import root_router
@@ -52,6 +53,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator:
         bootstrap_servers=config.kafka.bootstrap_servers,
         security_protocol=config.kafka.security_protocol.name,
         ingest_topic=config.ingest_kafka_topic,
+        linkcheck_topic=config.linkcheck_kafka_topic,
         consumer_group=config.kafka_consumer_group_id,
     )
 
@@ -115,6 +117,14 @@ app = FastAPI(
             "description": "Ingest services.",
         },
         {
+            "name": "linkcheck",
+            "description": (
+                "External link checking for documentation projects. "
+                "Submissions should be protected via Gafaelfawr ingress "
+                "configuration."
+            ),
+        },
+        {
             "name": "admin",
             "description": (
                 "Administrative operations. These endpoints should be "
@@ -135,6 +145,7 @@ app.include_router(root_router)
 app.include_router(authors_router)
 app.include_router(glossary_router)
 app.include_router(ingest_router)
+app.include_router(linkcheck_router)
 app.include_router(links_router)
 app.include_router(resources_router)
 app.include_router(kafka_router)

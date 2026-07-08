@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings
 from safir.kafka import KafkaConnectionSettings
 from safir.logging import LogLevel, Profile
-from safir.pydantic import EnvAsyncPostgresDsn
+from safir.pydantic import EnvAsyncPostgresDsn, HumanTimedelta
 
 __all__ = [
     "Configuration",
@@ -76,6 +78,14 @@ class Configuration(BaseSettings):
         description="The name of the Kafka topic for the ingest queue.",
     )
 
+    linkcheck_kafka_topic: str = Field(
+        "ook.linkcheck",
+        validation_alias="OOK_LINKCHECK_KAFKA_TOPIC",
+        description=(
+            "The name of the Kafka topic for link-check execution requests."
+        ),
+    )
+
     kafka_consumer_group_id: str = Field(
         "ook",
         validation_alias="OOK_GROUP_ID",
@@ -109,6 +119,96 @@ class Configuration(BaseSettings):
     """The GitHub app private key. See
     https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps
     """
+
+    linkcheck_request_timeout: HumanTimedelta = Field(
+        timedelta(seconds=30),
+        validation_alias="OOK_LINKCHECK_REQUEST_TIMEOUT",
+        description=("Total timeout applied to each link-check HTTP request."),
+    )
+
+    linkcheck_max_concurrency: int = Field(
+        10,
+        ge=1,
+        validation_alias="OOK_LINKCHECK_MAX_CONCURRENCY",
+        description=(
+            "Maximum number of concurrent link-check HTTP requests"
+            " across all hosts."
+        ),
+    )
+
+    linkcheck_host_interval: HumanTimedelta = Field(
+        timedelta(seconds=1),
+        validation_alias="OOK_LINKCHECK_HOST_INTERVAL",
+        description=(
+            "Minimum politeness interval between link-check requests to"
+            " the same host."
+        ),
+    )
+
+    linkcheck_freshness_ttl: HumanTimedelta = Field(
+        timedelta(hours=24),
+        validation_alias="OOK_LINKCHECK_FRESHNESS_TTL",
+        description=(
+            "Age below which a URL's stored check result is considered"
+            " fresh. URLs submitted with a fresh result are not"
+            " rechecked; their cached status is reported immediately."
+        ),
+    )
+
+    linkcheck_max_urls_per_check: int = Field(
+        1000,
+        ge=1,
+        validation_alias="OOK_LINKCHECK_MAX_URLS_PER_CHECK",
+        description=(
+            "Maximum number of unique canonical URLs accepted in a"
+            " single link-check submission."
+        ),
+    )
+
+    linkcheck_broken_threshold: HumanTimedelta = Field(
+        timedelta(hours=48),
+        validation_alias="OOK_LINKCHECK_BROKEN_THRESHOLD",
+        description=(
+            "Minimum span of consecutive failures before a previously-OK"
+            " link is declared broken instead of failing."
+        ),
+    )
+
+    linkcheck_broken_min_attempts: int = Field(
+        3,
+        ge=1,
+        validation_alias="OOK_LINKCHECK_BROKEN_MIN_ATTEMPTS",
+        description=(
+            "Minimum number of consecutive failed attempts before a"
+            " previously-OK link is declared broken instead of failing."
+        ),
+    )
+
+    linkcheck_recheck_intervals: tuple[HumanTimedelta, ...] = Field(
+        (
+            timedelta(hours=1),
+            timedelta(hours=4),
+            timedelta(hours=24),
+            timedelta(hours=48),
+        ),
+        min_length=1,
+        validation_alias="OOK_LINKCHECK_RECHECK_INTERVALS",
+        description=(
+            "Delays until the next recheck of a failing link, indexed by"
+            " the number of consecutive failures so far. The last"
+            " interval repeats when the failure streak outlasts this"
+            " schedule."
+        ),
+    )
+
+    linkcheck_check_retention: HumanTimedelta = Field(
+        timedelta(days=30),
+        validation_alias="OOK_LINKCHECK_CHECK_RETENTION",
+        description=(
+            "Age beyond which link-check submission records are purged"
+            " by the scheduled linkcheck-recheck maintenance command."
+        ),
+    )
 
     slack_webhook: SecretStr | None = Field(
         None,

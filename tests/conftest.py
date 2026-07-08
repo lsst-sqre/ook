@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Sequence
 
 import pytest
 import pytest_asyncio
@@ -20,9 +20,28 @@ from ook import main
 from ook.config import config
 from ook.dbschema import Base
 from ook.factory import Factory
+from ook.kafkarouter import kafka_router
+from ook.services.linkcheck import _urlchecker
 
 from .support.algoliasearch import MockSearchClient, patch_algoliasearch
 from .support.github import GitHubMocker
+
+
+@pytest.fixture(autouse=True)
+def _patched_linkcheck_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve every hostname to a public address so the link-check URL
+    checker's SSRF guard never performs real DNS lookups.
+
+    The application's Kafka consumer executes link checks in the
+    background of any test that submits them, so DNS must resolve
+    deterministically (and the subsequent HTTP request is then handled,
+    or rejected, by respx) regardless of network availability.
+    """
+
+    async def resolve_host(host: str) -> Sequence[str]:
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(_urlchecker, "_default_resolve_host", resolve_host)
 
 
 @pytest.fixture
@@ -61,6 +80,12 @@ async def app(
     await initialize_database(engine, logger, schema=Base.metadata, reset=True)
     await stamp_database_async(engine)
     await engine.dispose()
+    # FastStream's StreamRouter starts its broker only on the first
+    # application startup in a process (guarded by the private
+    # _lifespan_started flag) but stops the broker on every shutdown.
+    # Each test runs the application lifespan anew, so reset the flag to
+    # give every test a started broker for publishers and subscribers.
+    kafka_router._lifespan_started = False
     async with LifespanManager(main.app):
         yield main.app
 

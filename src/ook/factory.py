@@ -7,6 +7,7 @@ from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from typing import Self
 
+import structlog
 from algoliasearch.search_client import SearchClient
 from faststream.kafka import KafkaBroker
 from faststream.kafka.publisher import DefaultPublisher
@@ -20,6 +21,7 @@ from ook.services.authors import AuthorService
 
 from .config import config
 from .dependencies.algoliasearch import algolia_client_dependency
+from .domain.linkcheck import RetryLadderConfig
 from .kafkarouter import kafka_router
 from .services.algoliaaudit import AlgoliaAuditService
 from .services.algoliadocindex import AlgoliaDocIndexService
@@ -29,6 +31,7 @@ from .services.glossary import GlossaryService
 from .services.ingest.lssttexmf import LsstTexmfIngestService
 from .services.ingest.sdmschemas import SdmSchemasIngestService
 from .services.landerjsonldingest import LtdLanderJsonLdIngestService
+from .services.linkcheck import LinkCheckService, UrlChecker
 from .services.links import LinksService
 from .services.ltdmetadataservice import LtdMetadataService
 from .services.resources import ResourceService
@@ -37,6 +40,7 @@ from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
 from .services.technoteingest import TechnoteIngestService
 from .storage.authorstore import AuthorStore
 from .storage.glossarystore import GlossaryStore
+from .storage.linkcheckstore import LinkCheckStore
 from .storage.linkstore import LinkStore
 from .storage.resourcestore import ResourceStore
 from .storage.sdmschemastore import SdmSchemasStore
@@ -56,8 +60,18 @@ class ProcessContext:
 
     kafka_ingest_publisher: DefaultPublisher
 
+    kafka_linkcheck_publisher: DefaultPublisher
+    """Publisher for link-check execution request messages."""
+
     algolia_client: SearchClient
     """Algolia client."""
+
+    url_checker: UrlChecker
+    """Process-wide URL checker for external link checking.
+
+    A singleton so that its global concurrency cap and per-host
+    politeness schedule apply across all consumers in the process.
+    """
 
     @classmethod
     async def create(cls, kafka_broker: KafkaBroker | None = None) -> Self:
@@ -73,13 +87,25 @@ class ProcessContext:
 
         algolia_client = await algolia_client_dependency()
 
+        url_checker = UrlChecker(
+            http_client=http_client,
+            logger=structlog.get_logger("ook"),
+            request_timeout=config.linkcheck_request_timeout,
+            max_concurrency=config.linkcheck_max_concurrency,
+            host_interval=config.linkcheck_host_interval,
+        )
+
         return cls(
             http_client=http_client,
             kafka_broker=broker,
             kafka_ingest_publisher=broker.publisher(
                 config.ingest_kafka_topic, title="ook-ingest-requests"
             ),
+            kafka_linkcheck_publisher=broker.publisher(
+                config.linkcheck_kafka_topic, title="ook-linkcheck-requests"
+            ),
             algolia_client=algolia_client,
+            url_checker=url_checker,
         )
 
     async def aclose(self) -> None:
@@ -179,9 +205,19 @@ class Factory:
         return self._process_context.http_client
 
     @property
+    def url_checker(self) -> UrlChecker:
+        """The process-wide URL checker for external link checking."""
+        return self._process_context.url_checker
+
+    @property
     def db_session(self) -> AsyncSession:
         """The database session."""
         return self._session
+
+    @property
+    def kafka_linkcheck_publisher(self) -> DefaultPublisher:
+        """The Kafka publisher for link-check execution requests."""
+        return self._process_context.kafka_linkcheck_publisher
 
     def create_github_client_factory(self) -> GitHubAppClientFactory:
         """Create a GitHub client factory.
@@ -223,6 +259,29 @@ class Factory:
         return AuthorStore(
             session=self._session,
             logger=self._logger,
+        )
+
+    def create_linkcheck_store(self) -> LinkCheckStore:
+        """Create a LinkCheckStore."""
+        return LinkCheckStore(
+            session=self._session,
+            logger=self._logger,
+        )
+
+    def create_linkcheck_service(self) -> LinkCheckService:
+        """Create a LinkCheckService."""
+        return LinkCheckService(
+            linkcheck_store=self.create_linkcheck_store(),
+            logger=self._logger,
+            freshness_ttl=config.linkcheck_freshness_ttl,
+            max_urls_per_check=config.linkcheck_max_urls_per_check,
+            url_checker=self.url_checker,
+            retry_ladder=RetryLadderConfig(
+                broken_threshold=config.linkcheck_broken_threshold,
+                min_attempts=config.linkcheck_broken_min_attempts,
+                recheck_intervals=config.linkcheck_recheck_intervals,
+            ),
+            check_retention=config.linkcheck_check_retention,
         )
 
     def create_glossary_store(self) -> GlossaryStore:

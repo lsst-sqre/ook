@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import re
 import subprocess
+from dataclasses import dataclass
 from datetime import timedelta
+from itertools import batched
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +25,17 @@ from safir.logging import configure_logging
 from ook.config import config
 from ook.database import init_database
 from ook.domain.algoliarecord import MinimalDocumentModel
+from ook.domain.kafka import RecheckUrlsMessageV1
 from ook.factory import Factory
 from ook.services.algoliadocindex import AlgoliaDocIndexService
 
-__all__ = ["help", "main", "upload_doc_stub"]
+__all__ = [
+    "LinkcheckRecheckSummary",
+    "help",
+    "main",
+    "run_linkcheck_recheck",
+    "upload_doc_stub",
+]
 
 # Add -h as a help shortcut option
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
@@ -240,6 +249,103 @@ async def ingest_lsst_texmf(
         await factory.db_session.commit()
     await engine.dispose()
     logger.info("Completed ingest of lsst/lsst-texmf", git_ref=git_ref)
+
+
+@dataclass(frozen=True, slots=True)
+class LinkcheckRecheckSummary:
+    """The result of a scheduled link-recheck run."""
+
+    enqueued_url_ids: list[int]
+    """The ids of the due, still-referenced URLs enqueued for recheck."""
+
+    batch_count: int
+    """The number of Kafka messages the URL ids were batched into."""
+
+    purged_check_count: int
+    """The number of purged expired checks."""
+
+    purged_url_count: int
+    """The number of purged orphaned URL records."""
+
+
+async def run_linkcheck_recheck(
+    factory: Factory, *, batch_size: int = 100
+) -> LinkcheckRecheckSummary:
+    """Enqueue due link rechecks and purge expired link-check records.
+
+    Due, still-referenced URLs are enumerated and expired records are
+    purged in one transaction; the recheck messages are published to
+    Kafka only after it commits.
+
+    Parameters
+    ----------
+    factory
+        A factory with a database session and a connected Kafka broker.
+    batch_size
+        The maximum number of URL ids per recheck message.
+
+    Returns
+    -------
+    LinkcheckRecheckSummary
+        The enqueued URL ids and purge counts.
+    """
+    logger = structlog.get_logger("ook")
+    service = factory.create_linkcheck_service()
+    async with factory.db_session.begin():
+        due_urls = await service.list_due_recheck_urls()
+        purge_result = await service.purge_expired_records()
+
+    batch_count = 0
+    for batch in batched(
+        [due_url.id for due_url in due_urls], batch_size, strict=False
+    ):
+        message = RecheckUrlsMessageV1(url_ids=list(batch))
+        await factory.kafka_linkcheck_publisher.publish(
+            message.model_dump(mode="json")
+        )
+        batch_count += 1
+
+    logger.info(
+        "Completed linkcheck-recheck",
+        enqueued_url_count=len(due_urls),
+        batch_count=batch_count,
+        purged_check_count=purge_result.check_count,
+        purged_url_count=purge_result.url_count,
+    )
+    return LinkcheckRecheckSummary(
+        enqueued_url_ids=[due_url.id for due_url in due_urls],
+        batch_count=batch_count,
+        purged_check_count=purge_result.check_count,
+        purged_url_count=purge_result.url_count,
+    )
+
+
+@main.command(name="linkcheck-recheck")
+@click.option(
+    "--batch-size",
+    default=100,
+    type=click.IntRange(min=1),
+    help="Maximum number of URL ids per recheck Kafka message.",
+)
+@run_with_asyncio
+async def linkcheck_recheck(*, batch_size: int) -> None:
+    """Enqueue rechecks for due link-check URLs and purge expired
+    records.
+
+    Due, still-referenced URLs are enqueued as batched Kafka messages
+    for the consumer to recheck; URL records with no remaining
+    occurrences and checks older than the retention period are purged.
+    Intended to run as a daily cron job.
+    """
+    logger = structlog.get_logger("ook")
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    async with Factory.create_standalone(
+        logger=logger, engine=engine
+    ) as factory:
+        await run_linkcheck_recheck(factory, batch_size=batch_size)
+    await engine.dispose()
 
 
 timespan_pattern = re.compile(
