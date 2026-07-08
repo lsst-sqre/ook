@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict WajQNxC5xYTrPRkJldxooTFWCCfJPXe4F6eNR6tLrpJ2pLdhuU1lKKGYleaxQPk
+\restrict ZXyCkTrKQN9DID3zN2YnMgC33fELgrH6m0AzWWEu1125vsR9QLgIeCSL9TSTuEd
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -298,7 +298,8 @@ CREATE TABLE public.external_reference (
     last_page text,
     publisher text,
     edition text,
-    contributors json
+    contributors json,
+    CONSTRAINT chk_external_reference_has_key CHECK (((doi IS NOT NULL) OR (arxiv_id IS NOT NULL) OR (isbn IS NOT NULL) OR (issn IS NOT NULL) OR (ads_bibcode IS NOT NULL) OR (url IS NOT NULL)))
 );
 
 
@@ -797,7 +798,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-3b66bd60b53f
+20144e072aa7
 \.
 
 
@@ -1660,6 +1661,13 @@ CREATE INDEX ix_url_occurrence_origin_base_url ON public.url_occurrence USING bt
 
 
 --
+-- Name: uq_external_reference_url; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE UNIQUE INDEX uq_external_reference_url ON public.external_reference USING btree (url) WHERE (url IS NOT NULL);
+
+
+--
 -- Name: uq_resource_relation_external; Type: INDEX; Schema: public; Owner: test
 --
 
@@ -1853,5 +1861,5 @@ ALTER TABLE ONLY public.url_occurrence
 -- PostgreSQL database dump complete
 --
 
-\unrestrict WajQNxC5xYTrPRkJldxooTFWCCfJPXe4F6eNR6tLrpJ2pLdhuU1lKKGYleaxQPk
+\unrestrict ZXyCkTrKQN9DID3zN2YnMgC33fELgrH6m0AzWWEu1125vsR9QLgIeCSL9TSTuEd
 

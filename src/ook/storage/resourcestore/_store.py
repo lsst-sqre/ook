@@ -11,7 +11,7 @@ from safir.database import (
     CountedPaginatedQueryRunner,
     PaginationCursor,
 )
-from sqlalchemy import Select, delete, select
+from sqlalchemy import Select, delete, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
@@ -757,18 +757,36 @@ class ResourceStore:
 
         insert_stmt = pg_insert(SqlExternalReference).values([ext_ref_data])
 
-        # Use DOI for conflict resolution if available, otherwise URL
+        # Resolve conflicts on the strongest available dedup key. DOI and URL
+        # each back a unique index the upsert can arbiter on; the URL index is
+        # partial (``WHERE url IS NOT NULL``), so its predicate must be echoed
+        # via ``index_where`` for PostgreSQL to infer it.
         if external_ref.doi:
             upsert_stmt = insert_stmt.on_conflict_do_update(
                 index_elements=["doi"], set_=ext_ref_data
             ).returning(SqlExternalReference.id)
         elif external_ref.url:
             upsert_stmt = insert_stmt.on_conflict_do_update(
-                index_elements=["url"], set_=ext_ref_data
+                index_elements=["url"],
+                index_where=text("url IS NOT NULL"),
+                set_=ext_ref_data,
             ).returning(SqlExternalReference.id)
-        else:
-            # No unique identifier, just insert
+        elif (
+            external_ref.arxiv_id
+            or external_ref.isbn
+            or external_ref.issn
+            or external_ref.ads_bibcode
+        ):
+            # Keyed only by an identifier the upsert does not dedup on (each
+            # carries its own unique constraint). Insert without an arbiter.
             upsert_stmt = insert_stmt.returning(SqlExternalReference.id)
+        else:
+            # No dedup key at all: reject rather than accumulate an
+            # unmergeable duplicate (also enforced by the DB check constraint).
+            raise ValueError(
+                "External reference must have at least one identifier "
+                "(DOI, arXiv ID, ISBN, ISSN, bibcode, or URL)."
+            )
 
         result = await self._session.execute(upsert_stmt)
         return result.scalar_one()

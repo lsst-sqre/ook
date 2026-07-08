@@ -44,10 +44,12 @@ async def _seed_relation_endpoints(engine: AsyncEngine) -> None:
             )
         await conn.execute(
             sa.text(
-                "INSERT INTO external_reference (id, title) "
-                "VALUES (:id, :title)"
+                "INSERT INTO external_reference (id, title, doi) "
+                "VALUES (:id, :title, :doi)"
             ),
-            {"id": 9001, "title": "External"},
+            # A dedup key (here a DOI) is required by
+            # chk_external_reference_has_key.
+            {"id": 9001, "title": "External", "doi": "10.9999/external"},
         )
 
 
@@ -124,10 +126,84 @@ async def test_expected_indexes_exist() -> None:
             "idx_resource_relation_related_external_ref",
             "idx_resource_relation_source_type",
             "idx_contributor_author",
+            "uq_external_reference_url",
         }
         assert expected <= index_names
         # The dead whole-row unique constraint must no longer exist.
         assert "uq_resource_relation" not in index_names
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_keyless_external_reference_rejected() -> None:
+    """An external reference with no dedup key is rejected by the check
+    constraint, while one carrying only a URL is accepted.
+    """
+    engine = await _init_database()
+    try:
+        with pytest.raises(IntegrityError):
+            async with engine.begin() as conn:
+                await conn.execute(
+                    sa.text(
+                        "INSERT INTO external_reference (id, title) "
+                        "VALUES (:id, :title)"
+                    ),
+                    {"id": 9100, "title": "Keyless"},
+                )
+        # A URL-only reference satisfies the constraint.
+        async with engine.begin() as conn:
+            await conn.execute(
+                sa.text(
+                    "INSERT INTO external_reference (id, title, url) "
+                    "VALUES (:id, :title, :url)"
+                ),
+                {
+                    "id": 9101,
+                    "title": "URL only",
+                    "url": "https://example.org",
+                },
+            )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_external_reference_url_rejected() -> None:
+    """Two external references with the same URL collide on the partial unique
+    index, while multiple NULL-URL references (keyed otherwise) coexist.
+    """
+    engine = await _init_database()
+    try:
+        insert_url = sa.text(
+            "INSERT INTO external_reference (id, title, url) "
+            "VALUES (:id, :title, :url)"
+        )
+        async with engine.begin() as conn:
+            await conn.execute(
+                insert_url,
+                {"id": 9200, "title": "First", "url": "https://example.org/a"},
+            )
+        with pytest.raises(IntegrityError):
+            async with engine.begin() as conn:
+                await conn.execute(
+                    insert_url,
+                    {
+                        "id": 9201,
+                        "title": "Duplicate",
+                        "url": "https://example.org/a",
+                    },
+                )
+        # NULL URLs stay distinct under the partial index (keyed by DOI here).
+        async with engine.begin() as conn:
+            for ref_id, doi in ((9202, "10.1/x"), (9203, "10.1/y")):
+                await conn.execute(
+                    sa.text(
+                        "INSERT INTO external_reference (id, title, doi) "
+                        "VALUES (:id, :title, :doi)"
+                    ),
+                    {"id": ref_id, "title": "No URL", "doi": doi},
+                )
     finally:
         await engine.dispose()
 

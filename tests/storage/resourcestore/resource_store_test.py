@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import func, select
 
-from ook.dbschema.resources import SqlResource
+from ook.dbschema.resources import SqlExternalReference, SqlResource
 from ook.domain.base32id import (
     RESOURCE_ID_EPOCH,
     RESOURCE_ID_RANDOM_BITS,
@@ -24,6 +24,7 @@ def _make_document(
     number: int = 1,
     title: str = "A Sample Technical Note",
     doi: str | None = None,
+    external_relations: list[dict] | None = None,
 ) -> Document:
     """Build a minimal Document domain model for ingest.
 
@@ -41,14 +42,35 @@ def _make_document(
             "handle": handle,
             "number": number,
             "doi": doi,
+            "external_relations": external_relations or [],
         }
     )
+
+
+def _external_relation(**external_reference: object) -> dict:
+    """Build an ``external_relations`` entry citing an external reference.
+
+    ``number_type`` is a required field on ``ExternalReference`` (no default),
+    so it is defaulted to ``None`` here unless the caller overrides it.
+    """
+    return {
+        "relation_type": "Cites",
+        "external_reference": {"number_type": None, **external_reference},
+    }
 
 
 async def _resource_count(factory: Factory) -> int:
     """Return the total number of rows in the resource table."""
     result = await factory.db_session.execute(
         select(func.count()).select_from(SqlResource)
+    )
+    return result.scalar_one()
+
+
+async def _external_reference_count(factory: Factory) -> int:
+    """Return the total number of rows in the external_reference table."""
+    result = await factory.db_session.execute(
+        select(func.count()).select_from(SqlExternalReference)
     )
     return result.scalar_one()
 
@@ -222,3 +244,50 @@ async def test_ingest_timestamps_are_utc(factory: Factory) -> None:
         assert resource is not None
         assert resource.date_created.utcoffset() == timedelta(0)
         assert resource.date_updated.utcoffset() == timedelta(0)
+
+
+@pytest.mark.asyncio
+async def test_url_only_external_reference_dedupes(factory: Factory) -> None:
+    """A DOI-less, URL-only external reference ingests and dedupes on URL.
+
+    The ``ON CONFLICT (url)`` upsert path used to raise ``ProgrammingError``
+    for want of a matching unique index. Two documents citing the same URL
+    must resolve to a single ``external_reference`` row.
+    """
+    url = "https://example.org/paper"
+    async with factory.db_session.begin():
+        store = factory.create_resource_store()
+
+        await store.upsert_document(
+            _make_document(
+                handle="TEST-001",
+                number=1,
+                external_relations=[_external_relation(url=url)],
+            )
+        )
+        assert await _external_reference_count(factory) == 1
+
+        # A second, distinct document citing the same URL dedupes on it.
+        await store.upsert_document(
+            _make_document(
+                handle="TEST-002",
+                number=2,
+                external_relations=[_external_relation(url=url)],
+            )
+        )
+        assert await _external_reference_count(factory) == 1
+
+
+@pytest.mark.asyncio
+async def test_keyless_external_reference_is_rejected(
+    factory: Factory,
+) -> None:
+    """An external reference with no dedup key at all is rejected."""
+    with pytest.raises(ValueError, match="identifier"):
+        async with factory.db_session.begin():
+            store = factory.create_resource_store()
+            await store.upsert_document(
+                _make_document(
+                    external_relations=[_external_relation(title="No keys")]
+                )
+            )

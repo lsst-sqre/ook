@@ -56,10 +56,12 @@ async def _seed(engine: AsyncEngine) -> dict[str, int]:
     async with engine.begin() as conn:
         await conn.execute(
             sa.text(
-                "INSERT INTO external_reference (id, title) "
-                "VALUES (:id, :title)"
+                "INSERT INTO external_reference (id, title, doi) "
+                "VALUES (:id, :title, :doi)"
             ),
-            {"id": 9001, "title": "External"},
+            # A dedup key (here a DOI) is required by
+            # chk_external_reference_has_key.
+            {"id": 9001, "title": "External", "doi": "10.9999/external"},
         )
         for title, (old_id, ms) in resources.items():
             await conn.execute(
