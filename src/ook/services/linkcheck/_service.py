@@ -261,6 +261,16 @@ class LinkCheckService:
                 "Skipped execution of unknown link check", check_id=check_id
             )
             return
+        if record.status is CheckRunStatus.complete:
+            # ``complete`` is the only terminal status, so a redelivered
+            # execution request for a completed check is a no-op:
+            # re-checking would flip its status back to ``in_progress``
+            # and leave a stale ``date_completed`` during the re-run.
+            self._logger.info(
+                "Skipped re-execution of completed link check",
+                check_id=check_id,
+            )
+            return
         await self._store.update_check_status(
             check_id, CheckRunStatus.in_progress
         )

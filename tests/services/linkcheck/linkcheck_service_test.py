@@ -352,6 +352,53 @@ async def test_execute_unknown_check_is_noop(factory: Factory) -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_check_redelivery_after_complete_is_noop(
+    factory: Factory,
+) -> None:
+    """Re-executing an already-complete check is idempotent: at-least-once
+    redelivery of an execution request neither re-checks its URLs nor
+    flips the check back to in_progress, so the completed status and its
+    completion time are preserved.
+    """
+    fetched_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        fetched_paths.append(request.url.path)
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        async with factory.db_session.begin():
+            submission = await service.submit_check(
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
+                urls=[
+                    SubmittedUrl(
+                        url="https://example.com/page", origin_paths=["a"]
+                    )
+                ],
+            )
+            await service.execute_check(submission.check_id)
+
+            report = await service.get_check_report(submission.check_id)
+            assert report is not None
+            assert report.status is CheckRunStatus.complete
+            assert report.date_completed is not None
+            date_completed = report.date_completed
+            assert fetched_paths == ["/page"]
+
+            # Simulate a Kafka redelivery of the execution request.
+            await service.execute_check(submission.check_id)
+
+            # No additional URL checks were performed on the redelivery.
+            assert fetched_paths == ["/page"]
+            report = await service.get_check_report(submission.check_id)
+            assert report is not None
+            assert report.status is CheckRunStatus.complete
+            assert report.date_completed == date_completed
+
+
+@pytest.mark.asyncio
 async def test_execute_recheck_advances_ladder(factory: Factory) -> None:
     """Rechecking a failing URL past the broken threshold advances it
     through the retry ladder to broken.
