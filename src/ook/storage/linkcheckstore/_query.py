@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by
+from sqlalchemy.orm import aliased
 
 from ook.dbschema.linkcheck import (
     SqlCheckedUrl,
@@ -170,7 +171,10 @@ def create_url_occurrences_stmt(url: str) -> Select:
 
 
 def create_origin_links_stmt(
-    origin_base_url: str, *, status: CheckUrlStatus | None = None
+    origin_base_url: str,
+    *,
+    status: CheckUrlStatus | None = None,
+    path: str | None = None,
 ) -> Select:
     """Create a select statement for an origin's links with their
     health states.
@@ -188,6 +192,11 @@ def create_origin_links_stmt(
     status
         If given, only links with this status are selected. The
         ``pending`` status selects never-checked links.
+    path
+        If given, only links that occur on this page path (within the
+        origin) are selected. This only narrows which links are listed:
+        each selected link's aggregated ``origin_paths`` still lists
+        every page it occurs on.
 
     Returns
     -------
@@ -224,6 +233,21 @@ def create_origin_links_stmt(
         stmt = stmt.where(SqlCheckedUrl.status.is_(None))
     elif status is not None:
         stmt = stmt.where(SqlCheckedUrl.status == status.value)
+    if path is not None:
+        # Restrict to links occurring on this page via a correlated
+        # EXISTS over an aliased occurrence table, so the outer join's
+        # ``origin_paths`` aggregation still spans every page the link
+        # occurs on rather than collapsing to the filtered path.
+        occurrence = aliased(SqlUrlOccurrence)
+        stmt = stmt.where(
+            select(occurrence.id)
+            .where(
+                occurrence.checked_url_id == SqlCheckedUrl.id,
+                occurrence.origin_base_url == origin_base_url,
+                occurrence.origin_path == path,
+            )
+            .exists()
+        )
     return stmt
 
 

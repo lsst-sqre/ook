@@ -176,7 +176,10 @@ async def get_linkcheck_url(
         " with next/prev URLs and an `X-Total-Count` header). Filter by"
         " status: `?status=redirected` lists links whose sources should"
         " be updated to their new locations; `?status=broken` is the"
-        " rot-monitoring view."
+        " rot-monitoring view. Filter by page with `?path=<page>` to"
+        " list only the links occurring on that page; each listed link"
+        " still reports its full set of page paths. `?status=` and"
+        " `?path=` compose."
     ),
 )
 async def get_origin_links(
@@ -206,6 +209,18 @@ async def get_origin_links(
             ),
         ),
     ] = None,
+    path: Annotated[
+        str | None,
+        Query(
+            title="Page path filter",
+            description=(
+                "Only list links that occur on this origin page path."
+                " Each listed link still reports its full set of page"
+                " paths; this only narrows which links are listed."
+            ),
+            examples=["guide/installation"],
+        ),
+    ] = None,
     cursor: Annotated[
         str | None,
         Query(
@@ -231,6 +246,7 @@ async def get_origin_links(
         results = await service.get_origin_links(
             origin,
             status=status,
+            path=path,
             cursor=(
                 OriginLinksCursor.from_str(cursor)
                 if cursor is not None

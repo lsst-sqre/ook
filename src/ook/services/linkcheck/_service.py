@@ -439,6 +439,7 @@ class LinkCheckService:
         origin_base_url: str,
         *,
         status: CheckUrlStatus | None = None,
+        path: str | None = None,
         cursor: OriginLinksCursor | None = None,
         limit: int | None = None,
     ) -> CountedPaginatedList[OriginLink, OriginLinksCursor]:
@@ -454,6 +455,10 @@ class LinkCheckService:
             ``redirected`` status lists links whose sources should be
             updated to their new locations; ``broken`` is the
             rot-monitoring view.
+        path
+            If given, only links that occur on this page path are
+            listed; each listed link still carries its full set of
+            origin page paths.
         cursor
             The pagination cursor for the query.
         limit
@@ -465,7 +470,11 @@ class LinkCheckService:
             A paginated list of the origin's links, ordered by URL.
         """
         return await self._store.get_origin_links(
-            origin_base_url, status=status, cursor=cursor, limit=limit
+            origin_base_url,
+            status=status,
+            path=path,
+            cursor=cursor,
+            limit=limit,
         )
 
     def _is_due(self, state: LinkState | None, now: datetime) -> bool:

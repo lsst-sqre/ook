@@ -821,6 +821,65 @@ async def test_get_origin_links_status_filter(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_origin_links_path_filter(client: AsyncClient) -> None:
+    """``?path=`` narrows the listing to links occurring on one page
+    while each returned link keeps its full ``origin_paths`` list, and
+    composes with ``?status=``.
+    """
+    await _seed_origin_links(client)
+
+    # ``?path=index`` returns only links occurring on the ``index``
+    # page (a-ok and b-moved), each still carrying every page it occurs
+    # on.
+    response = await client.get(
+        "/ook/linkcheck/links",
+        params={"origin": ORIGIN, "path": "index"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "2"
+    data = response.json()
+    assert [link["url"] for link in data] == [
+        "https://example.com/a-ok",
+        "https://example.com/b-moved",
+    ]
+    assert data[0]["origin_paths"] == ["index"]
+    # b-moved occurs on both pages; the full list is preserved under
+    # the filter.
+    assert data[1]["origin_paths"] == ["guide", "index"]
+
+    # ``?path=guide`` returns only b-moved.
+    response = await client.get(
+        "/ook/linkcheck/links",
+        params={"origin": ORIGIN, "path": "guide"},
+    )
+    assert response.status_code == 200
+    assert [link["url"] for link in response.json()] == [
+        "https://example.com/b-moved",
+    ]
+
+    # ``?path=`` composes with ``?status=`` (AND): only b-moved is both
+    # on ``index`` and ``redirected``; a-ok is on ``index`` but ``ok``.
+    response = await client.get(
+        "/ook/linkcheck/links",
+        params={"origin": ORIGIN, "path": "index", "status": "redirected"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "1"
+    data = response.json()
+    assert [link["url"] for link in data] == ["https://example.com/b-moved"]
+    assert data[0]["origin_paths"] == ["guide", "index"]
+
+    # A path matching no occurrences yields an empty list.
+    response = await client.get(
+        "/ook/linkcheck/links",
+        params={"origin": ORIGIN, "path": "nonexistent"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "0"
+    assert response.json() == []
+
+
+@pytest.mark.asyncio
 async def test_get_origin_links_pagination(client: AsyncClient) -> None:
     """The origin links listing paginates with a keyset cursor:
     following the ``Link`` header's next relation walks all entries in

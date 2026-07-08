@@ -309,6 +309,7 @@ class LinkCheckStore:
         origin_base_url: str,
         *,
         status: CheckUrlStatus | None = None,
+        path: str | None = None,
         cursor: OriginLinksCursor | None = None,
         limit: int | None = None,
     ) -> CountedPaginatedList[OriginLink, OriginLinksCursor]:
@@ -322,6 +323,10 @@ class LinkCheckStore:
         status
             If given, only links with this status are listed. The
             ``pending`` status lists never-checked links.
+        path
+            If given, only links that occur on this page path are
+            listed; each listed link still carries its full set of
+            origin page paths.
         cursor
             The pagination cursor for the query.
         limit
@@ -338,7 +343,9 @@ class LinkCheckStore:
         )
         return await runner.query_row(
             session=self._session,
-            stmt=create_origin_links_stmt(origin_base_url, status=status),
+            stmt=create_origin_links_stmt(
+                origin_base_url, status=status, path=path
+            ),
             cursor=cursor,
             limit=limit,
         )
