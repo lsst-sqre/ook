@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from typing import Annotated
 
 import base32_lib
@@ -10,10 +12,17 @@ import pytest
 from pydantic import BaseModel, Field, ValidationError
 
 from ook.domain.base32id import (
+    RESOURCE_ID_EPOCH,
+    RESOURCE_ID_RANDOM_BITS,
+    RESOURCE_ID_TIMESTAMP_BITS,
     Base32Id,
     Base32IdNoHyphens,
     Base32IdShort,
     generate_base32_id,
+    generate_resource_id,
+    mint_resource_id_for_timestamp,
+    serialize_ook_base32_id,
+    validate_base32_id,
 )
 
 
@@ -211,6 +220,130 @@ def test_generate_custom_split() -> None:
     id_parts = new_id.split("-")
     for part in id_parts[:-1]:
         assert len(part) == 5
+
+
+def test_resource_id_epoch_is_2025_utc() -> None:
+    """The custom epoch is 2025-01-01T00:00:00Z and timezone-aware."""
+    assert datetime(2025, 1, 1, tzinfo=UTC) == RESOURCE_ID_EPOCH
+    assert RESOURCE_ID_EPOCH.tzinfo is not None
+
+
+def test_resource_id_bit_layout_fills_60bit_envelope() -> None:
+    """Timestamp and random bits together fill the 60-bit envelope."""
+    assert RESOURCE_ID_TIMESTAMP_BITS == 43
+    assert RESOURCE_ID_RANDOM_BITS == 17
+    assert RESOURCE_ID_TIMESTAMP_BITS + RESOURCE_ID_RANDOM_BITS == 60
+
+
+def test_mint_at_epoch_has_zero_timestamp_bits() -> None:
+    """An ID minted at the epoch has no timestamp component."""
+    resource_id = mint_resource_id_for_timestamp(RESOURCE_ID_EPOCH)
+
+    # High (timestamp) bits are zero, so only the random low bits remain.
+    assert resource_id >> RESOURCE_ID_RANDOM_BITS == 0
+    assert 0 <= resource_id < (1 << RESOURCE_ID_RANDOM_BITS)
+
+
+def test_mint_timestamp_bits_derive_from_epoch() -> None:
+    """The high bits encode milliseconds since the custom epoch."""
+    for offset_ms in (1, 1000, 123_456, 5_000_000_000):
+        timestamp = RESOURCE_ID_EPOCH + timedelta(milliseconds=offset_ms)
+        resource_id = mint_resource_id_for_timestamp(timestamp)
+        assert resource_id >> RESOURCE_ID_RANDOM_BITS == offset_ms
+
+
+def test_mint_is_monotonic_across_timestamps() -> None:
+    """Later timestamps sort after earlier ones under integer ordering."""
+    timestamps = [
+        RESOURCE_ID_EPOCH + timedelta(milliseconds=ms)
+        for ms in (0, 1, 2, 1000, 86_400_000, 10_000_000_000)
+    ]
+    ids = [mint_resource_id_for_timestamp(ts) for ts in timestamps]
+
+    # Any timestamps at least 1 ms apart must be strictly ordered despite the
+    # random low bits (the 1 ms step dominates the 17-bit random range).
+    assert ids == sorted(ids)
+    assert all(earlier < later for earlier, later in pairwise(ids))
+
+
+def test_mint_fits_60bit_envelope() -> None:
+    """Every minted ID fits within the 60-bit / 12-character envelope."""
+    for offset_ms in (0, 1, 1_000_000, (1 << RESOURCE_ID_TIMESTAMP_BITS) - 1):
+        timestamp = RESOURCE_ID_EPOCH + timedelta(milliseconds=offset_ms)
+        resource_id = mint_resource_id_for_timestamp(timestamp)
+        assert 0 <= resource_id < (1 << 60)
+
+
+def test_mint_round_trips_through_serialize_and_validate() -> None:
+    """A minted ID round-trips through the Base32 API format."""
+    timestamp = RESOURCE_ID_EPOCH + timedelta(milliseconds=1_234_567_890)
+    resource_id = mint_resource_id_for_timestamp(timestamp)
+
+    encoded = serialize_ook_base32_id(resource_id)
+    assert validate_base32_id(encoded) == resource_id
+    # Fits the 60-bit / 12-character envelope: at most 12 data characters
+    # plus the 2-character checksum once hyphens are removed.
+    assert len(encoded.replace("-", "")) <= 14
+
+
+def test_max_envelope_value_encodes_to_twelve_chars_plus_checksum() -> None:
+    """The largest 60-bit value uses all 12 data characters + checksum."""
+    max_value = (1 << 60) - 1
+    encoded = serialize_ook_base32_id(max_value)
+
+    # 12 data characters + 2 checksum characters once hyphens are removed.
+    assert len(encoded.replace("-", "")) == 14
+    assert validate_base32_id(encoded) == max_value
+
+
+def test_mint_same_millisecond_shares_timestamp_bits() -> None:
+    """Same-millisecond IDs share timestamp bits but vary in random bits."""
+    timestamp = RESOURCE_ID_EPOCH + timedelta(milliseconds=42)
+    ids = [mint_resource_id_for_timestamp(timestamp) for _ in range(50)]
+
+    # All share the same timestamp (high) bits.
+    high_bits = {resource_id >> RESOURCE_ID_RANDOM_BITS for resource_id in ids}
+    assert high_bits == {42}
+
+    # The random low bits vary across mints in the same millisecond.
+    assert len(set(ids)) > 1
+
+
+def test_mint_before_epoch_raises() -> None:
+    """A timestamp before the epoch is rejected."""
+    before = RESOURCE_ID_EPOCH - timedelta(milliseconds=1)
+    with pytest.raises(ValueError, match="epoch"):
+        mint_resource_id_for_timestamp(before)
+
+
+def test_mint_naive_timestamp_raises() -> None:
+    """A timezone-naive timestamp is rejected."""
+    naive = datetime(2025, 6, 1)  # noqa: DTZ001
+    with pytest.raises(ValueError, match="timezone-aware"):
+        mint_resource_id_for_timestamp(naive)
+
+
+def test_mint_beyond_envelope_raises() -> None:
+    """A timestamp past the 43-bit timestamp envelope is rejected."""
+    beyond = RESOURCE_ID_EPOCH + timedelta(
+        milliseconds=1 << RESOURCE_ID_TIMESTAMP_BITS
+    )
+    with pytest.raises(ValueError, match="envelope"):
+        mint_resource_id_for_timestamp(beyond)
+
+
+def test_generate_resource_id_reflects_now() -> None:
+    """generate_resource_id mints for the current time within the envelope."""
+    before_ms = (datetime.now(tz=UTC) - RESOURCE_ID_EPOCH) // timedelta(
+        milliseconds=1
+    )
+    resource_id = generate_resource_id()
+    after_ms = (datetime.now(tz=UTC) - RESOURCE_ID_EPOCH) // timedelta(
+        milliseconds=1
+    )
+
+    assert 0 <= resource_id < (1 << 60)
+    assert before_ms <= (resource_id >> RESOURCE_ID_RANDOM_BITS) <= after_ms
 
 
 def test_user_example() -> None:
