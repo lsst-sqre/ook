@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Self
 
 from pydantic import AnyHttpUrl, BaseModel, Field, model_validator
 
-from ook.domain.base32id import generate_base32_id, validate_base32_id
 from ook.domain.resources import (
     Contributor,
     Document,
@@ -149,17 +148,21 @@ class DocumentRequest(BaseModel):
     def to_domain(self) -> Document:
         """Convert this request model to a Document domain model.
 
+        The ``id`` is a placeholder: the storage layer resolves an existing
+        resource by natural key or mints a time-ordered ID inside the ingest
+        transaction, so the value set here is ignored. Timestamps are set in
+        UTC and are likewise overridden by the storage layer on write.
+
         Returns
         -------
         Document
-            The Document domain model with a generated ID and timestamps.
+            The Document domain model. Its ID and timestamps are placeholders
+            that the storage layer replaces during ingest.
         """
-        now = datetime.now(tz=datetime.now().astimezone().tzinfo)
+        now = datetime.now(tz=UTC)
 
         return Document(
-            id=validate_base32_id(
-                generate_base32_id()
-            ),  # Generate a Base32 ID and convert to integer
+            id=0,  # placeholder; storage layer resolves/mints the real ID
             date_created=now,
             date_updated=now,
             title=self.title,

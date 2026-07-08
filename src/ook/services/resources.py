@@ -73,7 +73,7 @@ class ResourceService:
         document: Document,
         *,
         delete_stale_relations: bool = True,
-    ) -> None:
+    ) -> int:
         """Upsert a document resource into the database.
 
         Parameters
@@ -83,8 +83,14 @@ class ResourceService:
         delete_stale_relations
             If True, delete existing contributors and relations before
             inserting new ones.
+
+        Returns
+        -------
+        int
+            The resolved resource ID: the existing row's ID on an update, or
+            a freshly minted time-ordered ID on an insert.
         """
-        await self._resource_store.upsert_document(
+        return await self._resource_store.upsert_document(
             document, delete_stale_relations=delete_stale_relations
         )
 

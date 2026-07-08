@@ -25,6 +25,7 @@ from ook.dbschema.resources import (
     SqlResource,
     SqlResourceRelation,
 )
+from ook.domain.base32id import generate_resource_id
 from ook.domain.resources import (
     Contributor,
     Document,
@@ -223,8 +224,15 @@ class ResourceStore:
         document: Document,
         *,
         delete_stale_relations: bool = True,
-    ) -> None:
+    ) -> int:
         """Upsert a document resource into the database.
+
+        The incoming document's ``id`` is ignored. An existing row is
+        resolved by natural key — first ``(series, handle)`` on
+        ``document_resource``, then ``doi`` on ``resource`` — and reused for
+        the update, so re-ingesting the same document is idempotent. A
+        genuinely new document mints a fresh time-ordered ID inside this
+        transaction.
 
         Parameters
         ----------
@@ -233,22 +241,167 @@ class ResourceStore:
         delete_stale_relations
             If True, delete existing contributors and relations before
             inserting new ones.
+
+        Returns
+        -------
+        int
+            The resolved resource ID: the existing row's ID on an update, or
+            a freshly minted time-ordered ID on an insert.
         """
         now = datetime.now(tz=UTC).replace(microsecond=0)
 
-        # Handle related data deletion first
-        if delete_stale_relations:
-            await self._delete_resource_relations(document.id)
+        resource_id = await self._resolve_document_id(document)
+        if resource_id is None:
+            resource_id = await self._insert_new_document(document, now)
+        else:
+            await self._update_document(resource_id, document, now)
 
-        # Use joined inheritance upsert for document resource
+        # Handle related data deletion after the resource row exists.
+        if delete_stale_relations:
+            await self._delete_resource_relations(resource_id)
+
+        await self._upsert_contributors(resource_id, document.contributors)
+        await self._upsert_relations(
+            resource_id,
+            document.resource_relations,
+            document.external_relations,
+        )
+        return resource_id
+
+    async def _resolve_document_id(self, document: Document) -> int | None:
+        """Resolve a document to an existing resource ID by natural key.
+
+        Matches first on ``(series, handle)`` in ``document_resource`` and
+        then, if the document carries a DOI, on ``doi`` in ``resource``.
+
+        Parameters
+        ----------
+        document
+            The incoming document.
+
+        Returns
+        -------
+        int or None
+            The existing resource ID, or None when the document is new.
+        """
+        handle_stmt = select(SqlDocumentResource.id).where(
+            SqlDocumentResource.series == document.series,
+            SqlDocumentResource.handle == document.handle,
+        )
+        existing_id = (
+            await self._session.execute(handle_stmt)
+        ).scalar_one_or_none()
+        if existing_id is not None:
+            return existing_id
+
+        if document.doi is not None:
+            doi_stmt = select(SqlResource.id).where(
+                SqlResource.doi == document.doi
+            )
+            existing_id = (
+                await self._session.execute(doi_stmt)
+            ).scalar_one_or_none()
+            if existing_id is not None:
+                return existing_id
+
+        return None
+
+    async def _insert_new_document(
+        self, document: Document, timestamp: datetime
+    ) -> int:
+        """Insert a new document, minting a collision-safe time-ordered ID.
+
+        The parent ``resource`` row is inserted with ``ON CONFLICT (id) DO
+        NOTHING``; if a random ID collision suppresses the insert, a fresh ID
+        is minted and the insert is retried so a collision can never silently
+        merge two resources.
+
+        Parameters
+        ----------
+        document
+            The document to insert.
+        timestamp
+            The UTC timestamp stamped as ``date_created`` and ``date_updated``.
+
+        Returns
+        -------
+        int
+            The freshly minted resource ID.
+
+        Raises
+        ------
+        RuntimeError
+            If a unique ID could not be minted after several attempts.
+        """
+        max_attempts = 5
+        for _ in range(max_attempts):
+            resource_id = generate_resource_id()
+            parent_stmt = (
+                pg_insert(SqlResource)
+                .values(
+                    id=resource_id,
+                    resource_class=document.resource_class.value,
+                    date_created=timestamp,
+                    date_updated=timestamp,
+                    title=document.title,
+                    description=document.description,
+                    url=str(document.url) if document.url else None,
+                    doi=document.doi,
+                    date_resource_published=document.date_resource_published,
+                    date_resource_updated=document.date_resource_updated,
+                    version=document.version,
+                    type=document.type.value if document.type else None,
+                )
+                .on_conflict_do_nothing(index_elements=["id"])
+                .returning(SqlResource.id)
+            )
+            inserted_id = (
+                await self._session.execute(parent_stmt)
+            ).scalar_one_or_none()
+            if inserted_id is None:
+                # Random ID collision — mint a fresh ID and retry.
+                continue
+            await self._session.execute(
+                pg_insert(SqlDocumentResource).values(
+                    id=resource_id,
+                    series=document.series,
+                    handle=document.handle,
+                    generator=document.generator,
+                    number=document.number,
+                )
+            )
+            await self._session.flush()
+            return resource_id
+        raise RuntimeError(
+            f"Unable to mint a unique resource ID after {max_attempts} "
+            "attempts"
+        )
+
+    async def _update_document(
+        self, resource_id: int, document: Document, timestamp: datetime
+    ) -> None:
+        """Update an existing document in place under its current ID.
+
+        ``date_created`` is preserved; only ``date_updated`` and the document
+        fields are refreshed.
+
+        Parameters
+        ----------
+        resource_id
+            The resolved ID of the existing resource.
+        document
+            The document carrying the new field values.
+        timestamp
+            The UTC timestamp stamped as ``date_updated``.
+        """
         await self._upsert_joined_inheritance(
             child_model=SqlDocumentResource,
             parent_model=SqlResource,
             join_conditions={
-                "id": document.id,
+                "id": resource_id,
             },
             update_fields={
-                "date_updated": now,
+                "date_updated": timestamp,
                 "title": document.title,
                 "description": document.description,
                 "url": str(document.url) if document.url else None,
@@ -263,10 +416,10 @@ class ResourceStore:
                 "number": document.number,
             },
             insert_fields={
-                "id": document.id,
+                "id": resource_id,
                 "resource_class": document.resource_class.value,
-                "date_created": document.date_created,
-                "date_updated": now,
+                "date_created": timestamp,
+                "date_updated": timestamp,
                 "title": document.title,
                 "description": document.description,
                 "url": str(document.url) if document.url else None,
@@ -280,13 +433,6 @@ class ResourceStore:
                 "generator": document.generator,
                 "number": document.number,
             },
-        )
-
-        await self._upsert_contributors(document.id, document.contributors)
-        await self._upsert_relations(
-            document.id,
-            document.resource_relations,
-            document.external_relations,
         )
 
     async def upsert_resource(

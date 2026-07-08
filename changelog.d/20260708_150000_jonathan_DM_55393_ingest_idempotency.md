@@ -1,0 +1,4 @@
+### Bug fixes
+
+- Document ingest is now idempotent by natural key. ID minting moved out of the request model and into the storage layer, inside the ingest transaction: an incoming document is resolved against existing rows first by `(series, handle)` on `document_resource` and then by `doi` on `resource`, so a match keeps its ID and takes the update path. Re-ingesting the same payload no longer creates duplicate rows or fails on the unique-handle constraint, and re-ingesting with changed fields updates the resource in place under the same ID.
+- Genuinely new documents now mint a time-ordered ID (via the `ook.domain.base32id` generator) so freshly ingested resources sort in creation order under the default ID-keyset listing. The new row is inserted with `ON CONFLICT (id) DO NOTHING` and retried with a fresh ID on a random collision, so a collision can never silently merge two resources. Ingest timestamps are now stamped in UTC.

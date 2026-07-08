@@ -136,14 +136,18 @@ async def post_ingest_documents(
         doc_request.to_domain() for doc_request in ingest_request.documents
     ]
 
-    # Get the resource service and upsert documents
+    # Get the resource service and upsert documents. The storage layer
+    # resolves each document to an existing row by natural key or mints a
+    # new time-ordered ID, returning the resolved ID to retrieve it by.
     resource_service = context.factory.create_resource_service()
 
+    document_ids: list[int] = []
     for document in documents:
-        await resource_service.upsert_document(document)
+        resource_id = await resource_service.upsert_document(document)
+        document_ids.append(resource_id)
         logger.debug(
             "Upserted document",
-            document_id=document.id,
+            document_id=resource_id,
             title=document.title,
         )
 
@@ -152,15 +156,15 @@ async def post_ingest_documents(
     # Retrieve the documents from the database to return them with all
     # fields populated
     retrieved_documents = []
-    for document in documents:
+    for resource_id in document_ids:
         retrieved_doc = await resource_service.get_resource_by_id(
-            document.id,
+            resource_id,
         )
         if retrieved_doc is not None:
             if not isinstance(retrieved_doc, Document):
                 logger.warning(
                     "Retrieved resource is not a Document",
-                    document_id=document.id,
+                    document_id=resource_id,
                     resource_class=retrieved_doc.resource_class,
                 )
                 continue
@@ -168,7 +172,7 @@ async def post_ingest_documents(
         else:
             logger.warning(
                 "Failed to retrieve document after upsert",
-                document_id=document.id,
+                document_id=resource_id,
             )
 
     logger.info(
