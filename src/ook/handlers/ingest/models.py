@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Annotated, Self
 
 from pydantic import AnyHttpUrl, BaseModel, Field, model_validator
@@ -16,8 +17,12 @@ from ook.domain.resources import (
     ResourceType,
 )
 
+from ..resources.models import DocumentResource
+
 __all__ = [
     "DocumentIngestRequest",
+    "DocumentIngestResult",
+    "DocumentIngestStatus",
     "DocumentRequest",
     "LsstTexmfIngestRequest",
     "LtdIngestRequest",
@@ -194,6 +199,71 @@ class DocumentIngestRequest(BaseModel):
             min_length=1,
         ),
     ]
+
+
+class DocumentIngestStatus(StrEnum):
+    """Outcome of ingesting a single document within a batch."""
+
+    created = "created"
+    """A new resource was minted for the document."""
+
+    updated = "updated"
+    """An existing resource was matched by natural key and updated."""
+
+    failed = "failed"
+    """The document could not be ingested; see the error detail."""
+
+
+class DocumentIngestResult(BaseModel):
+    """Per-item result for a document in a batch ingest.
+
+    One result is returned per submitted document, in request order, so a
+    single failing document neither aborts the batch nor is silently dropped.
+    """
+
+    handle: Annotated[
+        str,
+        Field(
+            description=(
+                "Handle of the submitted document this result corresponds "
+                "to, echoed so callers can correlate results with the "
+                "documents they sent."
+            ),
+            examples=["SQR-000"],
+        ),
+    ]
+
+    status: Annotated[
+        DocumentIngestStatus,
+        Field(
+            description=(
+                "Outcome of ingesting the document: `created` for a new "
+                "resource, `updated` when an existing resource was matched by "
+                "natural key, or `failed` when the document could not be "
+                "ingested."
+            ),
+        ),
+    ]
+
+    resource: Annotated[
+        DocumentResource | None,
+        Field(
+            description=(
+                "The stored document resource. Present when `status` is "
+                "`created` or `updated`, and null when `status` is `failed`."
+            ),
+        ),
+    ] = None
+
+    error: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Error detail explaining why the document failed. Present "
+                "when `status` is `failed`, and null otherwise."
+            ),
+        ),
+    ] = None
 
 
 class LtdIngestRequest(BaseModel):

@@ -83,10 +83,11 @@ async def test_get_resource_by_id(
     response_data = response.json()
     assert response.status_code == 200, json.dumps(response_data, indent=2)
 
-    ingested_documents = response.json()
-    assert len(ingested_documents) == 1
+    ingest_results = response.json()
+    assert len(ingest_results) == 1
+    assert ingest_results[0]["status"] == "created"
 
-    ingested_doc = ingested_documents[0]
+    ingested_doc = ingest_results[0]["resource"]
     document_id = ingested_doc["id"]
 
     # Verify the document was ingested correctly
@@ -228,7 +229,7 @@ async def test_get_resource_with_related_resources(
         "/ook/ingest/resources/documents", json=document_b_data
     )
     assert response_b.status_code == 200
-    document_b = response_b.json()[0]
+    document_b = response_b.json()[0]["resource"]
     document_b_id = document_b["id"]
 
     # Step 2: Create Document A with relation to Document B
@@ -309,7 +310,7 @@ async def test_get_resource_with_related_resources(
         "/ook/ingest/resources/documents", json=document_a_data
     )
     assert response_a.status_code == 200
-    document_a = response_a.json()[0]
+    document_a = response_a.json()[0]["resource"]
     document_a_id = document_a["id"]
 
     # Step 3: Test API response for Document A (has internal relation)

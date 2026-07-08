@@ -268,6 +268,26 @@ class ResourceStore:
         )
         return resource_id
 
+    async def resolve_document_id(self, document: Document) -> int | None:
+        """Resolve a document to an existing resource ID by natural key.
+
+        Public wrapper over the same natural-key resolution `upsert_document`
+        performs, letting callers determine ahead of the upsert whether an
+        incoming document will update an existing resource (non-None ID) or
+        create a new one (None).
+
+        Parameters
+        ----------
+        document
+            The incoming document.
+
+        Returns
+        -------
+        int or None
+            The existing resource ID, or None when the document is new.
+        """
+        return await self._resolve_document_id(document)
+
     async def _resolve_document_id(self, document: Document) -> int | None:
         """Resolve a document to an existing resource ID by natural key.
 
