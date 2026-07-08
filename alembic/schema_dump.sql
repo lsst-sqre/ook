@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict pfzXwwTA2NbXLpTRTs5w8sxGlgNq67hzyIxUc8e0al6anD3oqhqdfr9gX6YCOUf
+\restrict upiAMfROE1lPf581U9EsKQDtKUkhU8J00acJtOuuJQGGr6aYy6uemp71tJkFBW8
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -797,7 +797,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-a62deab01a9b
+cf936213314d
 \.
 
 
@@ -1819,5 +1819,5 @@ ALTER TABLE ONLY public.url_occurrence
 -- PostgreSQL database dump complete
 --
 
-\unrestrict pfzXwwTA2NbXLpTRTs5w8sxGlgNq67hzyIxUc8e0al6anD3oqhqdfr9gX6YCOUf
+\unrestrict upiAMfROE1lPf581U9EsKQDtKUkhU8J00acJtOuuJQGGr6aYy6uemp71tJkFBW8
 

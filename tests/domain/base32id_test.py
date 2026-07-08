@@ -21,6 +21,7 @@ from ook.domain.base32id import (
     generate_base32_id,
     generate_resource_id,
     mint_resource_id_for_timestamp,
+    mint_time_ordered_resource_ids,
     serialize_ook_base32_id,
     validate_base32_id,
 )
@@ -344,6 +345,66 @@ def test_generate_resource_id_reflects_now() -> None:
 
     assert 0 <= resource_id < (1 << 60)
     assert before_ms <= (resource_id >> RESOURCE_ID_RANDOM_BITS) <= after_ms
+
+
+def test_mint_time_ordered_empty() -> None:
+    """An empty sequence of timestamps yields no IDs."""
+    assert mint_time_ordered_resource_ids([]) == []
+
+
+def test_mint_time_ordered_preserves_count() -> None:
+    """One ID is minted per input timestamp."""
+    timestamps = [
+        RESOURCE_ID_EPOCH + timedelta(milliseconds=ms)
+        for ms in (0, 5, 5, 5, 1000, 2000)
+    ]
+    ids = mint_time_ordered_resource_ids(timestamps)
+    assert len(ids) == len(timestamps)
+
+
+def test_mint_time_ordered_is_strictly_increasing() -> None:
+    """Distinct ascending timestamps mint strictly increasing IDs."""
+    timestamps = [
+        RESOURCE_ID_EPOCH + timedelta(milliseconds=ms)
+        for ms in (0, 1, 2, 1000, 86_400_000, 10_000_000_000)
+    ]
+    ids = mint_time_ordered_resource_ids(timestamps)
+
+    assert ids == sorted(ids)
+    assert all(earlier < later for earlier, later in pairwise(ids))
+
+
+def test_mint_time_ordered_breaks_millisecond_ties_strictly() -> None:
+    """IDs stay strictly increasing when timestamps share a millisecond."""
+    # Every timestamp is identical, so the timestamp bits collide and only the
+    # tie-breaking bump keeps the sequence strictly increasing.
+    timestamp = RESOURCE_ID_EPOCH + timedelta(milliseconds=42)
+    ids = mint_time_ordered_resource_ids([timestamp] * 200)
+
+    assert len(ids) == 200
+    assert len(set(ids)) == 200
+    assert all(earlier < later for earlier, later in pairwise(ids))
+
+
+def test_mint_time_ordered_anchors_to_first_timestamp() -> None:
+    """The first minted ID encodes the first timestamp's millisecond bits."""
+    timestamps = [
+        RESOURCE_ID_EPOCH + timedelta(milliseconds=ms) for ms in (7, 7, 99)
+    ]
+    ids = mint_time_ordered_resource_ids(timestamps)
+
+    assert ids[0] >> RESOURCE_ID_RANDOM_BITS == 7
+
+
+def test_mint_time_ordered_fits_envelope() -> None:
+    """Every minted ID fits within the 60-bit Base32 envelope."""
+    timestamps = [
+        RESOURCE_ID_EPOCH + timedelta(milliseconds=ms)
+        for ms in (0, 0, 0, 500, 500, 1_000_000)
+    ]
+    ids = mint_time_ordered_resource_ids(timestamps)
+
+    assert all(0 <= resource_id < (1 << 60) for resource_id in ids)
 
 
 def test_user_example() -> None:

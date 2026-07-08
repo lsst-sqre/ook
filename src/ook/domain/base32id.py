@@ -30,6 +30,7 @@ References
 from __future__ import annotations
 
 import secrets
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
@@ -48,6 +49,7 @@ __all__ = [
     "generate_base32_id",
     "generate_resource_id",
     "mint_resource_id_for_timestamp",
+    "mint_time_ordered_resource_ids",
     "serialize_base32_id",
     "serialize_ook_base32_id",
     "validate_base32_id",
@@ -267,6 +269,48 @@ def mint_resource_id_for_timestamp(timestamp: datetime) -> int:
 
     random_bits = secrets.randbits(RESOURCE_ID_RANDOM_BITS)
     return (milliseconds << RESOURCE_ID_RANDOM_BITS) | random_bits
+
+
+def mint_time_ordered_resource_ids(
+    timestamps: Sequence[datetime],
+) -> list[int]:
+    """Mint strictly increasing, time-ordered resource IDs for a sequence of
+    timestamps supplied in ascending order.
+
+    Each ID is derived from its timestamp with
+    `mint_resource_id_for_timestamp`, so the sequence tracks wall-clock order.
+    When consecutive timestamps fall in the same millisecond (or the random low
+    bits would otherwise regress), the ID is bumped to ``previous + 1`` so the
+    returned sequence is *strictly* increasing regardless of tie density. This
+    is the generator the one-time re-mint migration uses to reassign every
+    ``resource.id`` in ``date_created`` order.
+
+    Parameters
+    ----------
+    timestamps
+        Timezone-aware timestamps in ascending order (typically each row's
+        ``date_created``). Ties are resolved by the caller's ordering.
+
+    Returns
+    -------
+    list[int]
+        One strictly increasing integer ID per input timestamp, each within the
+        60-bit Crockford Base32 envelope.
+
+    Raises
+    ------
+    ValueError
+        If any timestamp is rejected by `mint_resource_id_for_timestamp`.
+    """
+    ids: list[int] = []
+    previous: int | None = None
+    for timestamp in timestamps:
+        candidate = mint_resource_id_for_timestamp(timestamp)
+        if previous is not None and candidate <= previous:
+            candidate = previous + 1
+        ids.append(candidate)
+        previous = candidate
+    return ids
 
 
 def generate_resource_id() -> int:
