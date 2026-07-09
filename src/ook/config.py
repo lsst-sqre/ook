@@ -260,6 +260,17 @@ class Configuration(BaseSettings):
         ),
     )
 
+    intersphinx_ttl: HumanTimedelta = Field(
+        timedelta(hours=1),
+        validation_alias="OOK_INTERSPHINX_TTL",
+        description=(
+            "Freshness TTL for cached intersphinx inventories. An inventory"
+            " fetched within this window is served as a fresh cache hit; an"
+            " older one is served stale on the request path while the"
+            " background refresh job revalidates it."
+        ),
+    )
+
     slack_webhook: SecretStr | None = Field(
         None,
         validation_alias="OOK_SLACK_WEBHOOK",

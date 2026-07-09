@@ -59,3 +59,39 @@ async def test_cold_miss_serves_inventory(
     assert stored is not None
     assert stored.content == INVENTORY_BODY
     assert stored.date_requested is not None
+
+
+@pytest.mark.asyncio
+async def test_warm_hit_serves_from_cache_with_age(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A warm-hit GET serves the cached bytes with an Age header and no
+    second upstream request.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    # Prime the cache with a cold miss.
+    first = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert first.status_code == 200
+    assert route.call_count == 1
+
+    # The warm hit is served from Postgres without contacting upstream.
+    second = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert second.status_code == 200
+    assert second.content == INVENTORY_BODY
+    assert "age" in second.headers
+    assert int(second.headers["age"]) >= 0
+    assert route.call_count == 1
