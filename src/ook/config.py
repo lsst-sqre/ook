@@ -283,6 +283,18 @@ class Configuration(BaseSettings):
         ),
     )
 
+    intersphinx_active_window: HumanTimedelta = Field(
+        timedelta(days=30),
+        validation_alias="OOK_INTERSPHINX_ACTIVE_WINDOW",
+        description=(
+            "Active window for the intersphinx refresh job. The scheduled"
+            " refresh only revalidates cached inventories requested by a"
+            " client within this window; inventories last requested longer"
+            " ago are skipped (not deleted) until a new request reactivates"
+            " them."
+        ),
+    )
+
     slack_webhook: SecretStr | None = Field(
         None,
         validation_alias="OOK_SLACK_WEBHOOK",

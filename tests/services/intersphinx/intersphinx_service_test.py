@@ -378,3 +378,211 @@ async def test_guard_rejection_logs_origin_url(
                 await service.get_inventory(http_url)
 
     assert any(event.get("url") == http_url for event in captured)
+
+
+async def _seed_stale_inventory(
+    factory: Factory,
+    url: str,
+    *,
+    content: bytes | None = INVENTORY_BODY,
+    etag: str | None = '"stored-etag"',
+    last_modified: str | None = "Wed, 01 Jan 2025 00:00:00 GMT",
+    date_fetched: datetime,
+    date_requested: datetime,
+    last_fetch_status: InventoryFetchStatus = InventoryFetchStatus.success,
+) -> None:
+    """Seed a cached inventory row for the refresh-path tests."""
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        await store.upsert_inventory(
+            IntersphinxInventory(
+                url=url,
+                content=content,
+                content_type="application/octet-stream",
+                etag=etag,
+                last_modified=last_modified,
+                date_fetched=date_fetched,
+                date_requested=date_requested,
+                last_fetch_status=last_fetch_status,
+                last_fetch_error=None,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_refresh_304_keeps_content_and_bumps_fetch(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A 304 revalidation keeps the stored content and bumps date_fetched.
+
+    The conditional request carries the stored validators.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    stale_fetched = now - timedelta(hours=2)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=stale_fetched,
+        date_requested=now - timedelta(days=1),
+    )
+
+    seen_headers: dict[str, str] = {}
+
+    def respond(request: httpx.Request) -> Response:
+        seen_headers.update(request.headers)
+        return Response(304)
+
+    route = respx_mock.get(INVENTORY_URL).mock(side_effect=respond)
+
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_cache_service()
+        summary = await service.refresh_inventories(now=now)
+
+    assert route.call_count == 1
+    assert seen_headers.get("if-none-match") == '"stored-etag"'
+    assert (
+        seen_headers.get("if-modified-since")
+        == "Wed, 01 Jan 2025 00:00:00 GMT"
+    )
+    assert summary.revalidated == 1
+    assert summary.refreshed == 0
+    assert summary.failed == 0
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert stored.content == INVENTORY_BODY
+    assert stored.date_fetched == now
+    assert stored.last_fetch_status is InventoryFetchStatus.success
+
+
+@pytest.mark.asyncio
+async def test_refresh_200_replaces_content_and_validators(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A 200 revalidation replaces content, etag, and last-modified."""
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        content=b"old payload",
+        etag='"old-etag"',
+        last_modified="Wed, 01 Jan 2025 00:00:00 GMT",
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+
+    new_body = b"# Sphinx inventory version 2\nnew payload"
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=new_body,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "ETag": '"new-etag"',
+                "Last-Modified": "Fri, 10 Jul 2026 00:00:00 GMT",
+            },
+        )
+    )
+
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_cache_service()
+        summary = await service.refresh_inventories(now=now)
+
+    assert route.call_count == 1
+    assert summary.refreshed == 1
+    assert summary.revalidated == 0
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert stored.content == new_body
+    assert stored.etag == '"new-etag"'
+    assert stored.last_modified == "Fri, 10 Jul 2026 00:00:00 GMT"
+    assert stored.date_fetched == now
+
+
+@pytest.mark.asyncio
+async def test_refresh_skips_inventories_outside_active_window(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """An inventory requested outside the active window is not refreshed."""
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    active_url = "https://active.example.com/objects.inv"
+    inactive_url = "https://inactive.example.com/objects.inv"
+    await _seed_stale_inventory(
+        factory,
+        active_url,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    await _seed_stale_inventory(
+        factory,
+        inactive_url,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=60),
+    )
+    active_route = respx_mock.get(active_url).mock(return_value=Response(304))
+    inactive_route = respx_mock.get(inactive_url).mock(
+        return_value=Response(304)
+    )
+
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_cache_service()
+        summary = await service.refresh_inventories(now=now)
+
+    # Only the active inventory is revalidated; the inactive one is skipped.
+    assert active_route.call_count == 1
+    assert inactive_route.call_count == 0
+    assert summary.considered == 1
+
+
+@pytest.mark.asyncio
+async def test_refresh_per_inventory_failure_does_not_abort_batch(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A per-inventory refresh failure is logged and the batch continues."""
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    failing_url = "https://failing.example.com/objects.inv"
+    ok_url = "https://ok.example.com/objects.inv"
+    await _seed_stale_inventory(
+        factory,
+        failing_url,
+        content=b"kept payload",
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    await _seed_stale_inventory(
+        factory,
+        ok_url,
+        date_fetched=now - timedelta(hours=3),
+        date_requested=now - timedelta(days=1),
+    )
+    respx_mock.get(failing_url).mock(return_value=Response(500))
+    respx_mock.get(ok_url).mock(return_value=Response(304))
+
+    with structlog.testing.capture_logs() as captured:
+        async with factory.db_session.begin():
+            service = factory.create_intersphinx_cache_service()
+            summary = await service.refresh_inventories(now=now)
+
+    assert summary.failed == 1
+    assert summary.revalidated == 1
+    assert any(
+        event.get("url") == failing_url
+        and event.get("cache_status") == "refresh-failure"
+        for event in captured
+    )
+
+    # The failing inventory keeps its stored content for stale serving.
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        kept = await store.get_inventory(failing_url)
+    assert kept is not None
+    assert kept.content == b"kept payload"

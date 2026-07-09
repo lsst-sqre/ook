@@ -287,6 +287,7 @@ class Factory:
             inventory_store=self.create_intersphinx_inventory_store(),
             ttl=config.intersphinx_ttl,
             negative_ttl=config.intersphinx_negative_ttl,
+            active_window=config.intersphinx_active_window,
             logger=self._logger,
         )
 

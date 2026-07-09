@@ -28,12 +28,14 @@ from ook.domain.algoliarecord import MinimalDocumentModel
 from ook.domain.kafka import RecheckUrlsMessageV1
 from ook.factory import Factory
 from ook.services.algoliadocindex import AlgoliaDocIndexService
+from ook.services.intersphinx import IntersphinxRefreshSummary
 
 __all__ = [
     "LinkcheckRecheckSummary",
     "help",
     "main",
     "run_linkcheck_recheck",
+    "run_refresh_intersphinx",
     "upload_doc_stub",
 ]
 
@@ -345,6 +347,65 @@ async def linkcheck_recheck(*, batch_size: int) -> None:
         logger=logger, engine=engine
     ) as factory:
         await run_linkcheck_recheck(factory, batch_size=batch_size)
+    await engine.dispose()
+
+
+async def run_refresh_intersphinx(
+    factory: Factory, *, limit: int | None = None
+) -> IntersphinxRefreshSummary:
+    """Proactively refresh stale, still-active cached intersphinx inventories.
+
+    Inventories past the freshness TTL that a client requested within the
+    active window are conditionally revalidated in one transaction, committed
+    once the run completes. Per-inventory failures are logged by the service
+    and do not abort the batch.
+
+    Parameters
+    ----------
+    factory
+        A factory with a database session and a shared HTTP client.
+    limit
+        The maximum number of inventories to refresh in this run, or None
+        for no limit.
+
+    Returns
+    -------
+    IntersphinxRefreshSummary
+        Counts of the inventories considered, refreshed, revalidated, and
+        failed.
+    """
+    service = factory.create_intersphinx_cache_service()
+    async with factory.db_session.begin():
+        return await service.refresh_inventories(limit=limit)
+
+
+@main.command(name="refresh-intersphinx")
+@click.option(
+    "--limit",
+    default=None,
+    type=click.IntRange(min=1),
+    help="Maximum number of inventories to refresh in this run.",
+)
+@run_with_asyncio
+async def refresh_intersphinx(*, limit: int | None) -> None:
+    """Refresh stale but still-active cached intersphinx inventories.
+
+    Inventories past the freshness TTL that were requested by a client
+    within the active window are conditionally revalidated against their
+    origin: a ``304 Not Modified`` keeps the stored content and bumps its
+    fetch time, while a ``200`` replaces the content and validators.
+    Inventories requested longer ago than the active window are skipped
+    until a new request reactivates them. Intended to run as a scheduled
+    cron job.
+    """
+    logger = structlog.get_logger("ook")
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    async with Factory.create_standalone(
+        logger=logger, engine=engine
+    ) as factory:
+        await run_refresh_intersphinx(factory, limit=limit)
     await engine.dispose()
 
 

@@ -6,7 +6,7 @@ import asyncio
 import ipaddress
 import socket
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import NoReturn
 from urllib.parse import urlsplit
@@ -19,7 +19,29 @@ from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
 from ook.exceptions import InvalidInventoryUrlError, UpstreamInventoryError
 from ook.storage.intersphinxstore import IntersphinxInventoryStore
 
-__all__ = ["HostResolver", "IntersphinxCacheService"]
+__all__ = [
+    "HostResolver",
+    "IntersphinxCacheService",
+    "IntersphinxRefreshSummary",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class IntersphinxRefreshSummary:
+    """The outcome of a proactive intersphinx refresh run."""
+
+    considered: int
+    """The number of stale, still-active inventories the run examined."""
+
+    refreshed: int
+    """The number of inventories whose content was replaced by a 200."""
+
+    revalidated: int
+    """The number of inventories a 304 revalidated in place."""
+
+    failed: int
+    """The number of inventories whose refresh failed (logged, skipped)."""
+
 
 HostResolver = Callable[[str], Awaitable[Sequence[str]]]
 """Type of a callable resolving a hostname to IP address strings."""
@@ -62,6 +84,10 @@ class IntersphinxCacheService:
     negative_ttl
         Negative-cache TTL: a cold-miss fetch failure is cached for this
         window, during which a repeat request raises without re-fetching.
+    active_window
+        Active window for the proactive refresh job: only inventories
+        requested by a client within this window are revalidated; older
+        ones are skipped until a new request reactivates them.
     logger
         The logger.
     resolve_host
@@ -76,6 +102,7 @@ class IntersphinxCacheService:
         inventory_store: IntersphinxInventoryStore,
         ttl: timedelta,
         negative_ttl: timedelta,
+        active_window: timedelta,
         logger: BoundLogger,
         resolve_host: HostResolver | None = None,
     ) -> None:
@@ -83,6 +110,7 @@ class IntersphinxCacheService:
         self._inventory_store = inventory_store
         self._ttl = ttl
         self._negative_ttl = negative_ttl
+        self._active_window = active_window
         self._logger = logger
         self._resolve_host = resolve_host or _default_resolve_host
 
@@ -128,6 +156,142 @@ class IntersphinxCacheService:
                 cached.last_fetch_error or _GENERIC_UPSTREAM_ERROR
             )
         return await self._fetch_and_store(url)
+
+    async def refresh_inventories(
+        self, *, now: datetime | None = None, limit: int | None = None
+    ) -> IntersphinxRefreshSummary:
+        """Proactively revalidate stale, still-active cached inventories.
+
+        Each inventory past the freshness TTL that a client requested within
+        the active window is revalidated with a conditional GET carrying its
+        stored ``ETag`` (as ``If-None-Match``) and ``Last-Modified`` (as
+        ``If-Modified-Since``). A ``304 Not Modified`` keeps the stored
+        content and bumps ``date_fetched``; a ``200`` replaces the content
+        and validators. Inventories requested longer ago than the active
+        window are skipped, not deleted — a new client request reactivates
+        them via ``date_requested``.
+
+        A per-inventory failure (SSRF guard rejection, upstream 4xx/5xx,
+        timeout, connection error) is logged and skipped; the stored copy is
+        left untouched so it keeps serving stale, and the rest of the batch
+        continues. This is the background counterpart to the request path:
+        the request path never blocks on upstream because this job keeps the
+        cache warm.
+
+        Parameters
+        ----------
+        now
+            The reference time for the staleness and active-window cutoffs.
+            Defaults to the current time.
+        limit
+            The maximum number of inventories to refresh in this run, or
+            None for no limit.
+
+        Returns
+        -------
+        IntersphinxRefreshSummary
+            Counts of the inventories considered, refreshed, revalidated,
+            and failed.
+        """
+        if now is None:
+            now = datetime.now(tz=UTC)
+        due = await self._inventory_store.get_stale_active_inventories(
+            now=now,
+            ttl=self._ttl,
+            active_window=self._active_window,
+            limit=limit,
+        )
+        refreshed = 0
+        revalidated = 0
+        failed = 0
+        for inventory in due:
+            try:
+                was_revalidated = await self._refresh_one(inventory, now=now)
+            except (httpx.HTTPError, InvalidInventoryUrlError) as exc:
+                failed += 1
+                self._logger.warning(
+                    "Failed to refresh intersphinx inventory",
+                    url=inventory.url,
+                    cache_status="refresh-failure",
+                    error=(
+                        _describe_upstream_error(exc)
+                        if isinstance(exc, httpx.HTTPError)
+                        else str(exc)
+                    ),
+                )
+                continue
+            if was_revalidated:
+                revalidated += 1
+            else:
+                refreshed += 1
+        summary = IntersphinxRefreshSummary(
+            considered=len(due),
+            refreshed=refreshed,
+            revalidated=revalidated,
+            failed=failed,
+        )
+        self._logger.info(
+            "Completed intersphinx inventory refresh",
+            considered=summary.considered,
+            refreshed=summary.refreshed,
+            revalidated=summary.revalidated,
+            failed=summary.failed,
+        )
+        return summary
+
+    async def _refresh_one(
+        self, inventory: IntersphinxInventory, *, now: datetime
+    ) -> bool:
+        """Revalidate one cached inventory with a conditional GET.
+
+        Returns True when a ``304`` revalidated the stored copy in place and
+        False when a ``200`` replaced its content. Raises on a guard
+        rejection or an upstream failure so the caller can log and skip it.
+        """
+        # Re-guard the stored URL before fetching: it passed the guard when
+        # first cached, but DNS can rebind a once-public host to a private
+        # address, so the cheap re-check preserves the SSRF invariant.
+        await self._guard_url(inventory.url)
+        headers: dict[str, str] = {}
+        if inventory.etag is not None:
+            headers["If-None-Match"] = inventory.etag
+        if inventory.last_modified is not None:
+            headers["If-Modified-Since"] = inventory.last_modified
+        response = await self._http_client.get(inventory.url, headers=headers)
+        if response.status_code == 304:
+            await self._inventory_store.upsert_inventory(
+                replace(
+                    inventory,
+                    date_fetched=now,
+                    last_fetch_status=InventoryFetchStatus.success,
+                    last_fetch_error=None,
+                )
+            )
+            self._logger.info(
+                "Revalidated intersphinx inventory (304 Not Modified)",
+                url=inventory.url,
+                cache_status="revalidated",
+            )
+            return True
+        response.raise_for_status()
+        await self._inventory_store.upsert_inventory(
+            replace(
+                inventory,
+                content=response.content,
+                content_type=response.headers.get("Content-Type"),
+                etag=response.headers.get("ETag"),
+                last_modified=response.headers.get("Last-Modified"),
+                date_fetched=now,
+                last_fetch_status=InventoryFetchStatus.success,
+                last_fetch_error=None,
+            )
+        )
+        self._logger.info(
+            "Refreshed intersphinx inventory (200 OK)",
+            url=inventory.url,
+            cache_status="refreshed",
+        )
+        return False
 
     def _is_negative_cache_fresh(self, cached: IntersphinxInventory) -> bool:
         """Return whether a cached row is a live negative-cache entry.
