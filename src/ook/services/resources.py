@@ -6,7 +6,11 @@ from safir.database import CountedPaginatedList
 from structlog.stdlib import BoundLogger
 
 from ook.domain.resources import Document, Resource
-from ook.storage.resourcestore import ResourcesCursor, ResourceStore
+from ook.storage.resourcestore import (
+    DocumentUpsertResult,
+    ResourcesCursor,
+    ResourceStore,
+)
 
 __all__ = ["ResourceService"]
 
@@ -68,31 +72,12 @@ class ResourceService:
         """
         return await self._resource_store.get_resources(cursor, limit)
 
-    async def resolve_document_id(self, document: Document) -> int | None:
-        """Resolve a document to an existing resource ID by natural key.
-
-        Lets a caller determine, ahead of an upsert, whether an incoming
-        document will update an existing resource or create a new one.
-
-        Parameters
-        ----------
-        document
-            The incoming document.
-
-        Returns
-        -------
-        int or None
-            The existing resource ID when the document matches an existing
-            resource by natural key, or None when the document is new.
-        """
-        return await self._resource_store.resolve_document_id(document)
-
     async def upsert_document(
         self,
         document: Document,
         *,
         delete_stale_relations: bool = True,
-    ) -> int:
+    ) -> DocumentUpsertResult:
         """Upsert a document resource into the database.
 
         Parameters
@@ -105,9 +90,9 @@ class ResourceService:
 
         Returns
         -------
-        int
-            The resolved resource ID: the existing row's ID on an update, or
-            a freshly minted time-ordered ID on an insert.
+        DocumentUpsertResult
+            The resolved resource ID and whether a new row was inserted
+            (``created``) rather than an existing row updated.
         """
         return await self._resource_store.upsert_document(
             document, delete_stale_relations=delete_stale_relations

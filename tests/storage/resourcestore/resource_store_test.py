@@ -81,11 +81,13 @@ async def test_reingest_same_payload_is_idempotent(factory: Factory) -> None:
     async with factory.db_session.begin():
         store = factory.create_resource_store()
 
-        first_id = await store.upsert_document(_make_document())
+        first = await store.upsert_document(_make_document())
+        assert first.created is True
         assert await _resource_count(factory) == 1
 
-        second_id = await store.upsert_document(_make_document())
-        assert second_id == first_id
+        second = await store.upsert_document(_make_document())
+        assert second.created is False
+        assert second.resource_id == first.resource_id
         assert await _resource_count(factory) == 1
 
 
@@ -97,17 +99,19 @@ async def test_reingest_changed_title_updates_in_place(
     async with factory.db_session.begin():
         store = factory.create_resource_store()
 
-        first_id = await store.upsert_document(
+        first = await store.upsert_document(
             _make_document(title="Original Title")
         )
-        updated_id = await store.upsert_document(
+        assert first.created is True
+        updated = await store.upsert_document(
             _make_document(title="Revised Title")
         )
+        assert updated.created is False
 
-        assert updated_id == first_id
+        assert updated.resource_id == first.resource_id
         assert await _resource_count(factory) == 1
 
-        resource = await store.get_resource_by_id(first_id)
+        resource = await store.get_resource_by_id(first.resource_id)
         assert resource is not None
         assert resource.title == "Revised Title"
 
@@ -118,13 +122,14 @@ async def test_reingest_resolves_by_doi(factory: Factory) -> None:
     async with factory.db_session.begin():
         store = factory.create_resource_store()
 
-        first_id = await store.upsert_document(
+        first = await store.upsert_document(
             _make_document(
                 series="S", handle="H-1", number=1, doi="10.1000/shared"
             )
         )
+        assert first.created is True
         # Same DOI, different (series, handle) -> resolves by DOI.
-        resolved_id = await store.upsert_document(
+        resolved = await store.upsert_document(
             _make_document(
                 series="S",
                 handle="H-2",
@@ -133,11 +138,12 @@ async def test_reingest_resolves_by_doi(factory: Factory) -> None:
                 title="Renamed",
             )
         )
+        assert resolved.created is False
 
-        assert resolved_id == first_id
+        assert resolved.resource_id == first.resource_id
         assert await _resource_count(factory) == 1
 
-        resource = await store.get_resource_by_id(first_id)
+        resource = await store.get_resource_by_id(first.resource_id)
         assert resource is not None
         assert isinstance(resource, Document)
         assert resource.handle == "H-2"
@@ -157,17 +163,19 @@ async def test_reingest_same_handle_changed_series_updates(
     async with factory.db_session.begin():
         store = factory.create_resource_store()
 
-        first_id = await store.upsert_document(
+        first = await store.upsert_document(
             _make_document(series="Series A", handle="SAME-1", number=1)
         )
-        updated_id = await store.upsert_document(
+        assert first.created is True
+        updated = await store.upsert_document(
             _make_document(series="Series B", handle="SAME-1", number=1)
         )
+        assert updated.created is False
 
-        assert updated_id == first_id
+        assert updated.resource_id == first.resource_id
         assert await _resource_count(factory) == 1
 
-        resource = await store.get_resource_by_id(first_id)
+        resource = await store.get_resource_by_id(first.resource_id)
         assert resource is not None
         assert isinstance(resource, Document)
         assert resource.series == "Series B"
@@ -187,17 +195,19 @@ async def test_reingest_same_series_number_changed_handle_updates(
     async with factory.db_session.begin():
         store = factory.create_resource_store()
 
-        first_id = await store.upsert_document(
+        first = await store.upsert_document(
             _make_document(series="Series X", handle="HANDLE-1", number=7)
         )
-        updated_id = await store.upsert_document(
+        assert first.created is True
+        updated = await store.upsert_document(
             _make_document(series="Series X", handle="HANDLE-2", number=7)
         )
+        assert updated.created is False
 
-        assert updated_id == first_id
+        assert updated.resource_id == first.resource_id
         assert await _resource_count(factory) == 1
 
-        resource = await store.get_resource_by_id(first_id)
+        resource = await store.get_resource_by_id(first.resource_id)
         assert resource is not None
         assert isinstance(resource, Document)
         assert resource.handle == "HANDLE-2"
@@ -209,7 +219,9 @@ async def test_new_document_mints_time_ordered_id(factory: Factory) -> None:
     before = datetime.now(tz=UTC)
     async with factory.db_session.begin():
         store = factory.create_resource_store()
-        new_id = await store.upsert_document(_make_document())
+        result = await store.upsert_document(_make_document())
+        assert result.created is True
+        new_id = result.resource_id
     after = datetime.now(tz=UTC)
 
     # The high bits decode to milliseconds since the epoch; a randomly
@@ -238,14 +250,16 @@ async def test_documents_sort_in_creation_order(
     async with factory.db_session.begin():
         store = factory.create_resource_store()
         ingested_ids = [
-            await store.upsert_document(
-                _make_document(
-                    series="S",
-                    handle=f"H-{i}",
-                    number=i,
-                    title=f"Doc {i}",
+            (
+                await store.upsert_document(
+                    _make_document(
+                        series="S",
+                        handle=f"H-{i}",
+                        number=i,
+                        title=f"Doc {i}",
+                    )
                 )
-            )
+            ).resource_id
             for i in (1, 2, 3)
         ]
         assert ingested_ids == sorted(ingested_ids)
@@ -263,9 +277,13 @@ async def test_id_collision_retries_with_fresh_id(
     async with factory.db_session.begin():
         store = factory.create_resource_store()
 
-        first_id = await store.upsert_document(
-            _make_document(series="S", handle="H-1", number=1, title="First")
-        )
+        first_id = (
+            await store.upsert_document(
+                _make_document(
+                    series="S", handle="H-1", number=1, title="First"
+                )
+            )
+        ).resource_id
 
         # The next mint collides with the existing ID once, then succeeds
         # with a distinct ID (offset by one millisecond).
@@ -276,12 +294,13 @@ async def test_id_collision_retries_with_fresh_id(
             lambda: next(minted),
         )
 
-        second_id = await store.upsert_document(
+        second = await store.upsert_document(
             _make_document(series="S", handle="H-2", number=2, title="Second")
         )
 
-        assert second_id == fresh_id
-        assert second_id != first_id
+        assert second.created is True
+        assert second.resource_id == fresh_id
+        assert second.resource_id != first_id
         assert await _resource_count(factory) == 2
 
         # The first row must be untouched (not merged or overwritten).
@@ -297,7 +316,7 @@ async def test_ingest_timestamps_are_utc(factory: Factory) -> None:
     """Ingest stamps ``date_created`` and ``date_updated`` in UTC."""
     async with factory.db_session.begin():
         store = factory.create_resource_store()
-        new_id = await store.upsert_document(_make_document())
+        new_id = (await store.upsert_document(_make_document())).resource_id
 
         resource = await store.get_resource_by_id(new_id)
         assert resource is not None

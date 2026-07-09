@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Self, override
+from typing import Any, NamedTuple, Self, override
 
 from safir.database import (
     CountedPaginatedList,
@@ -41,7 +41,21 @@ from ook.domain.resources import (
 from ._models import ResourcePaginationModel
 from ._queryutils import create_resource_with_relations_stmt
 
-__all__ = ["ResourceStore", "ResourcesCursor"]
+__all__ = ["DocumentUpsertResult", "ResourceStore", "ResourcesCursor"]
+
+
+class DocumentUpsertResult(NamedTuple):
+    """Outcome of upserting a document resource."""
+
+    resource_id: int
+    """The resolved resource ID: the existing row's ID on an update, or a
+    freshly minted time-ordered ID on an insert.
+    """
+
+    created: bool
+    """True when a new resource row was inserted; False when an existing row
+    was matched by natural key and updated.
+    """
 
 
 class ResourceStore:
@@ -224,7 +238,7 @@ class ResourceStore:
         document: Document,
         *,
         delete_stale_relations: bool = True,
-    ) -> int:
+    ) -> DocumentUpsertResult:
         """Upsert a document resource into the database.
 
         The incoming document's ``id`` is ignored. An existing row is
@@ -246,16 +260,21 @@ class ResourceStore:
 
         Returns
         -------
-        int
-            The resolved resource ID: the existing row's ID on an update, or
-            a freshly minted time-ordered ID on an insert.
+        DocumentUpsertResult
+            The resolved resource ID and whether a new row was inserted
+            (``created``) rather than an existing row updated. The single
+            natural-key resolution the upsert already performs backs the
+            ``created`` flag, so callers need not resolve the document again
+            to learn the outcome.
         """
         now = datetime.now(tz=UTC).replace(microsecond=0)
 
-        resource_id = await self._resolve_document_id(document)
-        if resource_id is None:
+        resolved_id = await self._resolve_document_id(document)
+        created = resolved_id is None
+        if resolved_id is None:
             resource_id = await self._insert_new_document(document, now)
         else:
+            resource_id = resolved_id
             await self._update_document(resource_id, document, now)
 
         # Handle related data deletion after the resource row exists.
@@ -268,27 +287,7 @@ class ResourceStore:
             document.resource_relations,
             document.external_relations,
         )
-        return resource_id
-
-    async def resolve_document_id(self, document: Document) -> int | None:
-        """Resolve a document to an existing resource ID by natural key.
-
-        Public wrapper over the same natural-key resolution `upsert_document`
-        performs, letting callers determine ahead of the upsert whether an
-        incoming document will update an existing resource (non-None ID) or
-        create a new one (None).
-
-        Parameters
-        ----------
-        document
-            The incoming document.
-
-        Returns
-        -------
-        int or None
-            The existing resource ID, or None when the document is new.
-        """
-        return await self._resolve_document_id(document)
+        return DocumentUpsertResult(resource_id=resource_id, created=created)
 
     async def _resolve_document_id(self, document: Document) -> int | None:
         """Resolve a document to an existing resource ID by natural key.

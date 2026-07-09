@@ -179,6 +179,10 @@ async def test_post_ingest_documents_mixed_success(
     assert failed["handle"] == "BATCH-002"
     assert failed["resource"] is None
     assert failed["error"]  # non-empty error detail
+    # The sanitized detail must not leak the SQL statement or bound
+    # parameters that SQLAlchemy appends to the exception string.
+    assert "[SQL" not in failed["error"]
+    assert "parameters" not in failed["error"]
 
     assert results[2]["status"] == "created"
     assert results[2]["handle"] == "BATCH-003"

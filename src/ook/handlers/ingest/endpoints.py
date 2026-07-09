@@ -23,6 +23,29 @@ router = APIRouter(prefix=f"{config.path_prefix}/ingest", tags=["ingest"])
 """FastAPI router for all ingest handlers."""
 
 
+def _sanitize_error_detail(exc: Exception) -> str:
+    """Build a per-item error detail that does not leak SQL or parameters.
+
+    SQLAlchemy appends ``[SQL: ...]`` and ``[parameters: ...]`` sections to
+    its exception strings, which would otherwise surface the statement and
+    bound values in the API response. This keeps only the exception class
+    name and the first line of the message up to that ``[SQL:`` marker. The
+    full exception is still logged via ``logger.exception``.
+
+    Parameters
+    ----------
+    exc
+        The exception raised while ingesting a single document.
+
+    Returns
+    -------
+    str
+        A sanitized, single-line error detail.
+    """
+    message = str(exc).split("[SQL:", 1)[0].split("\n", 1)[0].strip()
+    return f"{type(exc).__name__}: {message}"
+
+
 @router.post(
     "/ltd",
     summary="Ingest a project in LSST the Docs",
@@ -136,8 +159,8 @@ async def post_ingest_documents(
     )
 
     # The storage layer resolves each document to an existing row by natural
-    # key or mints a new time-ordered ID. Resolving first tells us whether the
-    # upsert will update an existing resource or create a new one.
+    # key or mints a new time-ordered ID, reporting which it did via the
+    # upsert result's ``created`` flag.
     resource_service = context.factory.create_resource_service()
 
     results: list[DocumentIngestResult] = []
@@ -146,11 +169,14 @@ async def post_ingest_documents(
         try:
             # Each document runs in its own savepoint so one failure rolls
             # back only that document and leaves the batch transaction usable.
+            # The whole result — including the retrieval and response
+            # construction — stays inside the savepoint, so any failure here
+            # rolls the document's writes back and reports ``failed`` truly.
             async with context.session.begin_nested():
-                existing_id = await resource_service.resolve_document_id(
+                upsert_result = await resource_service.upsert_document(
                     document
                 )
-                resource_id = await resource_service.upsert_document(document)
+                resource_id = upsert_result.resource_id
                 retrieved = await resource_service.get_resource_by_id(
                     resource_id
                 )
@@ -158,18 +184,18 @@ async def post_ingest_documents(
                     raise TypeError(
                         f"Upserted resource {resource_id} is not a document"
                     )
-            status = (
-                DocumentIngestStatus.updated
-                if existing_id is not None
-                else DocumentIngestStatus.created
-            )
-            result = DocumentIngestResult(
-                handle=document.handle,
-                status=status,
-                resource=DocumentResource.from_domain(
-                    retrieved, request=context.request
-                ),
-            )
+                status = (
+                    DocumentIngestStatus.created
+                    if upsert_result.created
+                    else DocumentIngestStatus.updated
+                )
+                result = DocumentIngestResult(
+                    handle=document.handle,
+                    status=status,
+                    resource=DocumentResource.from_domain(
+                        retrieved, request=context.request
+                    ),
+                )
             logger.debug(
                 "Ingested document",
                 document_id=resource_id,
@@ -185,7 +211,7 @@ async def post_ingest_documents(
             result = DocumentIngestResult(
                 handle=document.handle,
                 status=DocumentIngestStatus.failed,
-                error=str(exc),
+                error=_sanitize_error_detail(exc),
             )
         results.append(result)
 
