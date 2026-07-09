@@ -145,6 +145,65 @@ async def test_reingest_resolves_by_doi(factory: Factory) -> None:
 
 
 @pytest.mark.asyncio
+async def test_reingest_same_handle_changed_series_updates(
+    factory: Factory,
+) -> None:
+    """Re-ingesting the same handle with a changed series updates in place.
+
+    ``document_resource.handle`` is unique on its own, so a re-ingest that
+    keeps the handle but changes the series must resolve to the existing row
+    and update it rather than mint a new ID that collides on the handle.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_resource_store()
+
+        first_id = await store.upsert_document(
+            _make_document(series="Series A", handle="SAME-1", number=1)
+        )
+        updated_id = await store.upsert_document(
+            _make_document(series="Series B", handle="SAME-1", number=1)
+        )
+
+        assert updated_id == first_id
+        assert await _resource_count(factory) == 1
+
+        resource = await store.get_resource_by_id(first_id)
+        assert resource is not None
+        assert isinstance(resource, Document)
+        assert resource.series == "Series B"
+
+
+@pytest.mark.asyncio
+async def test_reingest_same_series_number_changed_handle_updates(
+    factory: Factory,
+) -> None:
+    """Re-ingesting the same (series, number) with a new handle updates in
+    place.
+
+    ``UNIQUE (series, number)`` means a re-ingest that reuses an existing
+    (series, number) under a different handle must resolve to the existing row
+    and update it rather than mint a new ID that collides on (series, number).
+    """
+    async with factory.db_session.begin():
+        store = factory.create_resource_store()
+
+        first_id = await store.upsert_document(
+            _make_document(series="Series X", handle="HANDLE-1", number=7)
+        )
+        updated_id = await store.upsert_document(
+            _make_document(series="Series X", handle="HANDLE-2", number=7)
+        )
+
+        assert updated_id == first_id
+        assert await _resource_count(factory) == 1
+
+        resource = await store.get_resource_by_id(first_id)
+        assert resource is not None
+        assert isinstance(resource, Document)
+        assert resource.handle == "HANDLE-2"
+
+
+@pytest.mark.asyncio
 async def test_new_document_mints_time_ordered_id(factory: Factory) -> None:
     """A new document mints a time-ordered ID in the storage layer."""
     before = datetime.now(tz=UTC)

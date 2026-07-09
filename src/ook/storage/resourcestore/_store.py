@@ -228,11 +228,13 @@ class ResourceStore:
         """Upsert a document resource into the database.
 
         The incoming document's ``id`` is ignored. An existing row is
-        resolved by natural key — first ``(series, handle)`` on
-        ``document_resource``, then ``doi`` on ``resource`` — and reused for
-        the update, so re-ingesting the same document is idempotent. A
-        genuinely new document mints a fresh time-ordered ID inside this
-        transaction.
+        resolved by natural key — matching the database's document-identity
+        unique constraints in turn: ``handle`` on ``document_resource``, then
+        ``(series, number)`` on ``document_resource``, then ``doi`` on
+        ``resource`` — and reused for the update, so re-ingesting the same
+        document is idempotent and a re-ingest can never fail on a
+        document-identity unique constraint. A genuinely new document mints a
+        fresh time-ordered ID inside this transaction.
 
         Parameters
         ----------
@@ -291,8 +293,19 @@ class ResourceStore:
     async def _resolve_document_id(self, document: Document) -> int | None:
         """Resolve a document to an existing resource ID by natural key.
 
-        Matches first on ``(series, handle)`` in ``document_resource`` and
-        then, if the document carries a DOI, on ``doi`` in ``resource``.
+        The cascade mirrors the database's document-identity unique
+        constraints so any incoming document that would collide with an
+        existing row resolves to it and takes the update path:
+
+        1. ``handle`` alone in ``document_resource``
+           (``document_resource_handle_key``).
+        2. ``(series, number)`` in ``document_resource``
+           (``uq_document_series_number``).
+        3. ``doi`` in ``resource`` when the document carries one.
+
+        Handle is the primary document identity, so it is matched first: a
+        document whose handle matches one row but whose ``(series, number)``
+        matches another resolves to the handle match.
 
         Parameters
         ----------
@@ -305,11 +318,20 @@ class ResourceStore:
             The existing resource ID, or None when the document is new.
         """
         handle_stmt = select(SqlDocumentResource.id).where(
-            SqlDocumentResource.series == document.series,
             SqlDocumentResource.handle == document.handle,
         )
         existing_id = (
             await self._session.execute(handle_stmt)
+        ).scalar_one_or_none()
+        if existing_id is not None:
+            return existing_id
+
+        series_number_stmt = select(SqlDocumentResource.id).where(
+            SqlDocumentResource.series == document.series,
+            SqlDocumentResource.number == document.number,
+        )
+        existing_id = (
+            await self._session.execute(series_number_stmt)
         ).scalar_one_or_none()
         if existing_id is not None:
             return existing_id
