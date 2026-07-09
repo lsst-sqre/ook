@@ -757,30 +757,33 @@ class ResourceStore:
 
         insert_stmt = pg_insert(SqlExternalReference).values([ext_ref_data])
 
-        # Resolve conflicts on the strongest available dedup key. DOI and URL
-        # each back a unique index the upsert can arbiter on; the URL index is
-        # partial (``WHERE url IS NOT NULL``), so its predicate must be echoed
-        # via ``index_where`` for PostgreSQL to infer it.
-        if external_ref.doi:
-            upsert_stmt = insert_stmt.on_conflict_do_update(
-                index_elements=["doi"], set_=ext_ref_data
-            ).returning(SqlExternalReference.id)
-        elif external_ref.url:
-            upsert_stmt = insert_stmt.on_conflict_do_update(
-                index_elements=["url"],
-                index_where=text("url IS NOT NULL"),
-                set_=ext_ref_data,
-            ).returning(SqlExternalReference.id)
-        elif (
-            external_ref.arxiv_id
-            or external_ref.isbn
-            or external_ref.issn
-            or external_ref.ads_bibcode
-        ):
-            # Keyed only by an identifier the upsert does not dedup on (each
-            # carries its own unique constraint). Insert without an arbiter.
-            upsert_stmt = insert_stmt.returning(SqlExternalReference.id)
-        else:
+        # Resolve conflicts on the strongest available dedup key. Every
+        # identifier column backs a unique index the upsert can arbiter on, so
+        # a re-cited reference dedupes (ON CONFLICT DO UPDATE) rather than
+        # violating the constraint. Priority runs doi -> url -> arxiv_id ->
+        # isbn -> issn -> ads_bibcode. The url index is partial
+        # (``WHERE url IS NOT NULL``), so its predicate must be echoed via
+        # ``index_where`` for PostgreSQL to infer it; the other four are plain
+        # unique constraints and need no predicate.
+        arbiters: tuple[tuple[str, str, Any], ...] = (
+            ("doi", "doi", None),
+            ("url", "url", text("url IS NOT NULL")),
+            ("arxiv_id", "arxiv_id", None),
+            ("isbn", "isbn", None),
+            ("issn", "issn", None),
+            ("ads_bibcode", "ads_bibcode", None),
+        )
+        upsert_stmt = None
+        for attr, index_element, index_where in arbiters:
+            if getattr(external_ref, attr):
+                upsert_stmt = insert_stmt.on_conflict_do_update(
+                    index_elements=[index_element],
+                    index_where=index_where,
+                    set_=ext_ref_data,
+                ).returning(SqlExternalReference.id)
+                break
+
+        if upsert_stmt is None:
             # No dedup key at all: reject rather than accumulate an
             # unmergeable duplicate (also enforced by the DB check constraint).
             raise ValueError(

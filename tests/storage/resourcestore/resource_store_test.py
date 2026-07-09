@@ -278,6 +278,99 @@ async def test_url_only_external_reference_dedupes(factory: Factory) -> None:
         assert await _external_reference_count(factory) == 1
 
 
+@pytest.mark.parametrize(
+    ("key_field", "key_value"),
+    [
+        ("arxiv_id", "2401.00001"),
+        ("isbn", "978-3-16-148410-0"),
+        ("issn", "0000-0019"),
+        ("ads_bibcode", "2024ApJ...900....1S"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_identifier_only_external_reference_dedupes(
+    factory: Factory, key_field: str, key_value: str
+) -> None:
+    """A reference keyed only by arXiv/ISBN/ISSN/bibcode dedupes on that key.
+
+    Each identifier column carries its own unique constraint but the upsert
+    used to insert without an arbiter, so a second citation raised
+    ``IntegrityError`` instead of deduping. Two documents citing the same
+    identifier-only reference must resolve to a single row.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_resource_store()
+
+        await store.upsert_document(
+            _make_document(
+                handle="TEST-001",
+                number=1,
+                external_relations=[
+                    _external_relation(**{key_field: key_value})
+                ],
+            )
+        )
+        assert await _external_reference_count(factory) == 1
+
+        # A second, distinct document citing the same identifier dedupes.
+        await store.upsert_document(
+            _make_document(
+                handle="TEST-002",
+                number=2,
+                external_relations=[
+                    _external_relation(**{key_field: key_value})
+                ],
+            )
+        )
+        assert await _external_reference_count(factory) == 1
+
+
+@pytest.mark.asyncio
+async def test_identifier_only_external_reference_updates(
+    factory: Factory,
+) -> None:
+    """Re-citing an identifier-only reference updates the existing row.
+
+    The arbiter drives ``ON CONFLICT DO UPDATE``, so a second citation with a
+    changed title updates the single row rather than erroring or duplicating.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_resource_store()
+
+        await store.upsert_document(
+            _make_document(
+                handle="TEST-001",
+                number=1,
+                external_relations=[
+                    _external_relation(
+                        arxiv_id="2401.00001", title="Original Title"
+                    )
+                ],
+            )
+        )
+        await store.upsert_document(
+            _make_document(
+                handle="TEST-002",
+                number=2,
+                external_relations=[
+                    _external_relation(
+                        arxiv_id="2401.00001", title="Revised Title"
+                    )
+                ],
+            )
+        )
+
+        assert await _external_reference_count(factory) == 1
+        title = (
+            await factory.db_session.execute(
+                select(SqlExternalReference.title).where(
+                    SqlExternalReference.arxiv_id == "2401.00001"
+                )
+            )
+        ).scalar_one()
+        assert title == "Revised Title"
+
+
 @pytest.mark.asyncio
 async def test_keyless_external_reference_is_rejected(
     factory: Factory,
