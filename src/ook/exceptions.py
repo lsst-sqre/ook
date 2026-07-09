@@ -18,6 +18,7 @@ __all__ = [
     "ConflictError",
     "DocumentParsingError",
     "DuplicateOrcidError",
+    "InvalidInventoryUrlError",
     "LinkCheckTooManyUrlsError",
     "LtdSlugClassificationError",
     "NotFoundError",
@@ -75,6 +76,18 @@ class LinkCheckTooManyUrlsError(ClientRequestError):
 
     error = "too_many_urls"
     status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+
+
+class InvalidInventoryUrlError(ClientRequestError):
+    """Raised when an intersphinx inventory URL fails the SSRF guard.
+
+    A URL is rejected if it does not use ``https`` or if its host resolves
+    to a private, link-local, or loopback address. Rejected URLs are never
+    fetched from upstream and never stored in the cache.
+    """
+
+    error = "invalid_inventory_url"
+    status_code = status.HTTP_400_BAD_REQUEST
 
 
 class ConflictError(ClientRequestError):

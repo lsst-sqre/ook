@@ -95,3 +95,24 @@ async def test_warm_hit_serves_from_cache_with_age(
     assert "age" in second.headers
     assert int(second.headers["age"]) >= 0
     assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_http_url_rejected_with_400(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A non-HTTPS URL is rejected with a 400 and never fetched."""
+    http_url = "http://docs.example.com/en/latest/objects.inv"
+    route = respx_mock.get(http_url).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": http_url},
+    )
+
+    assert response.status_code == 400
+    # The guarded URL is never fetched from upstream.
+    assert route.call_count == 0

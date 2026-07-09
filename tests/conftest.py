@@ -21,6 +21,7 @@ from ook.config import config
 from ook.dbschema import Base
 from ook.factory import Factory
 from ook.kafkarouter import kafka_router
+from ook.services import intersphinx as intersphinx_service
 from ook.services.linkcheck import _urlchecker
 
 from .support.algoliasearch import MockSearchClient, patch_algoliasearch
@@ -28,20 +29,26 @@ from .support.github import GitHubMocker
 
 
 @pytest.fixture(autouse=True)
-def _patched_linkcheck_dns(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Resolve every hostname to a public address so the link-check URL
-    checker's SSRF guard never performs real DNS lookups.
+def _patched_ssrf_guard_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve every hostname to a public address so the SSRF guards in the
+    link-check URL checker and the intersphinx cache never perform real DNS
+    lookups.
 
     The application's Kafka consumer executes link checks in the
     background of any test that submits them, so DNS must resolve
     deterministically (and the subsequent HTTP request is then handled,
-    or rejected, by respx) regardless of network availability.
+    or rejected, by respx) regardless of network availability. The
+    intersphinx cache's guard likewise resolves origin hosts before a
+    cold-miss fetch, so it must resolve deterministically too.
     """
 
     async def resolve_host(host: str) -> Sequence[str]:
         return ["93.184.216.34"]
 
     monkeypatch.setattr(_urlchecker, "_default_resolve_host", resolve_host)
+    monkeypatch.setattr(
+        intersphinx_service, "_default_resolve_host", resolve_host
+    )
 
 
 @pytest.fixture

@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
+import socket
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import NoReturn
+from urllib.parse import urlsplit
 
 from httpx import AsyncClient
 from structlog.stdlib import BoundLogger
 
 from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
+from ook.exceptions import InvalidInventoryUrlError
 from ook.storage.intersphinxstore import IntersphinxInventoryStore
 
-__all__ = ["IntersphinxCacheService"]
+__all__ = ["HostResolver", "IntersphinxCacheService"]
+
+HostResolver = Callable[[str], Awaitable[Sequence[str]]]
+"""Type of a callable resolving a hostname to IP address strings."""
 
 
 class IntersphinxCacheService:
@@ -24,8 +34,12 @@ class IntersphinxCacheService:
     upstream — a fetch within ``ttl`` is served as a fresh cache hit, an
     older one is served stale (proactive refresh is the background job's
     responsibility) — so the request path never depends on the origin once
-    a copy exists. URL guarding and negative caching land in follow-on
-    tasks.
+    a copy exists.
+
+    Before any upstream fetch the origin URL passes an SSRF guard: it must
+    use ``https`` and its host must not resolve to a private, link-local,
+    or loopback address. A guarded URL is never fetched and never stored.
+    Negative caching lands in a follow-on task.
 
     Parameters
     ----------
@@ -38,6 +52,9 @@ class IntersphinxCacheService:
         window is served as a fresh hit; an older one is served stale.
     logger
         The logger.
+    resolve_host
+        Hostname resolver used by the SSRF guard, mainly injectable for
+        testing. Defaults to asyncio's ``getaddrinfo``.
     """
 
     def __init__(
@@ -47,11 +64,13 @@ class IntersphinxCacheService:
         inventory_store: IntersphinxInventoryStore,
         ttl: timedelta,
         logger: BoundLogger,
+        resolve_host: HostResolver | None = None,
     ) -> None:
         self._http_client = http_client
         self._inventory_store = inventory_store
         self._ttl = ttl
         self._logger = logger
+        self._resolve_host = resolve_host or _default_resolve_host
 
     async def get_inventory(self, url: str) -> IntersphinxInventory:
         """Resolve an origin inventory URL to its cached record.
@@ -107,6 +126,7 @@ class IntersphinxCacheService:
 
     async def _fetch_and_store(self, url: str) -> IntersphinxInventory:
         """Fetch an origin inventory and store it (the cold-miss path)."""
+        await self._guard_url(url)
         self._logger.info(
             "Fetching intersphinx inventory on cache miss", url=url
         )
@@ -126,3 +146,68 @@ class IntersphinxCacheService:
         )
         await self._inventory_store.upsert_inventory(inventory)
         return inventory
+
+    async def _guard_url(self, url: str) -> None:
+        """Reject a URL that must not be fetched from upstream.
+
+        This SSRF guard runs before any upstream fetch: the URL must use
+        ``https`` and its host must not resolve to a private, link-local,
+        or loopback address. A rejected URL is never fetched and never
+        stored.
+
+        Raises
+        ------
+        InvalidInventoryUrlError
+            Raised if the URL uses a non-``https`` scheme or its host
+            resolves to a non-public address.
+        """
+        parts = urlsplit(url)
+        if parts.scheme != "https":
+            self._reject_url(
+                url, f"URL scheme must be 'https', not {parts.scheme!r}"
+            )
+        host = parts.hostname
+        if not host:
+            self._reject_url(url, "URL has no host to validate")
+
+        try:
+            addresses = [ipaddress.ip_address(host)]
+        except ValueError:
+            # Not an IP literal: resolve the hostname to its addresses.
+            resolved = list(await self._resolve_host(host))
+            addresses = [ipaddress.ip_address(a) for a in resolved]
+        if not addresses:
+            self._reject_url(
+                url, f"Host {host!r} did not resolve to any address"
+            )
+        for address in addresses:
+            # For IPv4-mapped IPv6 addresses, guard the embedded IPv4
+            # address rather than the IPv6 wrapper.
+            candidate = (
+                address.ipv4_mapped
+                if isinstance(address, ipaddress.IPv6Address)
+                and address.ipv4_mapped is not None
+                else address
+            )
+            if not candidate.is_global:
+                self._reject_url(
+                    url,
+                    f"Host {host!r} resolves to the non-public address"
+                    f" {address}",
+                )
+
+    def _reject_url(self, url: str, reason: str) -> NoReturn:
+        """Log a guard rejection and raise ``InvalidInventoryUrlError``."""
+        self._logger.warning(
+            "Rejected intersphinx inventory URL by SSRF guard",
+            url=url,
+            reason=reason,
+        )
+        raise InvalidInventoryUrlError(reason)
+
+
+async def _default_resolve_host(host: str) -> Sequence[str]:
+    """Resolve a hostname to IP address strings with getaddrinfo."""
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    return [str(info[4][0]) for info in infos]

@@ -11,7 +11,9 @@ import structlog
 from httpx import Response
 
 from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
+from ook.exceptions import InvalidInventoryUrlError
 from ook.factory import Factory
+from ook.services import intersphinx as intersphinx_service
 
 INVENTORY_URL = "https://docs.example.com/en/latest/objects.inv"
 """An origin ``objects.inv`` URL used across the cold-miss tests."""
@@ -171,3 +173,81 @@ async def test_expired_inventory_served_stale_without_upstream(
         and event.get("url") == INVENTORY_URL
         for event in captured
     )
+
+
+@pytest.mark.asyncio
+async def test_http_url_rejected_before_fetch(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A non-HTTPS URL is rejected by the guard and never fetched."""
+    http_url = "http://docs.example.com/en/latest/objects.inv"
+    route = respx_mock.get(http_url).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    with pytest.raises(InvalidInventoryUrlError):
+        async with factory.db_session.begin():
+            service = factory.create_intersphinx_cache_service()
+            await service.get_inventory(http_url)
+
+    # The guarded URL is never fetched from upstream.
+    assert route.call_count == 0
+
+    # The guarded URL is never stored as a cache row.
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(http_url)
+    assert stored is None
+
+
+@pytest.mark.asyncio
+async def test_private_host_rejected_before_fetch(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host resolving to a private range is rejected and never fetched."""
+    private_url = "https://internal.example.com/en/latest/objects.inv"
+    route = respx_mock.get(private_url).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    async def resolve_private(host: str) -> list[str]:
+        return ["10.0.0.1"]
+
+    monkeypatch.setattr(
+        intersphinx_service, "_default_resolve_host", resolve_private
+    )
+
+    with pytest.raises(InvalidInventoryUrlError):
+        async with factory.db_session.begin():
+            service = factory.create_intersphinx_cache_service()
+            await service.get_inventory(private_url)
+
+    assert route.call_count == 0
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(private_url)
+    assert stored is None
+
+
+@pytest.mark.asyncio
+async def test_guard_rejection_logs_origin_url(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A guard rejection emits a structured log carrying the origin URL."""
+    http_url = "http://docs.example.com/en/latest/objects.inv"
+    respx_mock.get(http_url).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        with pytest.raises(InvalidInventoryUrlError):
+            async with factory.db_session.begin():
+                service = factory.create_intersphinx_cache_service()
+                await service.get_inventory(http_url)
+
+    assert any(event.get("url") == http_url for event in captured)
