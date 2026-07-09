@@ -596,4 +596,4 @@ async def _default_resolve_host(host: str) -> Sequence[str]:
     """Resolve a hostname to IP address strings with getaddrinfo."""
     loop = asyncio.get_running_loop()
     infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    return [info[4][0] for info in infos]
+    return [str(info[4][0]) for info in infos]
