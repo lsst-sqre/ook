@@ -22,6 +22,7 @@ __all__ = [
     "LinkCheckTooManyUrlsError",
     "LtdSlugClassificationError",
     "NotFoundError",
+    "UpstreamInventoryError",
 ]
 
 
@@ -88,6 +89,21 @@ class InvalidInventoryUrlError(ClientRequestError):
 
     error = "invalid_inventory_url"
     status_code = status.HTTP_400_BAD_REQUEST
+
+
+class UpstreamInventoryError(ClientRequestError):
+    """Raised when an upstream intersphinx inventory fetch fails on a cold
+    miss.
+
+    An upstream 4xx/5xx response, timeout, or connection error on a cold
+    miss (when no cached content exists to serve) maps to a 502 with a
+    detail message the client can log. The failure is negatively cached for
+    ``OOK_INTERSPHINX_NEGATIVE_TTL`` so a repeat request inside the window
+    raises this again without re-contacting upstream.
+    """
+
+    error = "upstream_inventory_error"
+    status_code = status.HTTP_502_BAD_GATEWAY
 
 
 class ConflictError(ClientRequestError):

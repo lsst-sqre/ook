@@ -11,7 +11,7 @@ import structlog
 from httpx import Response
 
 from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
-from ook.exceptions import InvalidInventoryUrlError
+from ook.exceptions import InvalidInventoryUrlError, UpstreamInventoryError
 from ook.factory import Factory
 from ook.services import intersphinx as intersphinx_service
 
@@ -231,6 +231,133 @@ async def test_private_host_rejected_before_fetch(
         store = factory.create_intersphinx_inventory_store()
         stored = await store.get_inventory(private_url)
     assert stored is None
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        Response(404, content=b"not found"),
+        Response(500, content=b"boom"),
+        httpx.TimeoutException("timed out"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_cold_miss_upstream_failure_negatively_cached(
+    factory: Factory,
+    respx_mock: respx.Router,
+    failure: Response | httpx.TimeoutException,
+) -> None:
+    """A cold-miss upstream 4xx/5xx/timeout raises and is negatively cached.
+
+    A repeat request within the negative TTL raises again without a second
+    upstream call, and the stored row is a failure-status/no-content
+    negative-cache entry.
+    """
+    if isinstance(failure, Response):
+        route = respx_mock.get(INVENTORY_URL).mock(return_value=failure)
+    else:
+        route = respx_mock.get(INVENTORY_URL).mock(side_effect=failure)
+
+    # No ``begin()`` wrapper: the negative-cache row the service flushes
+    # must remain visible to the second request rather than being rolled
+    # back, mirroring how the handler commits it on the failure path.
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    # The second request is served from the negative cache, not upstream.
+    assert route.call_count == 1
+
+    stored = await factory.create_intersphinx_inventory_store().get_inventory(
+        INVENTORY_URL
+    )
+    assert stored is not None
+    assert stored.content is None
+    assert stored.last_fetch_status is InventoryFetchStatus.failure
+    assert stored.last_fetch_error is not None
+
+
+@pytest.mark.asyncio
+async def test_negative_cache_expiry_refetches(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A request after the negative TTL expires re-fetches the origin."""
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+    # Seed an expired negative-cache row: a failure fetched long ago.
+    expired_fetched = datetime.now(tz=UTC) - timedelta(hours=1)
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        await store.upsert_inventory(
+            IntersphinxInventory(
+                url=INVENTORY_URL,
+                content=None,
+                content_type=None,
+                etag=None,
+                last_modified=None,
+                date_fetched=expired_fetched,
+                date_requested=expired_fetched,
+                last_fetch_status=InventoryFetchStatus.failure,
+                last_fetch_error="Upstream returned HTTP 500",
+            )
+        )
+
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_cache_service()
+        served = await service.get_inventory(INVENTORY_URL)
+
+    # The expired negative-cache row is replaced by a fresh upstream fetch.
+    assert route.call_count == 1
+    assert served.content == INVENTORY_BODY
+    assert served.last_fetch_status is InventoryFetchStatus.success
+
+
+@pytest.mark.asyncio
+async def test_cold_miss_failure_logs_origin_url(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """The cold-miss failure emits a structured log with the origin URL."""
+    respx_mock.get(INVENTORY_URL).mock(return_value=Response(500))
+
+    service = factory.create_intersphinx_cache_service()
+    with structlog.testing.capture_logs() as captured:
+        with pytest.raises(UpstreamInventoryError):
+            await service.get_inventory(INVENTORY_URL)
+
+    assert any(
+        event.get("cache_status") == "miss"
+        and event.get("url") == INVENTORY_URL
+        for event in captured
+    )
+
+
+@pytest.mark.asyncio
+async def test_negative_cache_hit_logs(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A negative-cache serve emits a structured log with the origin URL."""
+    respx_mock.get(INVENTORY_URL).mock(return_value=Response(500))
+
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    with structlog.testing.capture_logs() as captured:
+        with pytest.raises(UpstreamInventoryError):
+            await service.get_inventory(INVENTORY_URL)
+
+    assert any(
+        event.get("cache_status") == "negative"
+        and event.get("url") == INVENTORY_URL
+        for event in captured
+    )
 
 
 @pytest.mark.asyncio

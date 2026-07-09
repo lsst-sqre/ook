@@ -9,6 +9,7 @@ from httpx import AsyncClient, Response
 from safir.database import create_async_session, create_database_engine
 
 from ook.config import config
+from ook.domain.intersphinx import InventoryFetchStatus
 from ook.storage.intersphinxstore import IntersphinxInventoryStore
 
 INVENTORY_URL = "https://docs.example.com/en/latest/objects.inv"
@@ -116,3 +117,51 @@ async def test_http_url_rejected_with_400(
     assert response.status_code == 400
     # The guarded URL is never fetched from upstream.
     assert route.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_cold_miss_upstream_failure_returns_502(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A cold-miss upstream failure returns 502 and is negatively cached.
+
+    The 502 carries a detail message, and a repeat request within the
+    negative TTL is served from the negative cache without a second
+    upstream call.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(500, content=b"boom")
+    )
+
+    first = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert first.status_code == 502
+    assert first.json()["detail"]
+    assert route.call_count == 1
+
+    # The negatively-cached failure is committed, so a repeat request is
+    # served from the cache without re-contacting upstream.
+    second = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert second.status_code == 502
+    assert route.call_count == 1
+
+    # The stored row is a failure-status/no-content negative-cache entry.
+    logger = structlog.get_logger("test")
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    session = await create_async_session(engine)
+    store = IntersphinxInventoryStore(session=session, logger=logger)
+    stored = await store.get_inventory(INVENTORY_URL)
+    await session.close()
+    await engine.dispose()
+
+    assert stored is not None
+    assert stored.content is None
+    assert stored.last_fetch_status is InventoryFetchStatus.failure

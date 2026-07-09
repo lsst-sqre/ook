@@ -11,11 +11,12 @@ from datetime import UTC, datetime, timedelta
 from typing import NoReturn
 from urllib.parse import urlsplit
 
+import httpx
 from httpx import AsyncClient
 from structlog.stdlib import BoundLogger
 
 from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
-from ook.exceptions import InvalidInventoryUrlError
+from ook.exceptions import InvalidInventoryUrlError, UpstreamInventoryError
 from ook.storage.intersphinxstore import IntersphinxInventoryStore
 
 __all__ = ["HostResolver", "IntersphinxCacheService"]
@@ -39,7 +40,15 @@ class IntersphinxCacheService:
     Before any upstream fetch the origin URL passes an SSRF guard: it must
     use ``https`` and its host must not resolve to a private, link-local,
     or loopback address. A guarded URL is never fetched and never stored.
-    Negative caching lands in a follow-on task.
+
+    When a cold-miss upstream fetch fails (4xx/5xx, timeout, connection
+    error) and there is no cached content to serve, the failure is
+    negatively cached for ``negative_ttl`` as a failure-status/no-content
+    row and surfaced as an `UpstreamInventoryError`; a repeat request inside
+    the window raises again without re-contacting upstream. Negative caching
+    never displaces a content-bearing row — an upstream failure when a
+    stale copy exists is impossible on the request path because any
+    content-bearing row is served before a fetch is attempted.
 
     Parameters
     ----------
@@ -50,6 +59,9 @@ class IntersphinxCacheService:
     ttl
         Freshness TTL: a cached inventory whose last fetch is within this
         window is served as a fresh hit; an older one is served stale.
+    negative_ttl
+        Negative-cache TTL: a cold-miss fetch failure is cached for this
+        window, during which a repeat request raises without re-fetching.
     logger
         The logger.
     resolve_host
@@ -63,12 +75,14 @@ class IntersphinxCacheService:
         http_client: AsyncClient,
         inventory_store: IntersphinxInventoryStore,
         ttl: timedelta,
+        negative_ttl: timedelta,
         logger: BoundLogger,
         resolve_host: HostResolver | None = None,
     ) -> None:
         self._http_client = http_client
         self._inventory_store = inventory_store
         self._ttl = ttl
+        self._negative_ttl = negative_ttl
         self._logger = logger
         self._resolve_host = resolve_host or _default_resolve_host
 
@@ -90,6 +104,12 @@ class IntersphinxCacheService:
         -------
         IntersphinxInventory
             The cached inventory record for the URL.
+
+        Raises
+        ------
+        UpstreamInventoryError
+            Raised on a cold-miss upstream fetch failure, and on a repeat
+            request served from the negative cache within the negative TTL.
         """
         cached = await self._inventory_store.get_inventory(url)
         if cached is not None and cached.content is not None:
@@ -97,7 +117,31 @@ class IntersphinxCacheService:
             await self._inventory_store.touch_date_requested(url, now=now)
             self._log_cache_serve(cached, now=now)
             return replace(cached, date_requested=now)
+        if cached is not None and self._is_negative_cache_fresh(cached):
+            self._logger.info(
+                "Serving negatively-cached intersphinx inventory failure",
+                url=url,
+                cache_status="negative",
+                error=cached.last_fetch_error,
+            )
+            raise UpstreamInventoryError(
+                cached.last_fetch_error or _GENERIC_UPSTREAM_ERROR
+            )
         return await self._fetch_and_store(url)
+
+    def _is_negative_cache_fresh(self, cached: IntersphinxInventory) -> bool:
+        """Return whether a cached row is a live negative-cache entry.
+
+        A negative-cache entry is a failure-status row with no content whose
+        last fetch is within the negative TTL.
+        """
+        if cached.content is not None:
+            return False
+        if cached.last_fetch_status is not InventoryFetchStatus.failure:
+            return False
+        if cached.date_fetched is None:
+            return False
+        return datetime.now(tz=UTC) - cached.date_fetched <= self._negative_ttl
 
     def _log_cache_serve(
         self, inventory: IntersphinxInventory, *, now: datetime
@@ -125,13 +169,21 @@ class IntersphinxCacheService:
             )
 
     async def _fetch_and_store(self, url: str) -> IntersphinxInventory:
-        """Fetch an origin inventory and store it (the cold-miss path)."""
+        """Fetch an origin inventory and store it (the cold-miss path).
+
+        On an upstream failure with no cached content to fall back on, the
+        failure is negatively cached and re-raised as an
+        `UpstreamInventoryError`.
+        """
         await self._guard_url(url)
         self._logger.info(
             "Fetching intersphinx inventory on cache miss", url=url
         )
-        response = await self._http_client.get(url)
-        response.raise_for_status()
+        try:
+            response = await self._http_client.get(url)
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            await self._store_failure(url, error=exc)
         now = datetime.now(tz=UTC)
         inventory = IntersphinxInventory(
             url=url,
@@ -146,6 +198,37 @@ class IntersphinxCacheService:
         )
         await self._inventory_store.upsert_inventory(inventory)
         return inventory
+
+    async def _store_failure(
+        self, url: str, *, error: httpx.HTTPError
+    ) -> NoReturn:
+        """Negatively cache a cold-miss upstream failure and raise.
+
+        The failure is stored as a failure-status row with no content and
+        the request path surfaces it as an `UpstreamInventoryError`.
+        """
+        detail = _describe_upstream_error(error)
+        now = datetime.now(tz=UTC)
+        await self._inventory_store.upsert_inventory(
+            IntersphinxInventory(
+                url=url,
+                content=None,
+                content_type=None,
+                etag=None,
+                last_modified=None,
+                date_fetched=now,
+                date_requested=now,
+                last_fetch_status=InventoryFetchStatus.failure,
+                last_fetch_error=detail,
+            )
+        )
+        self._logger.warning(
+            "Intersphinx inventory upstream fetch failed on cache miss",
+            url=url,
+            cache_status="miss",
+            error=detail,
+        )
+        raise UpstreamInventoryError(detail)
 
     async def _guard_url(self, url: str) -> None:
         """Reject a URL that must not be fetched from upstream.
@@ -211,3 +294,23 @@ async def _default_resolve_host(host: str) -> Sequence[str]:
     loop = asyncio.get_running_loop()
     infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     return [str(info[4][0]) for info in infos]
+
+
+_GENERIC_UPSTREAM_ERROR = "Upstream fetch of the inventory failed"
+"""Fallback detail when a negative-cache row has no stored error message."""
+
+
+def _describe_upstream_error(error: httpx.HTTPError) -> str:
+    """Summarize an upstream fetch failure for the client and the cache.
+
+    The message is safe to return to the client and to store as the
+    negative-cache row's error detail.
+    """
+    if isinstance(error, httpx.HTTPStatusError):
+        return (
+            "Upstream returned HTTP "
+            f"{error.response.status_code} for the inventory"
+        )
+    if isinstance(error, httpx.TimeoutException):
+        return "Upstream request for the inventory timed out"
+    return _GENERIC_UPSTREAM_ERROR

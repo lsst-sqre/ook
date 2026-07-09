@@ -271,6 +271,18 @@ class Configuration(BaseSettings):
         ),
     )
 
+    intersphinx_negative_ttl: HumanTimedelta = Field(
+        timedelta(minutes=5),
+        validation_alias="OOK_INTERSPHINX_NEGATIVE_TTL",
+        description=(
+            "Negative-cache TTL for cold-miss intersphinx inventory fetch"
+            " failures. When an upstream fetch fails on a cold miss the"
+            " failure is cached for this window; a repeat request inside it"
+            " returns the error without re-contacting upstream. After the"
+            " window a new request re-fetches the origin."
+        ),
+    )
+
     slack_webhook: SecretStr | None = Field(
         None,
         validation_alias="OOK_SLACK_WEBHOOK",
