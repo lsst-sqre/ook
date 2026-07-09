@@ -223,9 +223,9 @@ def test_generate_custom_split() -> None:
         assert len(part) == 5
 
 
-def test_resource_id_epoch_is_2025_utc() -> None:
-    """The custom epoch is 2025-01-01T00:00:00Z and timezone-aware."""
-    assert datetime(2025, 1, 1, tzinfo=UTC) == RESOURCE_ID_EPOCH
+def test_resource_id_epoch_is_2010_utc() -> None:
+    """The custom epoch is 2010-01-01T00:00:00Z and timezone-aware."""
+    assert datetime(2010, 1, 1, tzinfo=UTC) == RESOURCE_ID_EPOCH
     assert RESOURCE_ID_EPOCH.tzinfo is not None
 
 

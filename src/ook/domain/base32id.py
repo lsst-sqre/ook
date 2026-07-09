@@ -62,13 +62,21 @@ BASE32_ID_LENGTH = 12
 BASE32_ID_SPLIT_EVERY = 4
 """Default number of characters between hyphens for Base32Id."""
 
-RESOURCE_ID_EPOCH = datetime(2025, 1, 1, tzinfo=UTC)
-"""Custom epoch (2025-01-01T00:00:00Z) for time-ordered resource IDs."""
+RESOURCE_ID_EPOCH = datetime(2010, 1, 1, tzinfo=UTC)
+"""Fixed epoch (2010-01-01T00:00:00Z) for time-ordered resource IDs.
+
+This epoch is deliberately fixed for all time and is **not** configurable. It
+predates Rubin Observatory project records, so any table ported to this ID
+scheme can re-mint IDs from each row's ``date_created`` without ever hitting a
+pre-epoch timestamp. A single org-wide constant also avoids the silent
+misordering that per-service epoch configuration would invite.
+"""
 
 RESOURCE_ID_TIMESTAMP_BITS = 43
 """High-order bits encoding milliseconds since `RESOURCE_ID_EPOCH`.
 
-43 bits of milliseconds gives roughly 278 years of runway from the epoch.
+43 bits of milliseconds gives roughly 278 years of runway from the epoch
+(to roughly the year 2288).
 """
 
 RESOURCE_ID_RANDOM_BITS = 17
