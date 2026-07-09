@@ -40,6 +40,7 @@ from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
 from .services.technoteingest import TechnoteIngestService
 from .storage.authorstore import AuthorStore
 from .storage.glossarystore import GlossaryStore
+from .storage.intersphinxstore import IntersphinxInventoryStore
 from .storage.linkcheckstore import LinkCheckStore
 from .storage.linkstore import LinkStore
 from .storage.resourcestore import ResourceStore
@@ -265,6 +266,15 @@ class Factory:
     def create_linkcheck_store(self) -> LinkCheckStore:
         """Create a LinkCheckStore."""
         return LinkCheckStore(
+            session=self._session,
+            logger=self._logger,
+        )
+
+    def create_intersphinx_inventory_store(
+        self,
+    ) -> IntersphinxInventoryStore:
+        """Create an IntersphinxInventoryStore."""
+        return IntersphinxInventoryStore(
             session=self._session,
             logger=self._logger,
         )

@@ -3,6 +3,7 @@
 from .authors import SqlAffiliation, SqlAuthor, SqlAuthorAffiliation
 from .base import Base
 from .glossary import SqlTerm, term_relationships
+from .intersphinx import SqlIntersphinxInventory
 from .linkcheck import (
     SqlCheckedUrl,
     SqlLinkCheck,
@@ -28,6 +29,7 @@ __all__ = [
     "SqlContributor",
     "SqlDocumentResource",
     "SqlExternalReference",
+    "SqlIntersphinxInventory",
     "SqlLink",
     "SqlLinkCheck",
     "SqlLinkCheckUrl",
