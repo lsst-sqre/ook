@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Self, override
+from typing import Any, NamedTuple, Self, override
 
 from safir.database import (
     CountedPaginatedList,
     CountedPaginatedQueryRunner,
     PaginationCursor,
 )
-from sqlalchemy import Select, delete, select
+from sqlalchemy import Select, delete, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
@@ -25,6 +25,7 @@ from ook.dbschema.resources import (
     SqlResource,
     SqlResourceRelation,
 )
+from ook.domain.base32id import generate_resource_id
 from ook.domain.resources import (
     Contributor,
     Document,
@@ -40,7 +41,21 @@ from ook.domain.resources import (
 from ._models import ResourcePaginationModel
 from ._queryutils import create_resource_with_relations_stmt
 
-__all__ = ["ResourceStore", "ResourcesCursor"]
+__all__ = ["DocumentUpsertResult", "ResourceStore", "ResourcesCursor"]
+
+
+class DocumentUpsertResult(NamedTuple):
+    """Outcome of upserting a document resource."""
+
+    resource_id: int
+    """The resolved resource ID: the existing row's ID on an update, or a
+    freshly minted time-ordered ID on an insert.
+    """
+
+    created: bool
+    """True when a new resource row was inserted; False when an existing row
+    was matched by natural key and updated.
+    """
 
 
 class ResourceStore:
@@ -223,8 +238,17 @@ class ResourceStore:
         document: Document,
         *,
         delete_stale_relations: bool = True,
-    ) -> None:
+    ) -> DocumentUpsertResult:
         """Upsert a document resource into the database.
+
+        The incoming document's ``id`` is ignored. An existing row is
+        resolved by natural key — matching the database's document-identity
+        unique constraints in turn: ``handle`` on ``document_resource``, then
+        ``(series, number)`` on ``document_resource``, then ``doi`` on
+        ``resource`` — and reused for the update, so re-ingesting the same
+        document is idempotent and a re-ingest can never fail on a
+        document-identity unique constraint. A genuinely new document mints a
+        fresh time-ordered ID inside this transaction.
 
         Parameters
         ----------
@@ -233,22 +257,192 @@ class ResourceStore:
         delete_stale_relations
             If True, delete existing contributors and relations before
             inserting new ones.
+
+        Returns
+        -------
+        DocumentUpsertResult
+            The resolved resource ID and whether a new row was inserted
+            (``created``) rather than an existing row updated. The single
+            natural-key resolution the upsert already performs backs the
+            ``created`` flag, so callers need not resolve the document again
+            to learn the outcome.
         """
         now = datetime.now(tz=UTC).replace(microsecond=0)
 
-        # Handle related data deletion first
-        if delete_stale_relations:
-            await self._delete_resource_relations(document.id)
+        resolved_id = await self._resolve_document_id(document)
+        created = resolved_id is None
+        if resolved_id is None:
+            resource_id = await self._insert_new_document(document, now)
+        else:
+            resource_id = resolved_id
+            await self._update_document(resource_id, document, now)
 
-        # Use joined inheritance upsert for document resource
+        # Handle related data deletion after the resource row exists.
+        if delete_stale_relations:
+            await self._delete_resource_relations(resource_id)
+
+        await self._upsert_contributors(resource_id, document.contributors)
+        await self._upsert_relations(
+            resource_id,
+            document.resource_relations,
+            document.external_relations,
+        )
+        return DocumentUpsertResult(resource_id=resource_id, created=created)
+
+    async def _resolve_document_id(self, document: Document) -> int | None:
+        """Resolve a document to an existing resource ID by natural key.
+
+        The cascade mirrors the database's document-identity unique
+        constraints so any incoming document that would collide with an
+        existing row resolves to it and takes the update path:
+
+        1. ``handle`` alone in ``document_resource``
+           (``document_resource_handle_key``).
+        2. ``(series, number)`` in ``document_resource``
+           (``uq_document_series_number``).
+        3. ``doi`` in ``resource`` when the document carries one.
+
+        Handle is the primary document identity, so it is matched first: a
+        document whose handle matches one row but whose ``(series, number)``
+        matches another resolves to the handle match.
+
+        Parameters
+        ----------
+        document
+            The incoming document.
+
+        Returns
+        -------
+        int or None
+            The existing resource ID, or None when the document is new.
+        """
+        handle_stmt = select(SqlDocumentResource.id).where(
+            SqlDocumentResource.handle == document.handle,
+        )
+        existing_id = (
+            await self._session.execute(handle_stmt)
+        ).scalar_one_or_none()
+        if existing_id is not None:
+            return existing_id
+
+        series_number_stmt = select(SqlDocumentResource.id).where(
+            SqlDocumentResource.series == document.series,
+            SqlDocumentResource.number == document.number,
+        )
+        existing_id = (
+            await self._session.execute(series_number_stmt)
+        ).scalar_one_or_none()
+        if existing_id is not None:
+            return existing_id
+
+        if document.doi is not None:
+            doi_stmt = select(SqlResource.id).where(
+                SqlResource.doi == document.doi
+            )
+            existing_id = (
+                await self._session.execute(doi_stmt)
+            ).scalar_one_or_none()
+            if existing_id is not None:
+                return existing_id
+
+        return None
+
+    async def _insert_new_document(
+        self, document: Document, timestamp: datetime
+    ) -> int:
+        """Insert a new document, minting a collision-safe time-ordered ID.
+
+        The parent ``resource`` row is inserted with ``ON CONFLICT (id) DO
+        NOTHING``; if a random ID collision suppresses the insert, a fresh ID
+        is minted and the insert is retried so a collision can never silently
+        merge two resources.
+
+        Parameters
+        ----------
+        document
+            The document to insert.
+        timestamp
+            The UTC timestamp stamped as ``date_created`` and ``date_updated``.
+
+        Returns
+        -------
+        int
+            The freshly minted resource ID.
+
+        Raises
+        ------
+        RuntimeError
+            If a unique ID could not be minted after several attempts.
+        """
+        max_attempts = 5
+        for _ in range(max_attempts):
+            resource_id = generate_resource_id()
+            parent_stmt = (
+                pg_insert(SqlResource)
+                .values(
+                    id=resource_id,
+                    resource_class=document.resource_class.value,
+                    date_created=timestamp,
+                    date_updated=timestamp,
+                    title=document.title,
+                    description=document.description,
+                    url=str(document.url) if document.url else None,
+                    doi=document.doi,
+                    date_resource_published=document.date_resource_published,
+                    date_resource_updated=document.date_resource_updated,
+                    version=document.version,
+                    type=document.type.value if document.type else None,
+                )
+                .on_conflict_do_nothing(index_elements=["id"])
+                .returning(SqlResource.id)
+            )
+            inserted_id = (
+                await self._session.execute(parent_stmt)
+            ).scalar_one_or_none()
+            if inserted_id is None:
+                # Random ID collision — mint a fresh ID and retry.
+                continue
+            await self._session.execute(
+                pg_insert(SqlDocumentResource).values(
+                    id=resource_id,
+                    series=document.series,
+                    handle=document.handle,
+                    generator=document.generator,
+                    number=document.number,
+                )
+            )
+            await self._session.flush()
+            return resource_id
+        raise RuntimeError(
+            f"Unable to mint a unique resource ID after {max_attempts} "
+            "attempts"
+        )
+
+    async def _update_document(
+        self, resource_id: int, document: Document, timestamp: datetime
+    ) -> None:
+        """Update an existing document in place under its current ID.
+
+        ``date_created`` is preserved; only ``date_updated`` and the document
+        fields are refreshed.
+
+        Parameters
+        ----------
+        resource_id
+            The resolved ID of the existing resource.
+        document
+            The document carrying the new field values.
+        timestamp
+            The UTC timestamp stamped as ``date_updated``.
+        """
         await self._upsert_joined_inheritance(
             child_model=SqlDocumentResource,
             parent_model=SqlResource,
             join_conditions={
-                "id": document.id,
+                "id": resource_id,
             },
             update_fields={
-                "date_updated": now,
+                "date_updated": timestamp,
                 "title": document.title,
                 "description": document.description,
                 "url": str(document.url) if document.url else None,
@@ -263,10 +457,10 @@ class ResourceStore:
                 "number": document.number,
             },
             insert_fields={
-                "id": document.id,
+                "id": resource_id,
                 "resource_class": document.resource_class.value,
-                "date_created": document.date_created,
-                "date_updated": now,
+                "date_created": timestamp,
+                "date_updated": timestamp,
                 "title": document.title,
                 "description": document.description,
                 "url": str(document.url) if document.url else None,
@@ -280,13 +474,6 @@ class ResourceStore:
                 "generator": document.generator,
                 "number": document.number,
             },
-        )
-
-        await self._upsert_contributors(document.id, document.contributors)
-        await self._upsert_relations(
-            document.id,
-            document.resource_relations,
-            document.external_relations,
         )
 
     async def upsert_resource(
@@ -591,18 +778,39 @@ class ResourceStore:
 
         insert_stmt = pg_insert(SqlExternalReference).values([ext_ref_data])
 
-        # Use DOI for conflict resolution if available, otherwise URL
-        if external_ref.doi:
-            upsert_stmt = insert_stmt.on_conflict_do_update(
-                index_elements=["doi"], set_=ext_ref_data
-            ).returning(SqlExternalReference.id)
-        elif external_ref.url:
-            upsert_stmt = insert_stmt.on_conflict_do_update(
-                index_elements=["url"], set_=ext_ref_data
-            ).returning(SqlExternalReference.id)
-        else:
-            # No unique identifier, just insert
-            upsert_stmt = insert_stmt.returning(SqlExternalReference.id)
+        # Resolve conflicts on the strongest available dedup key. Every
+        # identifier column backs a unique index the upsert can arbiter on, so
+        # a re-cited reference dedupes (ON CONFLICT DO UPDATE) rather than
+        # violating the constraint. Priority runs doi -> url -> arxiv_id ->
+        # isbn -> issn -> ads_bibcode. The url index is partial
+        # (``WHERE url IS NOT NULL``), so its predicate must be echoed via
+        # ``index_where`` for PostgreSQL to infer it; the other four are plain
+        # unique constraints and need no predicate.
+        arbiters: tuple[tuple[str, str, Any], ...] = (
+            ("doi", "doi", None),
+            ("url", "url", text("url IS NOT NULL")),
+            ("arxiv_id", "arxiv_id", None),
+            ("isbn", "isbn", None),
+            ("issn", "issn", None),
+            ("ads_bibcode", "ads_bibcode", None),
+        )
+        upsert_stmt = None
+        for attr, index_element, index_where in arbiters:
+            if getattr(external_ref, attr):
+                upsert_stmt = insert_stmt.on_conflict_do_update(
+                    index_elements=[index_element],
+                    index_where=index_where,
+                    set_=ext_ref_data,
+                ).returning(SqlExternalReference.id)
+                break
+
+        if upsert_stmt is None:
+            # No dedup key at all: reject rather than accumulate an
+            # unmergeable duplicate (also enforced by the DB check constraint).
+            raise ValueError(
+                "External reference must have at least one identifier "
+                "(DOI, arXiv ID, ISBN, ISSN, bibcode, or URL)."
+            )
 
         result = await self._session.execute(upsert_stmt)
         return result.scalar_one()

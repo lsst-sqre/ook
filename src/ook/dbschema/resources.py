@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     UnicodeText,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -198,6 +199,28 @@ class SqlExternalReference(Base):
     their names, affiliations, roles, and other metadata.
     """
 
+    __table_args__ = (
+        # A partial unique index on the non-null URL. The ``_upsert_external_
+        # reference`` upsert path resolves DOI-less references with
+        # ``ON CONFLICT (url)``; without a matching unique index that raised
+        # ProgrammingError. Scoping the index with ``WHERE url IS NOT NULL``
+        # keeps NULL URLs (references keyed only by DOI/arXiv/etc.) distinct.
+        Index(
+            "uq_external_reference_url",
+            "url",
+            unique=True,
+            postgresql_where=text("url IS NOT NULL"),
+        ),
+        # Require at least one dedup key so keyless references cannot
+        # accumulate as duplicates that no ON CONFLICT target can catch.
+        CheckConstraint(
+            "doi IS NOT NULL OR arxiv_id IS NOT NULL OR isbn IS NOT NULL "
+            "OR issn IS NOT NULL OR ads_bibcode IS NOT NULL "
+            "OR url IS NOT NULL",
+            name="chk_external_reference_has_key",
+        ),
+    )
+
 
 class SqlContributor(Base):
     """A SQLAlchemy model for the many-to-many relationship between resources
@@ -242,6 +265,7 @@ class SqlContributor(Base):
             "role",
             name="uq_contributor_resource_order_role",
         ),
+        Index("idx_contributor_author", "author_id"),
     )
 
 
@@ -310,15 +334,39 @@ class SqlResourceRelation(Base):
             "related_external_ref_id IS NOT NULL)",
             name="chk_exactly_one_related",
         ),
-        UniqueConstraint(
+        # Partial unique indexes enforce edge uniqueness. A single whole-row
+        # UNIQUE constraint over both nullable FK columns is ineffective under
+        # PostgreSQL's default NULLS DISTINCT: the always-NULL column makes
+        # every row distinct, so duplicates are never caught. Scoping each
+        # index with a WHERE predicate excludes the NULL side of every edge.
+        Index(
+            "uq_resource_relation_internal",
             "source_resource_id",
             "related_resource_id",
+            "relation_type",
+            unique=True,
+            postgresql_where=text("related_resource_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_resource_relation_external",
+            "source_resource_id",
             "related_external_ref_id",
             "relation_type",
-            name="uq_resource_relation",
+            unique=True,
+            postgresql_where=text("related_external_ref_id IS NOT NULL"),
         ),
         Index("idx_resource_relation_source", "source_resource_id"),
         Index("idx_resource_relation_type", "relation_type"),
+        Index("idx_resource_relation_related_resource", "related_resource_id"),
+        Index(
+            "idx_resource_relation_related_external_ref",
+            "related_external_ref_id",
+        ),
+        Index(
+            "idx_resource_relation_source_type",
+            "source_resource_id",
+            "relation_type",
+        ),
     )
 
 

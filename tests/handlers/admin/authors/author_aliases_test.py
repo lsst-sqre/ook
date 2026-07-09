@@ -224,7 +224,9 @@ async def test_alias_merge_repoints_contributors(
         "/ook/ingest/resources/documents", json=document_data
     )
     assert response.status_code == 200
-    document_id = response.json()[0]["id"]
+    ingest_results = response.json()
+    assert ingest_results[0]["status"] == "created"
+    document_id = ingest_results[0]["resource"]["id"]
 
     # The document is attributed to the marshallpj author record
     response = await client.get(f"/ook/resources/{document_id}")
@@ -261,7 +263,9 @@ async def test_alias_merge_repoints_contributors(
         "/ook/ingest/resources/documents", json=document_data
     )
     assert response.status_code == 200
-    document_id = response.json()[0]["id"]
+    ingest_results = response.json()
+    assert ingest_results[0]["status"] == "created"
+    document_id = ingest_results[0]["resource"]["id"]
 
     response = await client.get(f"/ook/resources/{document_id}")
     assert response.status_code == 200

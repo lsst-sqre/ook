@@ -12,6 +12,8 @@ from ook.domain.resources import Document
 from ..resources.models import DocumentResource
 from .models import (
     DocumentIngestRequest,
+    DocumentIngestResult,
+    DocumentIngestStatus,
     LsstTexmfIngestRequest,
     LtdIngestRequest,
     SdmSchemasIngestRequest,
@@ -19,6 +21,29 @@ from .models import (
 
 router = APIRouter(prefix=f"{config.path_prefix}/ingest", tags=["ingest"])
 """FastAPI router for all ingest handlers."""
+
+
+def _sanitize_error_detail(exc: Exception) -> str:
+    """Build a per-item error detail that does not leak SQL or parameters.
+
+    SQLAlchemy appends ``[SQL: ...]`` and ``[parameters: ...]`` sections to
+    its exception strings, which would otherwise surface the statement and
+    bound values in the API response. This keeps only the exception class
+    name and the first line of the message up to that ``[SQL:`` marker. The
+    full exception is still logged via ``logger.exception``.
+
+    Parameters
+    ----------
+    exc
+        The exception raised while ingesting a single document.
+
+    Returns
+    -------
+    str
+        A sanitized, single-line error detail.
+    """
+    message = str(exc).split("[SQL:", 1)[0].split("\n", 1)[0].strip()
+    return f"{type(exc).__name__}: {message}"
 
 
 @router.post(
@@ -118,12 +143,14 @@ async def post_ingest_lsst_texmf(
 async def post_ingest_documents(
     ingest_request: DocumentIngestRequest,
     context: Annotated[RequestContext, Depends(context_dependency)],
-) -> list[DocumentResource]:
+) -> list[DocumentIngestResult]:
     """Ingest document resources into the bibliography database.
 
-    This endpoint accepts a list of documents to ingest. Each document
-    will be assigned a new ID and timestamps, then upserted into the database.
-    The endpoint returns the documents as stored in the database.
+    Each submitted document is ingested independently and reported with a
+    per-item status: ``created`` when a new resource is minted, ``updated``
+    when an existing resource is matched by natural key, or ``failed`` (with
+    error detail) when the document could not be ingested. Results are
+    returned in request order.
     """
     logger = context.logger
     logger.info(
@@ -131,52 +158,76 @@ async def post_ingest_documents(
         document_count=len(ingest_request.documents),
     )
 
-    # Convert request models to domain models
-    documents = [
-        doc_request.to_domain() for doc_request in ingest_request.documents
-    ]
-
-    # Get the resource service and upsert documents
+    # The storage layer resolves each document to an existing row by natural
+    # key or mints a new time-ordered ID, reporting which it did via the
+    # upsert result's ``created`` flag.
     resource_service = context.factory.create_resource_service()
 
-    for document in documents:
-        await resource_service.upsert_document(document)
-        logger.debug(
-            "Upserted document",
-            document_id=document.id,
-            title=document.title,
-        )
+    results: list[DocumentIngestResult] = []
+    for doc_request in ingest_request.documents:
+        document = doc_request.to_domain()
+        try:
+            # Each document runs in its own savepoint so one failure rolls
+            # back only that document and leaves the batch transaction usable.
+            # The whole result — including the retrieval and response
+            # construction — stays inside the savepoint, so any failure here
+            # rolls the document's writes back and reports ``failed`` truly.
+            async with context.session.begin_nested():
+                upsert_result = await resource_service.upsert_document(
+                    document
+                )
+                resource_id = upsert_result.resource_id
+                retrieved = await resource_service.get_resource_by_id(
+                    resource_id
+                )
+                if not isinstance(retrieved, Document):
+                    raise TypeError(
+                        f"Upserted resource {resource_id} is not a document"
+                    )
+                status = (
+                    DocumentIngestStatus.created
+                    if upsert_result.created
+                    else DocumentIngestStatus.updated
+                )
+                result = DocumentIngestResult(
+                    handle=document.handle,
+                    status=status,
+                    resource=DocumentResource.from_domain(
+                        retrieved, request=context.request
+                    ),
+                )
+            logger.debug(
+                "Ingested document",
+                document_id=resource_id,
+                handle=document.handle,
+                status=status.value,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Failed to ingest document",
+                handle=document.handle,
+                title=document.title,
+            )
+            result = DocumentIngestResult(
+                handle=document.handle,
+                status=DocumentIngestStatus.failed,
+                error=_sanitize_error_detail(exc),
+            )
+        results.append(result)
 
     await context.session.commit()
 
-    # Retrieve the documents from the database to return them with all
-    # fields populated
-    retrieved_documents = []
-    for document in documents:
-        retrieved_doc = await resource_service.get_resource_by_id(
-            document.id,
-        )
-        if retrieved_doc is not None:
-            if not isinstance(retrieved_doc, Document):
-                logger.warning(
-                    "Retrieved resource is not a Document",
-                    document_id=document.id,
-                    resource_class=retrieved_doc.resource_class,
-                )
-                continue
-            retrieved_documents.append(retrieved_doc)
-        else:
-            logger.warning(
-                "Failed to retrieve document after upsert",
-                document_id=document.id,
-            )
-
     logger.info(
-        "Successfully ingested documents.",
-        ingested_count=len(retrieved_documents),
+        "Completed document ingest.",
+        created=sum(
+            1 for r in results if r.status is DocumentIngestStatus.created
+        ),
+        updated=sum(
+            1 for r in results if r.status is DocumentIngestStatus.updated
+        ),
+        failed=sum(
+            1 for r in results if r.status is DocumentIngestStatus.failed
+        ),
     )
 
-    return [
-        DocumentResource.from_domain(doc, request=context.request)
-        for doc in retrieved_documents
-    ]
+    return results

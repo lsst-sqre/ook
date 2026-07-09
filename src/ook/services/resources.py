@@ -6,7 +6,11 @@ from safir.database import CountedPaginatedList
 from structlog.stdlib import BoundLogger
 
 from ook.domain.resources import Document, Resource
-from ook.storage.resourcestore import ResourcesCursor, ResourceStore
+from ook.storage.resourcestore import (
+    DocumentUpsertResult,
+    ResourcesCursor,
+    ResourceStore,
+)
 
 __all__ = ["ResourceService"]
 
@@ -73,7 +77,7 @@ class ResourceService:
         document: Document,
         *,
         delete_stale_relations: bool = True,
-    ) -> None:
+    ) -> DocumentUpsertResult:
         """Upsert a document resource into the database.
 
         Parameters
@@ -83,8 +87,14 @@ class ResourceService:
         delete_stale_relations
             If True, delete existing contributors and relations before
             inserting new ones.
+
+        Returns
+        -------
+        DocumentUpsertResult
+            The resolved resource ID and whether a new row was inserted
+            (``created``) rather than an existing row updated.
         """
-        await self._resource_store.upsert_document(
+        return await self._resource_store.upsert_document(
             document, delete_stale_relations=delete_stale_relations
         )
 
