@@ -51,6 +51,12 @@ _PERMANENT_REDIRECT_CODES = frozenset({301, 308})
 _MAX_REDIRECTS = 20
 """Maximum number of redirect hops followed before giving up."""
 
+_DIAGNOSTIC_HEADERS = ("server", "cf-mitigated", "cf-ray")
+"""Terminal-response headers captured into failure error details, in the
+order they are rendered. These surface whether a 4xx/5xx block came from an
+edge mitigation (e.g. a Cloudflare challenge) rather than the origin.
+"""
+
 
 class _TooManyRedirectsError(Exception):
     """The redirect chain exceeded the maximum number of hops."""
@@ -74,6 +80,11 @@ class _FetchResult:
 
     redirect_hops: list[int] = field(default_factory=list)
     """Status codes of the redirect responses followed, in order."""
+
+    diagnostic_headers: dict[str, str] = field(default_factory=dict)
+    """Select diagnostic headers from the terminal response, keyed by
+    lowercased header name, present only when the response carried them.
+    """
 
     @property
     def is_success(self) -> bool:
@@ -247,6 +258,11 @@ class UrlChecker:
                 status_code=response.status_code,
                 final_url=current_url,
                 redirect_hops=hops,
+                diagnostic_headers={
+                    name: response.headers[name]
+                    for name in _DIAGNOSTIC_HEADERS
+                    if name in response.headers
+                },
             )
         raise _TooManyRedirectsError
 
@@ -334,13 +350,20 @@ class UrlChecker:
                 redirect_status_code=redirect_status_code,
                 redirect_url=redirect_url,
             )
+        error = f"HTTP {result.status_code}"
+        if result.diagnostic_headers:
+            details = "; ".join(
+                f"{name}={value}"
+                for name, value in result.diagnostic_headers.items()
+            )
+            error = f"{error} ({details})"
         return LinkCheckOutcome(
             checked_at=datetime.now(tz=UTC),
             result=CheckResult.failure,
             status_code=result.status_code,
             redirect_status_code=redirect_status_code,
             redirect_url=redirect_url,
-            error=f"HTTP {result.status_code}",
+            error=error,
         )
 
     async def _resolve_and_validate(self, url: str) -> str:

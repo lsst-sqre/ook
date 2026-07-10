@@ -282,6 +282,79 @@ async def test_get_fallback_failure(
 
 
 @pytest.mark.asyncio
+async def test_failure_includes_diagnostic_headers(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 4xx failure captures edge-mitigation diagnostic headers in the
+    error detail so production data distinguishes an edge block (e.g. a
+    Cloudflare challenge) from a genuine origin error.
+    """
+    headers = {
+        "server": "cloudflare",
+        "cf-mitigated": "challenge",
+        "cf-ray": "8abc123def456-DFW",
+    }
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.status_code == 403
+    assert outcome.error == (
+        "HTTP 403 (server=cloudflare; cf-mitigated=challenge; "
+        "cf-ray=8abc123def456-DFW)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_failure_omits_absent_diagnostic_headers(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """Only the diagnostic headers actually present on the terminal
+    response are included; absent ones are omitted.
+    """
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers={"cf-ray": "8abc123def456-DFW"})
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers={"cf-ray": "8abc123def456-DFW"})
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.error == "HTTP 403 (cf-ray=8abc123def456-DFW)"
+
+
+@pytest.mark.asyncio
+async def test_failure_without_diagnostic_headers_keeps_plain_format(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A failure whose terminal response carries none of the diagnostic
+    headers keeps the plain ``HTTP {code}`` error format.
+    """
+    respx_mock.route(
+        method="HEAD", path="/missing", headers={"Host": "example.com"}
+    ).respond(404)
+    respx_mock.route(
+        method="GET", path="/missing", headers={"Host": "example.com"}
+    ).respond(404)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/missing")
+    assert outcome.result is CheckResult.failure
+    assert outcome.error == "HTTP 404"
+
+
+@pytest.mark.asyncio
 async def test_network_error_falls_back_to_get(
     http_client: httpx.AsyncClient,
     respx_mock: respx.Router,
