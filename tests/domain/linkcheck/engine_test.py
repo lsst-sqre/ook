@@ -164,7 +164,43 @@ def test_failing_link_becomes_broken_when_ladder_exhausted() -> None:
     assert state.status == LinkStatus.broken
     assert state.failing_since == T0
     assert state.failure_count == 3
-    assert state.next_check_at is None
+    assert state.next_check_at == checked_at + LADDER.broken_recheck_interval
+
+
+def test_broken_link_is_scheduled_for_slow_recheck() -> None:
+    """A newly-broken link (ladder exhausted) is scheduled for a slow
+    recheck so a recovered link can heal without waiting for resubmission.
+    """
+    prior = make_failing_state(T0, 2)
+    checked_at = T0 + timedelta(hours=48)
+    ladder = RetryLadderConfig(
+        broken_threshold=timedelta(hours=48),
+        min_attempts=3,
+        recheck_intervals=(timedelta(hours=1),),
+        broken_recheck_interval=timedelta(hours=12),
+    )
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=fail_at(checked_at), ladder=ladder
+    )
+    assert state.status == LinkStatus.broken
+    assert state.next_check_at == checked_at + timedelta(hours=12)
+
+
+def test_new_broken_link_is_scheduled_for_slow_recheck() -> None:
+    """A never-seen-OK link that fails is broken immediately but still
+    scheduled for a slow recheck at the broken cadence.
+    """
+    outcome = LinkCheckOutcome(
+        checked_at=T0,
+        result=CheckResult.failure,
+        status_code=404,
+        error="404 Not Found",
+    )
+    state = evaluate_outcome(
+        url=URL, prior=None, outcome=outcome, ladder=LADDER
+    )
+    assert state.status == LinkStatus.broken
+    assert state.next_check_at == T0 + LADDER.broken_recheck_interval
 
 
 @pytest.mark.parametrize(

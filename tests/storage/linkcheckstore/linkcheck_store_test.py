@@ -479,6 +479,16 @@ async def test_get_due_urls(factory: Factory) -> None:
                 now - timedelta(hours=25),
             )
         )
+        # Broken with a slow-recheck time in the past: due, so a
+        # recovered link can heal without waiting for resubmission.
+        await store.upsert_url_state(
+            make_state(
+                "https://due.example.com/broken",
+                LinkStatus.broken,
+                now - timedelta(hours=2),
+                next_check_at=now - timedelta(hours=1),
+            )
+        )
         # Unsupported URLs are never due, no matter how stale.
         await store.upsert_url_state(
             make_state(
@@ -493,6 +503,7 @@ async def test_get_due_urls(factory: Factory) -> None:
             "https://due.example.com/new",
             "https://due.example.com/ladder",
             "https://due.example.com/stale",
+            "https://due.example.com/broken",
         }
         due_by_url = {d.url: d.id for d in due}
         assert (

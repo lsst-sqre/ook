@@ -218,6 +218,11 @@ def evaluate_outcome(
         next_check_at = (
             outcome.checked_at + ladder.recheck_intervals[interval_index]
         )
+    else:
+        # Broken links are revisited at a slow cadence so a since-fixed
+        # link heals back to ok/redirected via the success path without
+        # waiting to be resubmitted.
+        next_check_at = outcome.checked_at + ladder.broken_recheck_interval
 
     return LinkState(
         url=url,

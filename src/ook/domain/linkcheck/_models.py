@@ -116,6 +116,16 @@ class RetryLadderConfig(BaseModel):
         ),
     )
 
+    broken_recheck_interval: timedelta = Field(
+        timedelta(hours=24),
+        description=(
+            "Delay until the next recheck of a broken link. Broken"
+            " links are revisited at this slow cadence so a link that"
+            " has since been fixed can heal back to ok/redirected"
+            " without waiting to be resubmitted."
+        ),
+    )
+
 
 class LinkCheckOutcome(BaseModel):
     """The outcome of a single check of a URL.

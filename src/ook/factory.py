@@ -280,6 +280,9 @@ class Factory:
                 broken_threshold=config.linkcheck_broken_threshold,
                 min_attempts=config.linkcheck_broken_min_attempts,
                 recheck_intervals=config.linkcheck_recheck_intervals,
+                broken_recheck_interval=(
+                    config.linkcheck_broken_recheck_interval
+                ),
             ),
             check_retention=config.linkcheck_check_retention,
         )

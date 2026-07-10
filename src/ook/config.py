@@ -201,6 +201,17 @@ class Configuration(BaseSettings):
         ),
     )
 
+    linkcheck_broken_recheck_interval: HumanTimedelta = Field(
+        timedelta(hours=24),
+        validation_alias="OOK_LINKCHECK_BROKEN_RECHECK_INTERVAL",
+        description=(
+            "Delay until the next recheck of a broken link. Broken links"
+            " are revisited at this slow cadence so a since-fixed link can"
+            " heal back to ok/redirected without waiting to be"
+            " resubmitted."
+        ),
+    )
+
     linkcheck_check_retention: HumanTimedelta = Field(
         timedelta(days=30),
         validation_alias="OOK_LINKCHECK_CHECK_RETENTION",

@@ -133,7 +133,9 @@ async def test_execute_check_never_ok_failure_is_broken(
             assert state.status_code == 404
             assert state.failing_since == state.checked_at
             assert state.failure_count == 1
-            assert state.next_check_at is None
+            assert state.next_check_at == state.checked_at + timedelta(
+                hours=24
+            )
             assert state.error is not None
             assert "404" in state.error
 
@@ -435,6 +437,53 @@ async def test_execute_recheck_advances_ladder(factory: Factory) -> None:
             assert state.status is LinkStatus.broken
             assert state.failure_count == 4
             assert state.failing_since == now - timedelta(days=3)
+            # Broken links stay on the schedule at the slow broken
+            # cadence so a recovered link heals via the recheck cron.
+            assert state.next_check_at == state.checked_at + timedelta(
+                hours=24
+            )
+
+
+@pytest.mark.asyncio
+async def test_execute_recheck_heals_broken_url(factory: Factory) -> None:
+    """A broken URL that is due for its slow recheck and now resolves
+    successfully heals back to ok with its error and streak cleared.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            url = "https://example.com/recovered"
+            await store.upsert_url_state(
+                LinkState(
+                    url=url,
+                    status=LinkStatus.broken,
+                    checked_at=now - timedelta(hours=25),
+                    last_ok_at=now - timedelta(days=5),
+                    failing_since=now - timedelta(days=4),
+                    failure_count=4,
+                    status_code=403,
+                    error="403 Forbidden (likely bot block)",
+                    next_check_at=now - timedelta(hours=1),
+                )
+            )
+            ids = await store.upsert_checked_urls([url])
+
+            await service.execute_recheck([ids[url]])
+
+            state = await store.get_url_state(url)
+            assert state is not None
+            assert state.status is LinkStatus.ok
+            assert state.status_code == 200
+            assert state.error is None
+            assert state.failure_count == 0
+            assert state.failing_since is None
+            assert state.last_ok_at == state.checked_at
             assert state.next_check_at is None
 
 
@@ -611,3 +660,4 @@ def test_retry_ladder_configuration_defaults() -> None:
         timedelta(hours=24),
         timedelta(hours=48),
     )
+    assert config.linkcheck_broken_recheck_interval == timedelta(hours=24)
