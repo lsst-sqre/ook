@@ -93,6 +93,7 @@ class ProcessContext:
             request_timeout=config.linkcheck_request_timeout,
             max_concurrency=config.linkcheck_max_concurrency,
             host_interval=config.linkcheck_host_interval,
+            user_agent=config.linkcheck_user_agent,
         )
 
         return cls(

@@ -10,10 +10,27 @@ from safir.kafka import KafkaConnectionSettings
 from safir.logging import LogLevel, Profile
 from safir.pydantic import EnvAsyncPostgresDsn, HumanTimedelta
 
+import ook
+
 __all__ = [
     "Configuration",
     "config",
 ]
+
+_DEFAULT_LINKCHECK_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64; rv:100.0) Gecko/20100101 "
+    f"Firefox/100.0 Ook-Linkcheck/{ook.__version__} "
+    "(+https://github.com/lsst-sqre/ook)"
+)
+"""Default link-check User-Agent.
+
+A browser-prefixed hybrid: Sphinx's own linkcheck builder ships the same
+``Mozilla/5.0 ... Firefox/100.0`` prefix by default, establishing that this
+posture is acceptable ecosystem precedent. The honest ``Ook-Linkcheck`` token
+(carrying the running version and repo URL) keeps the checker identifiable and
+allowlist-able, while the browser prefix clears Cloudflare zones that the bare
+token did not.
+"""
 
 
 class Configuration(BaseSettings):
@@ -142,6 +159,18 @@ class Configuration(BaseSettings):
         description=(
             "Minimum politeness interval between link-check requests to"
             " the same host."
+        ),
+    )
+
+    linkcheck_user_agent: str = Field(
+        _DEFAULT_LINKCHECK_USER_AGENT,
+        validation_alias="OOK_LINKCHECK_USER_AGENT",
+        description=(
+            "User-Agent header sent on every link-check HTTP request"
+            " (HEAD, GET fallback, and redirect hops). Defaults to a"
+            " browser-prefixed hybrid carrying the running Ook version and"
+            " repo URL so the checker stays identifiable while clearing"
+            " bot-protection zones that block the bare token."
         ),
     )
 

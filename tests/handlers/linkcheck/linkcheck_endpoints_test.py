@@ -60,6 +60,7 @@ async def _execute_check(
             logger=logger,
             request_timeout=timedelta(seconds=5),
             host_interval=timedelta(seconds=0),
+            user_agent=config.linkcheck_user_agent,
             resolve_host=resolve_host,
         )
         service = LinkCheckService(

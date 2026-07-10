@@ -15,7 +15,6 @@ import httpx
 from httpx import AsyncClient
 from structlog.stdlib import BoundLogger
 
-import ook
 from ook.domain.linkcheck import (
     CheckResult,
     LinkCheckOutcome,
@@ -23,13 +22,6 @@ from ook.domain.linkcheck import (
 )
 
 __all__ = ["HostResolver", "UrlChecker"]
-
-_USER_AGENT = (
-    f"Ook-Linkcheck/{ook.__version__} (+https://github.com/lsst-sqre/ook)"
-)
-"""Identifying User-Agent so operators can recognize (and allowlist) the
-link checker instead of blocking the default automation UA.
-"""
 
 _ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 """Browser-like Accept header so bot-protection heuristics treating the
@@ -156,6 +148,9 @@ class UrlChecker:
         Maximum number of concurrent HTTP requests across all hosts.
     host_interval
         Minimum politeness interval between requests to the same host.
+    user_agent
+        User-Agent header sent on every request (HEAD, GET fallback, and
+        redirect hops).
     resolve_host
         Hostname resolver used by the SSRF guard, mainly injectable for
         testing. Defaults to asyncio's ``getaddrinfo``. The address it
@@ -172,12 +167,14 @@ class UrlChecker:
         request_timeout: timedelta = timedelta(seconds=30),
         max_concurrency: int = 10,
         host_interval: timedelta = timedelta(seconds=1),
+        user_agent: str,
         resolve_host: HostResolver | None = None,
     ) -> None:
         self._http_client = http_client
         self._logger = logger
         self._timeout_seconds = request_timeout.total_seconds()
         self._host_interval = host_interval.total_seconds()
+        self._user_agent = user_agent
         self._resolve_host = resolve_host or _default_resolve_host
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._host_locks: defaultdict[str, asyncio.Lock] = defaultdict(
@@ -328,7 +325,7 @@ class UrlChecker:
                 request_url,
                 headers={
                     "Host": authority,
-                    "User-Agent": _USER_AGENT,
+                    "User-Agent": self._user_agent,
                     "Accept": _ACCEPT,
                 },
                 extensions={"sni_hostname": sni_host},

@@ -13,7 +13,7 @@ import respx
 import structlog
 
 import ook
-from ook.config import config
+from ook.config import Configuration, config
 from ook.domain.linkcheck import CheckResult
 from ook.factory import Factory
 from ook.services.linkcheck import UrlChecker
@@ -28,12 +28,14 @@ def make_checker(
     max_concurrency: int = 10,
     host_interval: float = 0.0,
     ip_map: dict[str, Sequence[str]] | None = None,
+    user_agent: str | None = None,
 ) -> UrlChecker:
     """Create a UrlChecker with a fake DNS resolver.
 
     The fake resolver returns ``ip_map[host]`` when the host is mapped,
     and a public IP address otherwise, so tests never perform real DNS
-    lookups.
+    lookups. The User-Agent defaults to the configured default so tests
+    exercise the production header unless they override it.
     """
 
     async def resolve_host(host: str) -> Sequence[str]:
@@ -48,6 +50,11 @@ def make_checker(
         max_concurrency=max_concurrency,
         host_interval=timedelta(seconds=host_interval),
         resolve_host=resolve_host,
+        user_agent=(
+            user_agent
+            if user_agent is not None
+            else config.linkcheck_user_agent
+        ),
     )
 
 
@@ -138,6 +145,7 @@ async def test_dns_failure_is_failure(
         http_client=http_client,
         logger=structlog.get_logger("test"),
         request_timeout=timedelta(seconds=5),
+        user_agent=config.linkcheck_user_agent,
         resolve_host=resolve_host,
     )
     outcome = await checker.check("https://no-such-host.example.com/")
@@ -224,8 +232,12 @@ async def test_identifying_headers_on_every_request(
     # which replays GET /old (301 hop) -> GET /new (200).
     assert len(respx_mock.calls) == 4
 
+    # The default UA is the browser-prefixed hybrid carrying the running
+    # version and repo URL (see config.linkcheck_user_agent).
     expected_user_agent = (
-        f"Ook-Linkcheck/{ook.__version__} (+https://github.com/lsst-sqre/ook)"
+        "Mozilla/5.0 (X11; Linux x86_64; rv:100.0) Gecko/20100101 "
+        f"Firefox/100.0 Ook-Linkcheck/{ook.__version__} "
+        "(+https://github.com/lsst-sqre/ook)"
     )
     expected_accept = (
         "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
@@ -235,6 +247,43 @@ async def test_identifying_headers_on_every_request(
         assert call.request.headers["Accept"] == expected_accept
         # The Host header (virtual-host routing) is unchanged.
         assert call.request.headers["Host"] == "example.com"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_configured_user_agent_on_every_request(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A configured User-Agent overrides the default on every outgoing
+    request, across the HEAD, the GET fallback, and each manual redirect
+    hop.
+    """
+    respx_mock.route(
+        method="HEAD", path="/old", headers={"Host": "example.com"}
+    ).respond(301, headers={"Location": "https://example.com/new"})
+    respx_mock.route(
+        method="HEAD", path="/new", headers={"Host": "example.com"}
+    ).respond(405)
+    respx_mock.route(
+        method="GET", path="/old", headers={"Host": "example.com"}
+    ).respond(301, headers={"Location": "https://example.com/new"})
+    respx_mock.route(
+        method="GET", path="/new", headers={"Host": "example.com"}
+    ).respond(200)
+
+    custom_ua = "Custom-Linkcheck/9.9 (+https://example.org/bot)"
+    checker = make_checker(http_client, user_agent=custom_ua)
+    outcome = await checker.check("https://example.com/old")
+    assert outcome.result is CheckResult.success
+    assert len(respx_mock.calls) == 4
+
+    for call in respx_mock.calls:
+        assert call.request.headers["User-Agent"] == custom_ua
+        # The Accept header is unchanged by the UA override.
+        assert call.request.headers["Accept"] == (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        )
 
 
 @pytest.mark.asyncio
@@ -788,6 +837,27 @@ def test_linkcheck_configuration_defaults() -> None:
     assert config.linkcheck_request_timeout == timedelta(seconds=30)
     assert config.linkcheck_max_concurrency == 10
     assert config.linkcheck_host_interval == timedelta(seconds=1)
+    # The default UA is the browser-prefixed hybrid carrying the running
+    # version and repo URL.
+    assert config.linkcheck_user_agent == (
+        "Mozilla/5.0 (X11; Linux x86_64; rv:100.0) Gecko/20100101 "
+        f"Firefox/100.0 Ook-Linkcheck/{ook.__version__} "
+        "(+https://github.com/lsst-sqre/ook)"
+    )
+
+
+def test_linkcheck_user_agent_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``OOK_LINKCHECK_USER_AGENT`` overrides the default User-Agent."""
+    monkeypatch.setenv(
+        "OOK_LINKCHECK_USER_AGENT",
+        "Override-Linkcheck/1.0 (+https://example.org/bot)",
+    )
+    reconfigured = Configuration()
+    assert reconfigured.linkcheck_user_agent == (
+        "Override-Linkcheck/1.0 (+https://example.org/bot)"
+    )
 
 
 @pytest.mark.asyncio

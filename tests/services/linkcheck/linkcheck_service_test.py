@@ -44,6 +44,7 @@ def make_service(
         request_timeout=timedelta(seconds=5),
         max_concurrency=10,
         host_interval=timedelta(seconds=0),
+        user_agent=config.linkcheck_user_agent,
         resolve_host=_resolve_public,
     )
     return LinkCheckService(
