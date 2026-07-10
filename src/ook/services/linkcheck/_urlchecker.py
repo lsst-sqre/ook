@@ -15,6 +15,7 @@ import httpx
 from httpx import AsyncClient
 from structlog.stdlib import BoundLogger
 
+import ook
 from ook.domain.linkcheck import (
     CheckResult,
     LinkCheckOutcome,
@@ -22,6 +23,18 @@ from ook.domain.linkcheck import (
 )
 
 __all__ = ["HostResolver", "UrlChecker"]
+
+_USER_AGENT = (
+    f"Ook-Linkcheck/{ook.__version__} (+https://github.com/lsst-sqre/ook)"
+)
+"""Identifying User-Agent so operators can recognize (and allowlist) the
+link checker instead of blocking the default automation UA.
+"""
+
+_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+"""Browser-like Accept header so bot-protection heuristics treating the
+default automation Accept as suspicious do not block link-check requests.
+"""
 
 HostResolver = Callable[[str], Awaitable[Sequence[str]]]
 """Type of a callable resolving a hostname to IP address strings."""
@@ -278,7 +291,11 @@ class UrlChecker:
             return await self._http_client.request(
                 method,
                 request_url,
-                headers={"Host": authority},
+                headers={
+                    "Host": authority,
+                    "User-Agent": _USER_AGENT,
+                    "Accept": _ACCEPT,
+                },
                 extensions={"sni_hostname": sni_host},
                 follow_redirects=False,
                 timeout=self._timeout_seconds,

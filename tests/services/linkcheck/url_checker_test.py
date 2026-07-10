@@ -12,6 +12,7 @@ import pytest
 import respx
 import structlog
 
+import ook
 from ook.config import config
 from ook.domain.linkcheck import CheckResult
 from ook.factory import Factory
@@ -192,6 +193,48 @@ async def test_request_pinned_to_validated_address(
     assert request.url.host == pinned_ip
     # ...while the Host header (and TLS SNI) stay the hostname.
     assert request.headers["Host"] == "example.com"
+
+
+@pytest.mark.asyncio
+async def test_identifying_headers_on_every_request(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """Every outgoing linkcheck request carries an identifying
+    User-Agent and a browser-like Accept header, across the HEAD, the
+    GET fallback, and each manual redirect hop.
+    """
+    respx_mock.route(
+        method="HEAD", path="/old", headers={"Host": "example.com"}
+    ).respond(301, headers={"Location": "https://example.com/new"})
+    respx_mock.route(
+        method="HEAD", path="/new", headers={"Host": "example.com"}
+    ).respond(405)
+    respx_mock.route(
+        method="GET", path="/old", headers={"Host": "example.com"}
+    ).respond(301, headers={"Location": "https://example.com/new"})
+    respx_mock.route(
+        method="GET", path="/new", headers={"Host": "example.com"}
+    ).respond(200)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/old")
+    assert outcome.result is CheckResult.success
+    # HEAD /old (301 hop) -> HEAD /new (405) triggers the GET fallback,
+    # which replays GET /old (301 hop) -> GET /new (200).
+    assert len(respx_mock.calls) == 4
+
+    expected_user_agent = (
+        f"Ook-Linkcheck/{ook.__version__} (+https://github.com/lsst-sqre/ook)"
+    )
+    expected_accept = (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    )
+    for call in respx_mock.calls:
+        assert call.request.headers["User-Agent"] == expected_user_agent
+        assert call.request.headers["Accept"] == expected_accept
+        # The Host header (virtual-host routing) is unchanged.
+        assert call.request.headers["Host"] == "example.com"
 
 
 @pytest.mark.asyncio
