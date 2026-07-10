@@ -59,6 +59,11 @@ class LinkStatus(StrEnum):
     broken = "broken"
     """The retry ladder is exhausted, or a link never seen OK failed."""
 
+    blocked = "blocked"
+    """A bot-protection layer (e.g. a Cloudflare challenge) blocked the
+    check, so the result is inconclusive rather than a confirmed failure.
+    """
+
     unsupported = "unsupported"
     """The URL cannot be checked (non-http(s) scheme or malformed)."""
 
@@ -126,6 +131,15 @@ class RetryLadderConfig(BaseModel):
         ),
     )
 
+    blocked_recheck_interval: timedelta = Field(
+        timedelta(hours=1),
+        description=(
+            "Delay until the next recheck of a bot-blocked link. A block"
+            " is inconclusive and tends to flap, so blocked links are"
+            " revisited at this near-term cadence to re-verify."
+        ),
+    )
+
 
 class LinkCheckOutcome(BaseModel):
     """The outcome of a single check of a URL.
@@ -162,6 +176,15 @@ class LinkCheckOutcome(BaseModel):
     error: str | None = Field(
         None,
         description="Description of the failure, if the check failed.",
+    )
+
+    is_bot_blocked: bool = Field(
+        False,
+        description=(
+            "Whether the check was blocked by an edge bot-protection"
+            " layer (e.g. a Cloudflare challenge), making the failure"
+            " inconclusive rather than a confirmed broken link."
+        ),
     )
 
 
@@ -295,6 +318,9 @@ class CheckUrlStatus(StrEnum):
 
     broken = "broken"
     """The link is broken."""
+
+    blocked = "blocked"
+    """The check was blocked by bot protection (inconclusive)."""
 
     unsupported = "unsupported"
     """The URL cannot be checked."""

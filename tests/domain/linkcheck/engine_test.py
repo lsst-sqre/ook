@@ -321,6 +321,67 @@ def test_ladder_thresholds_are_caller_supplied() -> None:
     assert state.next_check_at == checked_at + LADDER.recheck_intervals[1]
 
 
+def block_at(checked_at: datetime) -> LinkCheckOutcome:
+    """Create a bot-blocked failure outcome at ``checked_at``."""
+    return LinkCheckOutcome(
+        checked_at=checked_at,
+        result=CheckResult.failure,
+        status_code=403,
+        error="HTTP 403 (likely blocked by bot protection; server=cloudflare)",
+        is_bot_blocked=True,
+    )
+
+
+def test_bot_blocked_outcome_is_blocked() -> None:
+    """A bot-blocked failure yields ``blocked`` (inconclusive), preserves
+    the last-OK marker, retains the diagnostic error, and schedules a
+    near-term recheck because blocks flap.
+    """
+    prior = make_ok_state(T0)
+    checked_at = T0 + timedelta(hours=12)
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=block_at(checked_at), ladder=LADDER
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.last_ok_at == T0
+    assert state.status_code == 403
+    assert state.error is not None
+    assert "bot protection" in state.error
+    assert state.next_check_at == (
+        checked_at + LADDER.blocked_recheck_interval
+    )
+
+
+def test_bot_blocked_does_not_extend_failure_streak() -> None:
+    """A bot-blocked check of a failing link neither extends nor discards
+    the failing→broken streak: ``failing_since`` and ``failure_count``
+    carry over unchanged so the block cannot push the link to broken.
+    """
+    prior = make_failing_state(T0, 2)
+    checked_at = T0 + timedelta(hours=72)
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=block_at(checked_at), ladder=LADDER
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.failing_since == T0
+    assert state.failure_count == 2
+
+
+def test_bot_blocked_never_seen_ok_is_blocked_not_broken() -> None:
+    """A never-seen-OK link that is bot-blocked reports ``blocked``, not
+    ``broken``: the block is inconclusive, so it is not treated as an
+    authoring error.
+    """
+    state = evaluate_outcome(
+        url=URL, prior=None, outcome=block_at(T0), ladder=LADDER
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.last_ok_at is None
+    assert state.failing_since is None
+    assert state.failure_count == 0
+    assert state.next_check_at == T0 + LADDER.blocked_recheck_interval
+
+
 def test_unsupported_outcome_is_unsupported() -> None:
     """An unsupported check outcome yields ``unsupported`` and never
     enters the retry ladder.

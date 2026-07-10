@@ -389,6 +389,51 @@ async def test_bot_blocked_403_annotated(
 
 
 @pytest.mark.asyncio
+async def test_bot_blocked_403_sets_structured_flag(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A bot-blocked 403 sets the structured ``is_bot_blocked`` flag on
+    the outcome so downstream layers classify it without parsing the
+    error prose.
+    """
+    headers = {"server": "cloudflare", "cf-mitigated": "block"}
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.is_bot_blocked is True
+
+
+@pytest.mark.asyncio
+async def test_plain_403_is_not_bot_blocked(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 403 without mitigation markers leaves ``is_bot_blocked`` false:
+    it is a genuine failure, not an inconclusive block.
+    """
+    headers = {"cf-ray": "8abc123def456-DFW"}
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.is_bot_blocked is False
+
+
+@pytest.mark.asyncio
 async def test_bot_blocked_403_cf_mitigated_only(
     http_client: httpx.AsyncClient,
     respx_mock: respx.Router,

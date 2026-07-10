@@ -283,6 +283,9 @@ class Factory:
                 broken_recheck_interval=(
                     config.linkcheck_broken_recheck_interval
                 ),
+                blocked_recheck_interval=(
+                    config.linkcheck_blocked_recheck_interval
+                ),
             ),
             check_retention=config.linkcheck_check_retention,
         )

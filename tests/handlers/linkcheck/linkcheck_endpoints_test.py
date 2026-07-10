@@ -435,6 +435,7 @@ async def test_submit_and_poll_mixed_urls(client: AsyncClient) -> None:
         "redirected": 0,
         "failing": 0,
         "broken": 0,
+        "blocked": 0,
         "unsupported": 1,
     }
     results = {u["url"]: u for u in data["urls"]}
@@ -622,6 +623,7 @@ async def test_poll_after_execution_reflects_results(
         "redirected": 0,
         "failing": 0,
         "broken": 1,
+        "blocked": 0,
         "unsupported": 0,
     }
     results = {u["url"]: u for u in data["urls"]}
@@ -633,6 +635,62 @@ async def test_poll_after_execution_reflects_results(
     assert gone["status"] == "broken"
     assert gone["status_code"] == 404
     assert gone["checked_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_poll_reports_bot_blocked_url_as_blocked(
+    client: AsyncClient,
+) -> None:
+    """A bot-blocked URL is reported with the ``blocked`` status and
+    counted in the summary's ``blocked`` bucket, excluded from failing
+    and broken, with the diagnostic error detail retained.
+    """
+    response = await client.post(
+        "/ook/linkcheck/checks",
+        json={
+            "origin_base_url": ORIGIN,
+            "is_default_version": True,
+            "urls": [
+                {"url": "https://example.com/ok", "origin_paths": ["index"]},
+                {
+                    "url": "https://example.com/guarded",
+                    "origin_paths": ["index"],
+                },
+            ],
+        },
+    )
+    assert response.status_code == 202
+    location = response.headers["Location"]
+    check_id = validate_base32_id(location.rstrip("/").rsplit("/", 1)[-1])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/guarded":
+            return httpx.Response(
+                403,
+                headers={"server": "cloudflare", "cf-mitigated": "block"},
+            )
+        return httpx.Response(200)
+
+    await _execute_check(check_id, handler)
+
+    response = await client.get(location)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "complete"
+    assert data["summary"] == {
+        "pending": 0,
+        "ok": 1,
+        "redirected": 0,
+        "failing": 0,
+        "broken": 0,
+        "blocked": 1,
+        "unsupported": 0,
+    }
+    results = {u["url"]: u for u in data["urls"]}
+    guarded = results["https://example.com/guarded"]
+    assert guarded["status"] == "blocked"
+    assert guarded["status_code"] == 403
+    assert "bot protection" in guarded["error"]
 
 
 @pytest.mark.asyncio

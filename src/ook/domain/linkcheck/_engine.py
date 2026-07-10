@@ -189,6 +189,26 @@ def evaluate_outcome(
             next_check_at=None,
         )
 
+    if outcome.is_bot_blocked:
+        # A bot-protection block is inconclusive: the link may well be
+        # fine. Report ``blocked`` without discarding or extending the
+        # failing→broken streak (so a block cannot push a link to broken
+        # nor reset progress toward it), preserve the last-OK marker, and
+        # schedule a near-term recheck because blocks tend to flap.
+        return LinkState(
+            url=url,
+            status=LinkStatus.blocked,
+            checked_at=outcome.checked_at,
+            last_ok_at=prior.last_ok_at if prior is not None else None,
+            failing_since=prior.failing_since if prior is not None else None,
+            failure_count=prior.failure_count if prior is not None else 0,
+            status_code=outcome.status_code,
+            redirect_status_code=None,
+            redirect_url=None,
+            error=outcome.error,
+            next_check_at=outcome.checked_at + ladder.blocked_recheck_interval,
+        )
+
     # Failure path: extend (or start) the consecutive-failure streak.
     last_ok_at = prior.last_ok_at if prior is not None else None
     if prior is not None and prior.failing_since is not None:

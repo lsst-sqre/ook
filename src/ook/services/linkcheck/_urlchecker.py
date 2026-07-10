@@ -386,6 +386,7 @@ class UrlChecker:
             redirect_status_code=redirect_status_code,
             redirect_url=redirect_url,
             error=error,
+            is_bot_blocked=result.is_bot_blocked,
         )
 
     async def _resolve_and_validate(self, url: str) -> str:

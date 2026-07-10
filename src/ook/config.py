@@ -212,6 +212,16 @@ class Configuration(BaseSettings):
         ),
     )
 
+    linkcheck_blocked_recheck_interval: HumanTimedelta = Field(
+        timedelta(hours=1),
+        validation_alias="OOK_LINKCHECK_BLOCKED_RECHECK_INTERVAL",
+        description=(
+            "Delay until the next recheck of a bot-blocked link. A block"
+            " is inconclusive and tends to flap, so blocked links are"
+            " revisited at this near-term cadence to re-verify."
+        ),
+    )
+
     linkcheck_check_retention: HumanTimedelta = Field(
         timedelta(days=30),
         validation_alias="OOK_LINKCHECK_CHECK_RETENTION",
