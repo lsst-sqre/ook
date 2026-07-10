@@ -286,9 +286,12 @@ async def test_failure_includes_diagnostic_headers(
     http_client: httpx.AsyncClient,
     respx_mock: respx.Router,
 ) -> None:
-    """A 4xx failure captures edge-mitigation diagnostic headers in the
+    """A 5xx failure captures edge-mitigation diagnostic headers in the
     error detail so production data distinguishes an edge block (e.g. a
     Cloudflare challenge) from a genuine origin error.
+
+    A 5xx is used here so the diagnostic capture is exercised on its own;
+    the 403 bot-protection annotation is covered separately.
     """
     headers = {
         "server": "cloudflare",
@@ -297,17 +300,17 @@ async def test_failure_includes_diagnostic_headers(
     }
     respx_mock.route(
         method="HEAD", path="/blocked", headers={"Host": "example.com"}
-    ).respond(403, headers=headers)
+    ).respond(502, headers=headers)
     respx_mock.route(
         method="GET", path="/blocked", headers={"Host": "example.com"}
-    ).respond(403, headers=headers)
+    ).respond(502, headers=headers)
 
     checker = make_checker(http_client)
     outcome = await checker.check("https://example.com/blocked")
     assert outcome.result is CheckResult.failure
-    assert outcome.status_code == 403
+    assert outcome.status_code == 502
     assert outcome.error == (
-        "HTTP 403 (server=cloudflare; cf-mitigated=challenge; "
+        "HTTP 502 (server=cloudflare; cf-mitigated=challenge; "
         "cf-ray=8abc123def456-DFW)"
     )
 
@@ -352,6 +355,131 @@ async def test_failure_without_diagnostic_headers_keeps_plain_format(
     outcome = await checker.check("https://example.com/missing")
     assert outcome.result is CheckResult.failure
     assert outcome.error == "HTTP 404"
+
+
+@pytest.mark.asyncio
+async def test_bot_blocked_403_annotated(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 403 carrying Cloudflare mitigation markers is annotated as
+    likely bot-blocked, ahead of the captured diagnostics, so documenteer
+    users don't chase a false broken-link warning.
+    """
+    headers = {
+        "server": "cloudflare",
+        "cf-mitigated": "block",
+        "cf-ray": "8abc123def456-DFW",
+    }
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.status_code == 403
+    assert outcome.error == (
+        "HTTP 403 (likely blocked by bot protection; server=cloudflare; "
+        "cf-mitigated=block; cf-ray=8abc123def456-DFW)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_bot_blocked_403_cf_mitigated_only(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A ``cf-mitigated`` header alone (no ``server: cloudflare``) is
+    enough to mark a 403 as likely bot-blocked.
+    """
+    headers = {"cf-mitigated": "challenge"}
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.error == (
+        "HTTP 403 (likely blocked by bot protection; cf-mitigated=challenge)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_bot_blocked_403_server_header_case_insensitive(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The ``server: cloudflare`` marker match is case-insensitive."""
+    headers = {"server": "Cloudflare", "cf-ray": "8abc123def456-DFW"}
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.error == (
+        "HTTP 403 (likely blocked by bot protection; server=Cloudflare; "
+        "cf-ray=8abc123def456-DFW)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_403_without_markers_keeps_plain_diagnostic(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 403 whose only diagnostic header is ``cf-ray`` (no
+    ``server: cloudflare`` and no ``cf-mitigated``) keeps the plain
+    diagnostic format from #286, without the bot-protection annotation.
+    """
+    headers = {"cf-ray": "8abc123def456-DFW"}
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.error == "HTTP 403 (cf-ray=8abc123def456-DFW)"
+
+
+@pytest.mark.asyncio
+async def test_non_403_cloudflare_not_annotated(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The bot-protection annotation is scoped to 403s: a 503 served by
+    Cloudflare keeps the plain diagnostic format.
+    """
+    headers = {"server": "cloudflare", "cf-ray": "8abc123def456-DFW"}
+    respx_mock.route(
+        method="HEAD", path="/down", headers={"Host": "example.com"}
+    ).respond(503, headers=headers)
+    respx_mock.route(
+        method="GET", path="/down", headers={"Host": "example.com"}
+    ).respond(503, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/down")
+    assert outcome.result is CheckResult.failure
+    assert outcome.error == (
+        "HTTP 503 (server=cloudflare; cf-ray=8abc123def456-DFW)"
+    )
 
 
 @pytest.mark.asyncio

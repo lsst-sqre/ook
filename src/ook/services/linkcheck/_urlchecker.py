@@ -91,6 +91,25 @@ class _FetchResult:
         return self.status_code in _SUCCESS_CODES
 
     @property
+    def is_bot_blocked(self) -> bool:
+        """Whether this is a 403 carrying Cloudflare bot-mitigation markers.
+
+        True only for a 403 whose terminal response has ``server:
+        cloudflare`` (case-insensitive) and/or a ``cf-mitigated`` header,
+        indicating the block came from edge bot protection rather than a
+        genuine origin authorization failure. A bare ``cf-ray`` (present
+        on all Cloudflare responses) is not a mitigation marker and does
+        not qualify.
+        """
+        if self.status_code != 403:
+            return False
+        server = self.diagnostic_headers.get("server", "")
+        return (
+            server.casefold() == "cloudflare"
+            or "cf-mitigated" in self.diagnostic_headers
+        )
+
+    @property
     def redirect_status_code(self) -> int | None:
         """The redirect status code characterizing the chain.
 
@@ -351,12 +370,15 @@ class UrlChecker:
                 redirect_url=redirect_url,
             )
         error = f"HTTP {result.status_code}"
-        if result.diagnostic_headers:
-            details = "; ".join(
-                f"{name}={value}"
-                for name, value in result.diagnostic_headers.items()
-            )
-            error = f"{error} ({details})"
+        detail_parts: list[str] = []
+        if result.is_bot_blocked:
+            detail_parts.append("likely blocked by bot protection")
+        detail_parts.extend(
+            f"{name}={value}"
+            for name, value in result.diagnostic_headers.items()
+        )
+        if detail_parts:
+            error = f"{error} ({'; '.join(detail_parts)})"
         return LinkCheckOutcome(
             checked_at=datetime.now(tz=UTC),
             result=CheckResult.failure,
