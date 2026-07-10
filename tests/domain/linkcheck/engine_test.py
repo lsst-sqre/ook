@@ -450,6 +450,91 @@ def test_transient_never_seen_ok_is_blocked_not_broken() -> None:
     assert state.next_check_at == T0 + LADDER.blocked_recheck_interval
 
 
+def make_blocked_state(
+    checked_at: datetime, consecutive_blocked_count: int
+) -> LinkState:
+    """Create a prior state for a link currently in the blocked streak."""
+    return LinkState(
+        url=URL,
+        status=LinkStatus.blocked,
+        checked_at=checked_at,
+        last_ok_at=checked_at - timedelta(days=1),
+        consecutive_blocked_count=consecutive_blocked_count,
+        status_code=403,
+    )
+
+
+def test_first_block_counts_one_and_rechecks_at_base_interval() -> None:
+    """The first blocked outcome sets the counter to 1 and rechecks at the
+    base blocked interval (no backoff yet, since blocks tend to flap).
+    """
+    prior = make_ok_state(T0)
+    checked_at = T0 + timedelta(hours=12)
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=block_at(checked_at), ladder=LADDER
+    )
+    assert state.consecutive_blocked_count == 1
+    assert state.next_check_at == (
+        checked_at + LADDER.blocked_recheck_interval
+    )
+
+
+def test_consecutive_blocks_back_off_the_recheck_interval() -> None:
+    """Each additional consecutive blocked outcome doubles the recheck
+    interval so a persistently blocked link is polled less often.
+    """
+    prior = make_blocked_state(T0, consecutive_blocked_count=2)
+    checked_at = T0 + timedelta(hours=2)
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=block_at(checked_at), ladder=LADDER
+    )
+    # Third consecutive block: 1h base doubled twice = 4h.
+    assert state.consecutive_blocked_count == 3
+    assert state.next_check_at == checked_at + timedelta(hours=4)
+
+
+def test_blocked_backoff_caps_at_broken_recheck_interval() -> None:
+    """The blocked backoff never exceeds the (slower) broken-recheck
+    interval, so a permanently blocked link converges to that cadence
+    instead of rechecking at the near-term blocked interval forever.
+    """
+    prior = make_blocked_state(T0, consecutive_blocked_count=20)
+    checked_at = T0 + timedelta(hours=1)
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=block_at(checked_at), ladder=LADDER
+    )
+    assert state.consecutive_blocked_count == 21
+    assert state.next_check_at == (checked_at + LADDER.broken_recheck_interval)
+
+
+def test_conclusive_outcome_resets_blocked_count() -> None:
+    """A conclusive outcome (here a success) clears the consecutive
+    blocked counter, so a later block starts its backoff fresh.
+    """
+    prior = make_blocked_state(T0, consecutive_blocked_count=5)
+    checked_at = T0 + timedelta(hours=1)
+    outcome = LinkCheckOutcome(
+        checked_at=checked_at, result=CheckResult.success, status_code=200
+    )
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=outcome, ladder=LADDER
+    )
+    assert state.status == LinkStatus.ok
+    assert state.consecutive_blocked_count == 0
+
+
+def test_hard_failure_resets_blocked_count() -> None:
+    """A conclusive hard failure also clears the blocked counter: the
+    blocked streak is broken by a definite outcome.
+    """
+    prior = make_blocked_state(T0, consecutive_blocked_count=5)
+    checked_at = T0 + timedelta(hours=1)
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=fail_at(checked_at), ladder=LADDER
+    )
+    assert state.consecutive_blocked_count == 0
+
+
 def test_unsupported_outcome_is_unsupported() -> None:
     """An unsupported check outcome yields ``unsupported`` and never
     enters the retry ladder.

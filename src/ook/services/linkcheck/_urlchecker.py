@@ -115,22 +115,23 @@ class _FetchResult:
 
     @property
     def is_bot_blocked(self) -> bool:
-        """Whether this is a 403 carrying Cloudflare bot-mitigation markers.
+        """Whether this is a 403 carrying a Cloudflare bot-mitigation marker.
 
-        True only for a 403 whose terminal response has ``server:
-        cloudflare`` (case-insensitive) and/or a ``cf-mitigated`` header,
-        indicating the block came from edge bot protection rather than a
-        genuine origin authorization failure. A bare ``cf-ray`` (present
-        on all Cloudflare responses) is not a mitigation marker and does
-        not qualify.
+        True only for a 403 whose terminal response carries a
+        ``cf-mitigated`` header, which Cloudflare stamps when its edge
+        actively mitigated (challenged or blocked) the request. A bare
+        ``server: cloudflare`` is deliberately *not* sufficient:
+        Cloudflare stamps that header on every proxied response,
+        including genuine origin 403s (auth-walled or removed resources),
+        so keying on it alone would hide real broken links behind the
+        inconclusive ``blocked`` status. A ``cf-ray`` (present on all
+        Cloudflare responses) likewise does not qualify. The edge headers
+        are still captured into the failure detail regardless, for
+        diagnostics.
         """
         if self.status_code != 403:
             return False
-        server = self.diagnostic_headers.get("server", "")
-        return (
-            server.casefold() == "cloudflare"
-            or "cf-mitigated" in self.diagnostic_headers
-        )
+        return "cf-mitigated" in self.diagnostic_headers
 
     @property
     def redirect_status_code(self) -> int | None:
@@ -267,6 +268,12 @@ class UrlChecker:
         try:
             result = await self._fetch(url, "HEAD", pinned)
             if result.is_success:
+                return result
+            if result.status_code == _RATE_LIMITED_CODE:
+                # A 429 is a rate limit, not the server mishandling HEAD.
+                # Return it so the caller's Retry-After logic governs the
+                # next request rather than firing an immediate GET (a
+                # second request) straight into the rate limit.
                 return result
         except TimeoutError, httpx.TimeoutException:
             raise

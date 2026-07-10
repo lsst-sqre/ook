@@ -115,6 +115,22 @@ async def test_url_state_roundtrip(factory: Factory) -> None:
         await store.upsert_url_state(failing_state)
         assert await store.get_url_state(url) == failing_state
 
+        # A blocked state round-trips its consecutive-blocked counter.
+        blocked_state = LinkState(
+            url=url,
+            status=LinkStatus.blocked,
+            checked_at=now + timedelta(hours=2),
+            last_ok_at=now,
+            failing_since=now + timedelta(hours=1),
+            failure_count=1,
+            consecutive_blocked_count=3,
+            status_code=403,
+            error="HTTP 403 (likely blocked by bot protection)",
+            next_check_at=now + timedelta(hours=6),
+        )
+        await store.upsert_url_state(blocked_state)
+        assert await store.get_url_state(url) == blocked_state
+
         # Upserting a state for an unknown URL creates the record.
         new_url = "https://example.org/fresh"
         new_state = LinkState(

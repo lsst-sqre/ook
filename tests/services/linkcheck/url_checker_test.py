@@ -509,11 +509,17 @@ async def test_bot_blocked_403_cf_mitigated_only(
 
 
 @pytest.mark.asyncio
-async def test_bot_blocked_403_server_header_case_insensitive(
+async def test_403_server_cloudflare_without_mitigation_not_blocked(
     http_client: httpx.AsyncClient,
     respx_mock: respx.Router,
 ) -> None:
-    """The ``server: cloudflare`` marker match is case-insensitive."""
+    """A 403 with only ``server: cloudflare`` (no ``cf-mitigated``) is a
+    genuine origin failure, not a bot block: Cloudflare stamps ``server:
+    cloudflare`` on every proxied response, including auth-walled or
+    removed resources, so it must not hide a real broken link behind the
+    inconclusive ``blocked`` status. The edge headers are still captured
+    in the diagnostic detail.
+    """
     headers = {"server": "Cloudflare", "cf-ray": "8abc123def456-DFW"}
     respx_mock.route(
         method="HEAD", path="/blocked", headers={"Host": "example.com"}
@@ -525,9 +531,9 @@ async def test_bot_blocked_403_server_header_case_insensitive(
     checker = make_checker(http_client)
     outcome = await checker.check("https://example.com/blocked")
     assert outcome.result is CheckResult.failure
+    assert outcome.is_bot_blocked is False
     assert outcome.error == (
-        "HTTP 403 (likely blocked by bot protection; server=Cloudflare; "
-        "cf-ray=8abc123def456-DFW)"
+        "HTTP 403 (server=Cloudflare; cf-ray=8abc123def456-DFW)"
     )
 
 
@@ -629,9 +635,9 @@ async def test_429_retry_after_success(
 
     def responder(request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        # The first attempt (HEAD then GET fallback) is rate-limited; the
-        # single retry succeeds.
-        if calls["n"] <= 2:
+        # The first attempt (a HEAD; a 429 short-circuits the GET
+        # fallback) is rate-limited; the single retry succeeds.
+        if calls["n"] <= 1:
             return httpx.Response(429, headers={"Retry-After": "2"})
         return httpx.Response(200)
 
@@ -644,7 +650,9 @@ async def test_429_retry_after_success(
     assert outcome.is_transient is False
     # Retried once, after the header's delay.
     assert sleeps == [2.0]
-    assert calls["n"] == 3
+    # HEAD (429, no GET fallback) on the first attempt, then HEAD (200)
+    # on the retry.
+    assert calls["n"] == 2
 
 
 @pytest.mark.asyncio
@@ -667,7 +675,7 @@ async def test_429_retry_after_delay_capped(
 
     def responder(request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        if calls["n"] <= 2:
+        if calls["n"] <= 1:
             return httpx.Response(429, headers={"Retry-After": "300"})
         return httpx.Response(200)
 
@@ -713,8 +721,9 @@ async def test_persistent_429_is_transient(
     assert outcome.error == "HTTP 429 (rate limited)"
     # One retry was attempted after the header delay.
     assert sleeps == [1.0]
-    # HEAD+GET on the first attempt, then HEAD+GET on the retry.
-    assert calls["n"] == 4
+    # A 429 short-circuits the GET fallback, so only the HEAD is sent on
+    # the first attempt and on the retry.
+    assert calls["n"] == 2
 
 
 @pytest.mark.asyncio
@@ -749,7 +758,8 @@ async def test_429_without_retry_after_is_transient_no_retry(
     assert outcome.error == "HTTP 429 (rate limited)"
     # No retry without a header delay to honor.
     assert sleeps == []
-    assert calls["n"] == 2
+    # Only the HEAD is sent: a 429 short-circuits the GET fallback.
+    assert calls["n"] == 1
 
 
 @pytest.mark.asyncio
@@ -775,7 +785,7 @@ async def test_429_retry_after_http_date(
 
     def responder(request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        if calls["n"] <= 2:
+        if calls["n"] <= 1:
             return httpx.Response(429, headers={"Retry-After": http_date})
         return httpx.Response(200)
 

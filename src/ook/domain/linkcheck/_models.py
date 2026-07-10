@@ -235,6 +235,18 @@ class LinkState(BaseModel):
         ),
     )
 
+    consecutive_blocked_count: int = Field(
+        0,
+        ge=0,
+        description=(
+            "Number of consecutive inconclusive (bot-blocked or"
+            " transient 429/503) checks in the current streak. Reset to"
+            " zero by any conclusive outcome (success, hard failure, or"
+            " unsupported). Drives the blocked-recheck backoff so a"
+            " permanently blocked link converges to a slow cadence."
+        ),
+    )
+
     status_code: int | None = Field(
         None,
         description=(

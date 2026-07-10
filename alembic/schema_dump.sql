@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict ZXyCkTrKQN9DID3zN2YnMgC33fELgrH6m0AzWWEu1125vsR9QLgIeCSL9TSTuEd
+\restrict IqAvRCBQTDIQHRz2C0hUoT0slvPwRs543gGHHv4Ueo1HxCImPYQ8NVOsGLgrIhl
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -195,6 +195,7 @@ CREATE TABLE public.checked_url (
     last_ok_at timestamp with time zone,
     failing_since timestamp with time zone,
     failure_count integer NOT NULL,
+    consecutive_blocked_count integer NOT NULL,
     next_check_at timestamp with time zone,
     check_method text NOT NULL,
     date_created timestamp with time zone NOT NULL
@@ -798,7 +799,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-20144e072aa7
+818fdc36974d
 \.
 
 
@@ -830,7 +831,7 @@ COPY public.author_alias (id, internal_id, author_id, date_updated) FROM stdin;
 -- Data for Name: checked_url; Type: TABLE DATA; Schema: public; Owner: test
 --
 
-COPY public.checked_url (id, url, status, status_code, redirect_url, redirect_status_code, error, last_checked_at, last_ok_at, failing_since, failure_count, next_check_at, check_method, date_created) FROM stdin;
+COPY public.checked_url (id, url, status, status_code, redirect_url, redirect_status_code, error, last_checked_at, last_ok_at, failing_since, failure_count, consecutive_blocked_count, next_check_at, check_method, date_created) FROM stdin;
 \.
 
 
@@ -1861,5 +1862,5 @@ ALTER TABLE ONLY public.url_occurrence
 -- PostgreSQL database dump complete
 --
 
-\unrestrict ZXyCkTrKQN9DID3zN2YnMgC33fELgrH6m0AzWWEu1125vsR9QLgIeCSL9TSTuEd
+\unrestrict IqAvRCBQTDIQHRz2C0hUoT0slvPwRs543gGHHv4Ueo1HxCImPYQ8NVOsGLgrIhl
 
