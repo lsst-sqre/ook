@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import socket
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 
 import httpx
 import pytest
@@ -27,6 +28,7 @@ def make_checker(
     *,
     max_concurrency: int = 10,
     host_interval: float = 0.0,
+    request_timeout: float = 5.0,
     ip_map: dict[str, Sequence[str]] | None = None,
     user_agent: str | None = None,
 ) -> UrlChecker:
@@ -46,7 +48,7 @@ def make_checker(
     return UrlChecker(
         http_client=http_client,
         logger=structlog.get_logger("test"),
-        request_timeout=timedelta(seconds=5),
+        request_timeout=timedelta(seconds=request_timeout),
         max_concurrency=max_concurrency,
         host_interval=timedelta(seconds=host_interval),
         resolve_host=resolve_host,
@@ -553,12 +555,13 @@ async def test_403_without_markers_keeps_plain_diagnostic(
 
 
 @pytest.mark.asyncio
-async def test_non_403_cloudflare_not_annotated(
+async def test_non_403_cloudflare_not_bot_annotated(
     http_client: httpx.AsyncClient,
     respx_mock: respx.Router,
 ) -> None:
     """The bot-protection annotation is scoped to 403s: a 503 served by
-    Cloudflare keeps the plain diagnostic format.
+    Cloudflare is annotated as a transient server error (not a bot block),
+    with the diagnostic headers still captured after it.
     """
     headers = {"server": "cloudflare", "cf-ray": "8abc123def456-DFW"}
     respx_mock.route(
@@ -571,9 +574,220 @@ async def test_non_403_cloudflare_not_annotated(
     checker = make_checker(http_client)
     outcome = await checker.check("https://example.com/down")
     assert outcome.result is CheckResult.failure
+    assert outcome.is_bot_blocked is False
     assert outcome.error == (
-        "HTTP 503 (server=cloudflare; cf-ray=8abc123def456-DFW)"
+        "HTTP 503 (transient server error; server=cloudflare; "
+        "cf-ray=8abc123def456-DFW)"
     )
+
+
+@pytest.mark.asyncio
+async def test_503_is_transient(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 503 is inconclusive immediately: no retry, ``is_transient`` set,
+    and the error explains it is a transient server error.
+    """
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    respx_mock.route().mock(side_effect=lambda request: httpx.Response(503))
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/down")
+    assert outcome.result is CheckResult.failure
+    assert outcome.status_code == 503
+    assert outcome.is_transient is True
+    assert outcome.error == "HTTP 503 (transient server error)"
+    # 503 is not retried, so no wait occurs.
+    assert sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_429_retry_after_success(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 carrying ``Retry-After`` is retried once after the indicated
+    delay; a successful retry records success and is not marked transient.
+    """
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    calls = {"n": 0}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        # The first attempt (HEAD then GET fallback) is rate-limited; the
+        # single retry succeeds.
+        if calls["n"] <= 2:
+            return httpx.Response(429, headers={"Retry-After": "2"})
+        return httpx.Response(200)
+
+    respx_mock.route().mock(side_effect=responder)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/rl")
+    assert outcome.result is CheckResult.success
+    assert outcome.status_code == 200
+    assert outcome.is_transient is False
+    # Retried once, after the header's delay.
+    assert sleeps == [2.0]
+    assert calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_429_retry_after_delay_capped(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A large ``Retry-After`` delay is capped at 60 seconds so a hostile
+    or mistaken header cannot stall a check indefinitely.
+    """
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    calls = {"n": 0}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return httpx.Response(429, headers={"Retry-After": "300"})
+        return httpx.Response(200)
+
+    respx_mock.route().mock(side_effect=responder)
+
+    # A generous request timeout so the cap under test is the 60 s ceiling,
+    # not the timeout budget.
+    checker = make_checker(http_client, request_timeout=120.0)
+    outcome = await checker.check("https://example.com/rl")
+    assert outcome.result is CheckResult.success
+    assert sleeps == [60.0]
+
+
+@pytest.mark.asyncio
+async def test_persistent_429_is_transient(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 that is still rate-limited after the single retry is
+    inconclusive: ``is_transient`` set and the error explains it.
+    """
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    calls = {"n": 0}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(429, headers={"Retry-After": "1"})
+
+    respx_mock.route().mock(side_effect=responder)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/rl")
+    assert outcome.result is CheckResult.failure
+    assert outcome.status_code == 429
+    assert outcome.is_transient is True
+    assert outcome.error == "HTTP 429 (rate limited)"
+    # One retry was attempted after the header delay.
+    assert sleeps == [1.0]
+    # HEAD+GET on the first attempt, then HEAD+GET on the retry.
+    assert calls["n"] == 4
+
+
+@pytest.mark.asyncio
+async def test_429_without_retry_after_is_transient_no_retry(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 without a ``Retry-After`` header is inconclusive without a
+    retry: there is no signalled delay to honor.
+    """
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    calls = {"n": 0}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(429)
+
+    respx_mock.route().mock(side_effect=responder)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/rl")
+    assert outcome.result is CheckResult.failure
+    assert outcome.status_code == 429
+    assert outcome.is_transient is True
+    assert outcome.error == "HTTP 429 (rate limited)"
+    # No retry without a header delay to honor.
+    assert sleeps == []
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_429_retry_after_http_date(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``Retry-After`` given as an HTTP-date is honored as a delay from
+    now.
+    """
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    retry_at = datetime.now(tz=UTC) + timedelta(seconds=30)
+    http_date = format_datetime(retry_at, usegmt=True)
+
+    calls = {"n": 0}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return httpx.Response(429, headers={"Retry-After": http_date})
+        return httpx.Response(200)
+
+    respx_mock.route().mock(side_effect=responder)
+
+    # A generous timeout budget so the ~30 s date delay is not capped.
+    checker = make_checker(http_client, request_timeout=120.0)
+    outcome = await checker.check("https://example.com/rl")
+    assert outcome.result is CheckResult.success
+    assert len(sleeps) == 1
+    # The delay is ~30 s from now, allowing for the elapsed test time.
+    assert 20.0 <= sleeps[0] <= 30.0
 
 
 @pytest.mark.asyncio

@@ -382,6 +382,74 @@ def test_bot_blocked_never_seen_ok_is_blocked_not_broken() -> None:
     assert state.next_check_at == T0 + LADDER.blocked_recheck_interval
 
 
+def transient_at(checked_at: datetime, status_code: int) -> LinkCheckOutcome:
+    """Create a transient-server-condition failure outcome (429/503)."""
+    label = "rate limited" if status_code == 429 else "transient server error"
+    return LinkCheckOutcome(
+        checked_at=checked_at,
+        result=CheckResult.failure,
+        status_code=status_code,
+        error=f"HTTP {status_code} ({label})",
+        is_transient=True,
+    )
+
+
+def test_transient_outcome_is_blocked() -> None:
+    """A transient 429/503 failure yields ``blocked`` (inconclusive),
+    preserves the last-OK marker, retains the diagnostic error, and
+    schedules a near-term recheck rather than confirming rot.
+    """
+    prior = make_ok_state(T0)
+    checked_at = T0 + timedelta(hours=12)
+    state = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=transient_at(checked_at, 503),
+        ladder=LADDER,
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.last_ok_at == T0
+    assert state.status_code == 503
+    assert state.error is not None
+    assert "transient server error" in state.error
+    assert state.next_check_at == (
+        checked_at + LADDER.blocked_recheck_interval
+    )
+
+
+def test_transient_does_not_extend_failure_streak() -> None:
+    """A transient check of a failing link neither extends nor discards
+    the failing→broken streak, so a 429/503 cannot push a link to broken
+    nor reset its progress toward it.
+    """
+    prior = make_failing_state(T0, 2)
+    checked_at = T0 + timedelta(hours=72)
+    state = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=transient_at(checked_at, 429),
+        ladder=LADDER,
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.failing_since == T0
+    assert state.failure_count == 2
+
+
+def test_transient_never_seen_ok_is_blocked_not_broken() -> None:
+    """A never-seen-OK link hitting a transient 503 reports ``blocked``,
+    not ``broken``: a server-side outage says nothing about whether the
+    link is broken.
+    """
+    state = evaluate_outcome(
+        url=URL, prior=None, outcome=transient_at(T0, 503), ladder=LADDER
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.last_ok_at is None
+    assert state.failing_since is None
+    assert state.failure_count == 0
+    assert state.next_check_at == T0 + LADDER.blocked_recheck_interval
+
+
 def test_unsupported_outcome_is_unsupported() -> None:
     """An unsupported check outcome yields ``unsupported`` and never
     enters the retry ladder.

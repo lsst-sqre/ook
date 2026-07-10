@@ -207,6 +207,62 @@ async def test_execute_check_bot_blocked_is_blocked(
 
 
 @pytest.mark.asyncio
+async def test_execute_check_transient_server_error_is_blocked(
+    factory: Factory,
+) -> None:
+    """A URL whose check hits a transient 503 reports ``blocked`` rather
+    than failing/broken: the last-OK marker and failure streak are
+    preserved and a near-term recheck is scheduled, matching Sphinx's
+    stance of not claiming failure during server-side outages.
+    """
+    last_ok = datetime.now(tz=UTC).replace(microsecond=0) - timedelta(hours=25)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            await store.upsert_url_state(
+                LinkState(
+                    url="https://example.com/down",
+                    status=LinkStatus.ok,
+                    checked_at=last_ok,
+                    last_ok_at=last_ok,
+                    status_code=200,
+                )
+            )
+            submission = await service.submit_check(
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
+                urls=[
+                    SubmittedUrl(
+                        url="https://example.com/down", origin_paths=["a"]
+                    )
+                ],
+            )
+            await service.execute_check(submission.check_id)
+
+            state = await store.get_url_state("https://example.com/down")
+            assert state is not None
+            assert state.status is LinkStatus.blocked
+            assert state.status_code == 503
+            assert state.last_ok_at == last_ok
+            # The outage neither extends nor resets the failure streak.
+            assert state.failing_since is None
+            assert state.failure_count == 0
+            assert state.next_check_at == state.checked_at + timedelta(hours=1)
+            assert state.error is not None
+            assert "transient server error" in state.error
+
+            report = await service.get_check_report(submission.check_id)
+            assert report is not None
+            (url_report,) = report.urls
+            assert url_report.status is CheckUrlStatus.blocked
+
+
+@pytest.mark.asyncio
 async def test_execute_check_previously_ok_failure_bookkeeping(
     factory: Factory,
 ) -> None:
@@ -217,7 +273,9 @@ async def test_execute_check_previously_ok_failure_bookkeeping(
     last_ok = datetime.now(tz=UTC).replace(microsecond=0) - timedelta(hours=25)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(503)
+        # A genuine 500 (not a transient 429/503) so the failing→broken
+        # ladder applies; transient conditions are covered separately.
+        return httpx.Response(500)
 
     async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
         service = make_service(factory, hc)
@@ -246,7 +304,7 @@ async def test_execute_check_previously_ok_failure_bookkeeping(
             state = await store.get_url_state("https://example.com/flaky")
             assert state is not None
             assert state.status is LinkStatus.failing
-            assert state.status_code == 503
+            assert state.status_code == 500
             assert state.last_ok_at == last_ok
             assert state.failing_since == state.checked_at
             assert state.failure_count == 1

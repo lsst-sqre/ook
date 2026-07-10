@@ -9,6 +9,7 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
 
 import httpx
@@ -42,6 +43,24 @@ _PERMANENT_REDIRECT_CODES = frozenset({301, 308})
 
 _MAX_REDIRECTS = 20
 """Maximum number of redirect hops followed before giving up."""
+
+_RATE_LIMITED_CODE = 429
+"""HTTP status code signalling the client is being rate limited."""
+
+_TRANSIENT_CODES = frozenset({429, 503})
+"""HTTP status codes treated as transient server conditions.
+
+Following Sphinx linkcheck, a persistent 429 (rate limit) or a 503
+(server-side outage) says nothing about whether the link is broken, so
+these outcomes are inconclusive: they never escalate the failing→broken
+ladder.
+"""
+
+_MAX_RETRY_AFTER_SECONDS = 60.0
+"""Ceiling on an honored ``Retry-After`` delay, so a hostile or mistaken
+header cannot stall a check indefinitely. The effective cap is further
+bounded by the per-request timeout budget.
+"""
 
 _DIAGNOSTIC_HEADERS = ("server", "cf-mitigated", "cf-ray")
 """Terminal-response headers captured into failure error details, in the
@@ -78,9 +97,21 @@ class _FetchResult:
     lowercased header name, present only when the response carried them.
     """
 
+    retry_after: str | None = None
+    """The raw ``Retry-After`` header of the terminal response, if any."""
+
     @property
     def is_success(self) -> bool:
         return self.status_code in _SUCCESS_CODES
+
+    @property
+    def is_transient(self) -> bool:
+        """Whether this is a transient server condition (429/503).
+
+        A persistent rate limit or a server-side outage is inconclusive:
+        it does not confirm the link is broken.
+        """
+        return self.status_code in _TRANSIENT_CODES
 
     @property
     def is_bot_blocked(self) -> bool:
@@ -199,6 +230,10 @@ class UrlChecker:
         try:
             pinned = await self._resolve_and_validate(url)
             result = await self._head_then_get(url, pinned)
+            if result.status_code == _RATE_LIMITED_CODE:
+                # A 429 is inconclusive, but honor a Retry-After delay with
+                # a single in-run retry before giving up on it.
+                result = await self._retry_after_once(url, pinned, result)
         except _UnsupportedUrlError as e:
             return self._unsupported_outcome(str(e))
         except socket.gaierror as e:
@@ -243,6 +278,47 @@ class UrlChecker:
             )
         return await self._fetch(url, "GET", pinned)
 
+    async def _retry_after_once(
+        self, url: str, pinned: str, result: _FetchResult
+    ) -> _FetchResult:
+        """Retry a rate-limited fetch once after honoring ``Retry-After``.
+
+        If the terminal 429 response carries a parseable ``Retry-After``
+        delay, wait for it (capped) and re-run the HEAD/GET fetch a single
+        time; the retry's result replaces the original. Without a usable
+        delay there is nothing to honor, so the original 429 result stands
+        and the caller reports it as an inconclusive transient outcome.
+
+        Parameters
+        ----------
+        url
+            The hostname URL to re-fetch.
+        pinned
+            The guard-validated address to connect to for the first hop.
+        result
+            The rate-limited terminal result of the first attempt.
+        """
+        delay = self._retry_after_delay(result.retry_after)
+        if delay is None:
+            return result
+        await asyncio.sleep(delay)
+        return await self._head_then_get(url, pinned)
+
+    def _retry_after_delay(self, value: str | None) -> float | None:
+        """Compute the delay to honor from a ``Retry-After`` header value.
+
+        Returns the delay in seconds, clamped to at least zero and capped
+        by both the 60 s ceiling and the per-request timeout budget, or
+        None if the header is absent or not parseable.
+        """
+        if value is None:
+            return None
+        seconds = _parse_retry_after(value)
+        if seconds is None:
+            return None
+        cap = min(_MAX_RETRY_AFTER_SECONDS, self._timeout_seconds)
+        return min(max(seconds, 0.0), cap)
+
     async def _fetch(self, url: str, method: str, pinned: str) -> _FetchResult:
         """Fetch a URL, following redirects manually so that every hop
         passes the SSRF guard, and return the terminal response.
@@ -279,6 +355,7 @@ class UrlChecker:
                     for name in _DIAGNOSTIC_HEADERS
                     if name in response.headers
                 },
+                retry_after=response.headers.get("Retry-After"),
             )
         raise _TooManyRedirectsError
 
@@ -370,6 +447,10 @@ class UrlChecker:
         detail_parts: list[str] = []
         if result.is_bot_blocked:
             detail_parts.append("likely blocked by bot protection")
+        elif result.status_code == _RATE_LIMITED_CODE:
+            detail_parts.append("rate limited")
+        elif result.is_transient:
+            detail_parts.append("transient server error")
         detail_parts.extend(
             f"{name}={value}"
             for name, value in result.diagnostic_headers.items()
@@ -384,6 +465,7 @@ class UrlChecker:
             redirect_url=redirect_url,
             error=error,
             is_bot_blocked=result.is_bot_blocked,
+            is_transient=result.is_transient,
         )
 
     async def _resolve_and_validate(self, url: str) -> str:
@@ -460,6 +542,27 @@ class UrlChecker:
             result=CheckResult.failure,
             error=error,
         )
+
+
+def _parse_retry_after(value: str) -> float | None:
+    """Parse a ``Retry-After`` header into a delay in seconds.
+
+    Supports both forms defined by RFC 9110: a non-negative delta-seconds
+    integer, or an HTTP-date (interpreted as a delay from now). Returns
+    None if the value is neither.
+    """
+    value = value.strip()
+    try:
+        return float(int(value))
+    except ValueError:
+        pass
+    try:
+        parsed = parsedate_to_datetime(value)
+    except TypeError, ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return (parsed - datetime.now(tz=UTC)).total_seconds()
 
 
 def _describe_error(error: Exception) -> str:

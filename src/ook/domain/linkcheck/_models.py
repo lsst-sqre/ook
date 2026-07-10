@@ -187,6 +187,17 @@ class LinkCheckOutcome(BaseModel):
         ),
     )
 
+    is_transient: bool = Field(
+        False,
+        description=(
+            "Whether the check hit a transient server condition (a"
+            " persistent HTTP 429 rate limit or an HTTP 503 outage),"
+            " making the failure inconclusive rather than a confirmed"
+            " broken link. Like a bot block, this never escalates the"
+            " failing→broken ladder."
+        ),
+    )
+
 
 class LinkState(BaseModel):
     """The health state of a link, as tracked across checks.

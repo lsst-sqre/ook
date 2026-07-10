@@ -189,12 +189,14 @@ def evaluate_outcome(
             next_check_at=None,
         )
 
-    if outcome.is_bot_blocked:
-        # A bot-protection block is inconclusive: the link may well be
-        # fine. Report ``blocked`` without discarding or extending the
-        # failing→broken streak (so a block cannot push a link to broken
-        # nor reset progress toward it), preserve the last-OK marker, and
-        # schedule a near-term recheck because blocks tend to flap.
+    if outcome.is_bot_blocked or outcome.is_transient:
+        # Both a bot-protection block and a transient server condition (a
+        # persistent 429 rate limit or a 503 outage) are inconclusive:
+        # the link may well be fine. Report ``blocked`` without discarding
+        # or extending the failing→broken streak (so an inconclusive check
+        # cannot push a link to broken nor reset progress toward it),
+        # preserve the last-OK marker, and schedule a near-term recheck
+        # because these conditions tend to clear.
         return LinkState(
             url=url,
             status=LinkStatus.blocked,
