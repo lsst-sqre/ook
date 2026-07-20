@@ -102,6 +102,14 @@ class SqlCheckedUrl(Base):
     )
     """The number of consecutive failed checks in the current streak."""
 
+    consecutive_blocked_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    """The number of consecutive inconclusive (bot-blocked or transient
+    429/503) checks in the current streak. Reset to zero by any
+    conclusive outcome; drives the blocked-recheck backoff.
+    """
+
     next_check_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )

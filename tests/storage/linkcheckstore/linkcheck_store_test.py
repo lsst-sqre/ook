@@ -115,6 +115,22 @@ async def test_url_state_roundtrip(factory: Factory) -> None:
         await store.upsert_url_state(failing_state)
         assert await store.get_url_state(url) == failing_state
 
+        # A blocked state round-trips its consecutive-blocked counter.
+        blocked_state = LinkState(
+            url=url,
+            status=LinkStatus.blocked,
+            checked_at=now + timedelta(hours=2),
+            last_ok_at=now,
+            failing_since=now + timedelta(hours=1),
+            failure_count=1,
+            consecutive_blocked_count=3,
+            status_code=403,
+            error="HTTP 403 (likely blocked by bot protection)",
+            next_check_at=now + timedelta(hours=6),
+        )
+        await store.upsert_url_state(blocked_state)
+        assert await store.get_url_state(url) == blocked_state
+
         # Upserting a state for an unknown URL creates the record.
         new_url = "https://example.org/fresh"
         new_state = LinkState(
@@ -479,6 +495,16 @@ async def test_get_due_urls(factory: Factory) -> None:
                 now - timedelta(hours=25),
             )
         )
+        # Broken with a slow-recheck time in the past: due, so a
+        # recovered link can heal without waiting for resubmission.
+        await store.upsert_url_state(
+            make_state(
+                "https://due.example.com/broken",
+                LinkStatus.broken,
+                now - timedelta(hours=2),
+                next_check_at=now - timedelta(hours=1),
+            )
+        )
         # Unsupported URLs are never due, no matter how stale.
         await store.upsert_url_state(
             make_state(
@@ -493,6 +519,7 @@ async def test_get_due_urls(factory: Factory) -> None:
             "https://due.example.com/new",
             "https://due.example.com/ladder",
             "https://due.example.com/stale",
+            "https://due.example.com/broken",
         }
         due_by_url = {d.url: d.id for d in due}
         assert (

@@ -93,6 +93,7 @@ class ProcessContext:
             request_timeout=config.linkcheck_request_timeout,
             max_concurrency=config.linkcheck_max_concurrency,
             host_interval=config.linkcheck_host_interval,
+            user_agent=config.linkcheck_user_agent,
         )
 
         return cls(
@@ -280,6 +281,12 @@ class Factory:
                 broken_threshold=config.linkcheck_broken_threshold,
                 min_attempts=config.linkcheck_broken_min_attempts,
                 recheck_intervals=config.linkcheck_recheck_intervals,
+                broken_recheck_interval=(
+                    config.linkcheck_broken_recheck_interval
+                ),
+                blocked_recheck_interval=(
+                    config.linkcheck_blocked_recheck_interval
+                ),
             ),
             check_retention=config.linkcheck_check_retention,
         )

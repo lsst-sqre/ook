@@ -5,14 +5,16 @@ from __future__ import annotations
 import asyncio
 import socket
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 
 import httpx
 import pytest
 import respx
 import structlog
 
-from ook.config import config
+import ook
+from ook.config import Configuration, config
 from ook.domain.linkcheck import CheckResult
 from ook.factory import Factory
 from ook.services.linkcheck import UrlChecker
@@ -26,13 +28,16 @@ def make_checker(
     *,
     max_concurrency: int = 10,
     host_interval: float = 0.0,
+    request_timeout: float = 5.0,
     ip_map: dict[str, Sequence[str]] | None = None,
+    user_agent: str | None = None,
 ) -> UrlChecker:
     """Create a UrlChecker with a fake DNS resolver.
 
     The fake resolver returns ``ip_map[host]`` when the host is mapped,
     and a public IP address otherwise, so tests never perform real DNS
-    lookups.
+    lookups. The User-Agent defaults to the configured default so tests
+    exercise the production header unless they override it.
     """
 
     async def resolve_host(host: str) -> Sequence[str]:
@@ -43,10 +48,15 @@ def make_checker(
     return UrlChecker(
         http_client=http_client,
         logger=structlog.get_logger("test"),
-        request_timeout=timedelta(seconds=5),
+        request_timeout=timedelta(seconds=request_timeout),
         max_concurrency=max_concurrency,
         host_interval=timedelta(seconds=host_interval),
         resolve_host=resolve_host,
+        user_agent=(
+            user_agent
+            if user_agent is not None
+            else config.linkcheck_user_agent
+        ),
     )
 
 
@@ -137,6 +147,7 @@ async def test_dns_failure_is_failure(
         http_client=http_client,
         logger=structlog.get_logger("test"),
         request_timeout=timedelta(seconds=5),
+        user_agent=config.linkcheck_user_agent,
         resolve_host=resolve_host,
     )
     outcome = await checker.check("https://no-such-host.example.com/")
@@ -195,6 +206,89 @@ async def test_request_pinned_to_validated_address(
 
 
 @pytest.mark.asyncio
+async def test_identifying_headers_on_every_request(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """Every outgoing linkcheck request carries an identifying
+    User-Agent and a browser-like Accept header, across the HEAD, the
+    GET fallback, and each manual redirect hop.
+    """
+    respx_mock.route(
+        method="HEAD", path="/old", headers={"Host": "example.com"}
+    ).respond(301, headers={"Location": "https://example.com/new"})
+    respx_mock.route(
+        method="HEAD", path="/new", headers={"Host": "example.com"}
+    ).respond(405)
+    respx_mock.route(
+        method="GET", path="/old", headers={"Host": "example.com"}
+    ).respond(301, headers={"Location": "https://example.com/new"})
+    respx_mock.route(
+        method="GET", path="/new", headers={"Host": "example.com"}
+    ).respond(200)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/old")
+    assert outcome.result is CheckResult.success
+    # HEAD /old (301 hop) -> HEAD /new (405) triggers the GET fallback,
+    # which replays GET /old (301 hop) -> GET /new (200).
+    assert len(respx_mock.calls) == 4
+
+    # The default UA is the browser-prefixed hybrid carrying the running
+    # version and repo URL (see config.linkcheck_user_agent).
+    expected_user_agent = (
+        "Mozilla/5.0 (X11; Linux x86_64; rv:100.0) Gecko/20100101 "
+        f"Firefox/100.0 Ook-Linkcheck/{ook.__version__} "
+        "(+https://github.com/lsst-sqre/ook)"
+    )
+    expected_accept = (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    )
+    for call in respx_mock.calls:
+        assert call.request.headers["User-Agent"] == expected_user_agent
+        assert call.request.headers["Accept"] == expected_accept
+        # The Host header (virtual-host routing) is unchanged.
+        assert call.request.headers["Host"] == "example.com"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_configured_user_agent_on_every_request(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A configured User-Agent overrides the default on every outgoing
+    request, across the HEAD, the GET fallback, and each manual redirect
+    hop.
+    """
+    respx_mock.route(
+        method="HEAD", path="/old", headers={"Host": "example.com"}
+    ).respond(301, headers={"Location": "https://example.com/new"})
+    respx_mock.route(
+        method="HEAD", path="/new", headers={"Host": "example.com"}
+    ).respond(405)
+    respx_mock.route(
+        method="GET", path="/old", headers={"Host": "example.com"}
+    ).respond(301, headers={"Location": "https://example.com/new"})
+    respx_mock.route(
+        method="GET", path="/new", headers={"Host": "example.com"}
+    ).respond(200)
+
+    custom_ua = "Custom-Linkcheck/9.9 (+https://example.org/bot)"
+    checker = make_checker(http_client, user_agent=custom_ua)
+    outcome = await checker.check("https://example.com/old")
+    assert outcome.result is CheckResult.success
+    assert len(respx_mock.calls) == 4
+
+    for call in respx_mock.calls:
+        assert call.request.headers["User-Agent"] == custom_ua
+        # The Accept header is unchanged by the UA override.
+        assert call.request.headers["Accept"] == (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        )
+
+
+@pytest.mark.asyncio
 async def test_get_fallback_success(
     http_client: httpx.AsyncClient,
     respx_mock: respx.Router,
@@ -236,6 +330,520 @@ async def test_get_fallback_failure(
     assert outcome.status_code == 404
     assert outcome.error is not None
     assert "404" in outcome.error
+
+
+@pytest.mark.asyncio
+async def test_failure_includes_diagnostic_headers(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 5xx failure captures edge-mitigation diagnostic headers in the
+    error detail so production data distinguishes an edge block (e.g. a
+    Cloudflare challenge) from a genuine origin error.
+
+    A 5xx is used here so the diagnostic capture is exercised on its own;
+    the 403 bot-protection annotation is covered separately.
+    """
+    headers = {
+        "server": "cloudflare",
+        "cf-mitigated": "challenge",
+        "cf-ray": "8abc123def456-DFW",
+    }
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(502, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(502, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.status_code == 502
+    assert outcome.error == (
+        "HTTP 502 (server=cloudflare; cf-mitigated=challenge; "
+        "cf-ray=8abc123def456-DFW)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_failure_omits_absent_diagnostic_headers(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """Only the diagnostic headers actually present on the terminal
+    response are included; absent ones are omitted.
+    """
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers={"cf-ray": "8abc123def456-DFW"})
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers={"cf-ray": "8abc123def456-DFW"})
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.error == "HTTP 403 (cf-ray=8abc123def456-DFW)"
+
+
+@pytest.mark.asyncio
+async def test_failure_without_diagnostic_headers_keeps_plain_format(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A failure whose terminal response carries none of the diagnostic
+    headers keeps the plain ``HTTP {code}`` error format.
+    """
+    respx_mock.route(
+        method="HEAD", path="/missing", headers={"Host": "example.com"}
+    ).respond(404)
+    respx_mock.route(
+        method="GET", path="/missing", headers={"Host": "example.com"}
+    ).respond(404)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/missing")
+    assert outcome.result is CheckResult.failure
+    assert outcome.error == "HTTP 404"
+
+
+@pytest.mark.asyncio
+async def test_bot_blocked_403_annotated(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 403 carrying Cloudflare mitigation markers is annotated as
+    likely bot-blocked, ahead of the captured diagnostics, so documenteer
+    users don't chase a false broken-link warning.
+    """
+    headers = {
+        "server": "cloudflare",
+        "cf-mitigated": "block",
+        "cf-ray": "8abc123def456-DFW",
+    }
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.status_code == 403
+    assert outcome.error == (
+        "HTTP 403 (likely blocked by bot protection; server=cloudflare; "
+        "cf-mitigated=block; cf-ray=8abc123def456-DFW)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_bot_blocked_403_sets_structured_flag(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A bot-blocked 403 sets the structured ``is_bot_blocked`` flag on
+    the outcome so downstream layers classify it without parsing the
+    error prose.
+    """
+    headers = {"server": "cloudflare", "cf-mitigated": "block"}
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.is_bot_blocked is True
+
+
+@pytest.mark.asyncio
+async def test_403_non_cloudflare_server_not_bot_blocked(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The widened rule stays scoped to Cloudflare: a 403 from a
+    non-Cloudflare origin (e.g. ``server: nginx``) is a genuine failure,
+    not an inconclusive block.
+    """
+    headers = {"server": "nginx"}
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.is_bot_blocked is False
+
+
+@pytest.mark.asyncio
+async def test_plain_403_is_not_bot_blocked(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 403 without mitigation markers leaves ``is_bot_blocked`` false:
+    it is a genuine failure, not an inconclusive block.
+    """
+    headers = {"cf-ray": "8abc123def456-DFW"}
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.is_bot_blocked is False
+
+
+@pytest.mark.asyncio
+async def test_bot_blocked_403_cf_mitigated_only(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A ``cf-mitigated`` header alone (no ``server: cloudflare``) is
+    enough to mark a 403 as likely bot-blocked.
+    """
+    headers = {"cf-mitigated": "challenge"}
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.error == (
+        "HTTP 403 (likely blocked by bot protection; cf-mitigated=challenge)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_403_server_cloudflare_is_bot_blocked(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 403 served by Cloudflare (``server: cloudflare``) is treated as a
+    likely bot block even without a ``cf-mitigated`` header: real-world
+    reputation-based blocks return a plain 403 with only ``server:
+    cloudflare`` and ``cf-ray``. ``blocked`` is inconclusive and
+    rechecked, so this never fails a build on a link that is fine in a
+    browser. The header value match is case-insensitive.
+    """
+    headers = {"server": "Cloudflare", "cf-ray": "8abc123def456-DFW"}
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.is_bot_blocked is True
+    assert outcome.error == (
+        "HTTP 403 (likely blocked by bot protection; server=Cloudflare; "
+        "cf-ray=8abc123def456-DFW)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_403_server_cloudflare_lowercase_is_bot_blocked(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The ``server: cloudflare`` match is case-insensitive, so a
+    lowercase ``server`` value marks the 403 as bot-blocked too.
+    """
+    headers = {"server": "cloudflare"}
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.is_bot_blocked is True
+
+
+@pytest.mark.asyncio
+async def test_403_without_markers_keeps_plain_diagnostic(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 403 whose only diagnostic header is ``cf-ray`` (no
+    ``server: cloudflare`` and no ``cf-mitigated``) keeps the plain
+    diagnostic format from #286, without the bot-protection annotation.
+    """
+    headers = {"cf-ray": "8abc123def456-DFW"}
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.error == "HTTP 403 (cf-ray=8abc123def456-DFW)"
+
+
+@pytest.mark.asyncio
+async def test_non_403_cloudflare_not_bot_annotated(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The bot-protection annotation is scoped to 403s: a 503 served by
+    Cloudflare is annotated as a transient server error (not a bot block),
+    with the diagnostic headers still captured after it.
+    """
+    headers = {"server": "cloudflare", "cf-ray": "8abc123def456-DFW"}
+    respx_mock.route(
+        method="HEAD", path="/down", headers={"Host": "example.com"}
+    ).respond(503, headers=headers)
+    respx_mock.route(
+        method="GET", path="/down", headers={"Host": "example.com"}
+    ).respond(503, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/down")
+    assert outcome.result is CheckResult.failure
+    assert outcome.is_bot_blocked is False
+    assert outcome.error == (
+        "HTTP 503 (transient server error; server=cloudflare; "
+        "cf-ray=8abc123def456-DFW)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_503_is_transient(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 503 is inconclusive immediately: no retry, ``is_transient`` set,
+    and the error explains it is a transient server error.
+    """
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    respx_mock.route().mock(side_effect=lambda request: httpx.Response(503))
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/down")
+    assert outcome.result is CheckResult.failure
+    assert outcome.status_code == 503
+    assert outcome.is_transient is True
+    assert outcome.error == "HTTP 503 (transient server error)"
+    # 503 is not retried, so no wait occurs.
+    assert sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_429_retry_after_success(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 carrying ``Retry-After`` is retried once after the indicated
+    delay; a successful retry records success and is not marked transient.
+    """
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    calls = {"n": 0}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        # The first attempt (a HEAD; a 429 short-circuits the GET
+        # fallback) is rate-limited; the single retry succeeds.
+        if calls["n"] <= 1:
+            return httpx.Response(429, headers={"Retry-After": "2"})
+        return httpx.Response(200)
+
+    respx_mock.route().mock(side_effect=responder)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/rl")
+    assert outcome.result is CheckResult.success
+    assert outcome.status_code == 200
+    assert outcome.is_transient is False
+    # Retried once, after the header's delay.
+    assert sleeps == [2.0]
+    # HEAD (429, no GET fallback) on the first attempt, then HEAD (200)
+    # on the retry.
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_429_retry_after_delay_capped(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A large ``Retry-After`` delay is capped at 60 seconds so a hostile
+    or mistaken header cannot stall a check indefinitely.
+    """
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    calls = {"n": 0}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= 1:
+            return httpx.Response(429, headers={"Retry-After": "300"})
+        return httpx.Response(200)
+
+    respx_mock.route().mock(side_effect=responder)
+
+    # A generous request timeout so the cap under test is the 60 s ceiling,
+    # not the timeout budget.
+    checker = make_checker(http_client, request_timeout=120.0)
+    outcome = await checker.check("https://example.com/rl")
+    assert outcome.result is CheckResult.success
+    assert sleeps == [60.0]
+
+
+@pytest.mark.asyncio
+async def test_persistent_429_is_transient(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 that is still rate-limited after the single retry is
+    inconclusive: ``is_transient`` set and the error explains it.
+    """
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    calls = {"n": 0}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(429, headers={"Retry-After": "1"})
+
+    respx_mock.route().mock(side_effect=responder)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/rl")
+    assert outcome.result is CheckResult.failure
+    assert outcome.status_code == 429
+    assert outcome.is_transient is True
+    assert outcome.error == "HTTP 429 (rate limited)"
+    # One retry was attempted after the header delay.
+    assert sleeps == [1.0]
+    # A 429 short-circuits the GET fallback, so only the HEAD is sent on
+    # the first attempt and on the retry.
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_429_without_retry_after_is_transient_no_retry(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 without a ``Retry-After`` header is inconclusive without a
+    retry: there is no signalled delay to honor.
+    """
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    calls = {"n": 0}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(429)
+
+    respx_mock.route().mock(side_effect=responder)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/rl")
+    assert outcome.result is CheckResult.failure
+    assert outcome.status_code == 429
+    assert outcome.is_transient is True
+    assert outcome.error == "HTTP 429 (rate limited)"
+    # No retry without a header delay to honor.
+    assert sleeps == []
+    # Only the HEAD is sent: a 429 short-circuits the GET fallback.
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_429_retry_after_http_date(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``Retry-After`` given as an HTTP-date is honored as a delay from
+    now.
+    """
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    retry_at = datetime.now(tz=UTC) + timedelta(seconds=30)
+    http_date = format_datetime(retry_at, usegmt=True)
+
+    calls = {"n": 0}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= 1:
+            return httpx.Response(429, headers={"Retry-After": http_date})
+        return httpx.Response(200)
+
+    respx_mock.route().mock(side_effect=responder)
+
+    # A generous timeout budget so the ~30 s date delay is not capped.
+    checker = make_checker(http_client, request_timeout=120.0)
+    outcome = await checker.check("https://example.com/rl")
+    assert outcome.result is CheckResult.success
+    assert len(sleeps) == 1
+    # The delay is ~30 s from now, allowing for the elapsed test time.
+    assert 20.0 <= sleeps[0] <= 30.0
 
 
 @pytest.mark.asyncio
@@ -499,6 +1107,27 @@ def test_linkcheck_configuration_defaults() -> None:
     assert config.linkcheck_request_timeout == timedelta(seconds=30)
     assert config.linkcheck_max_concurrency == 10
     assert config.linkcheck_host_interval == timedelta(seconds=1)
+    # The default UA is the browser-prefixed hybrid carrying the running
+    # version and repo URL.
+    assert config.linkcheck_user_agent == (
+        "Mozilla/5.0 (X11; Linux x86_64; rv:100.0) Gecko/20100101 "
+        f"Firefox/100.0 Ook-Linkcheck/{ook.__version__} "
+        "(+https://github.com/lsst-sqre/ook)"
+    )
+
+
+def test_linkcheck_user_agent_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``OOK_LINKCHECK_USER_AGENT`` overrides the default User-Agent."""
+    monkeypatch.setenv(
+        "OOK_LINKCHECK_USER_AGENT",
+        "Override-Linkcheck/1.0 (+https://example.org/bot)",
+    )
+    reconfigured = Configuration()
+    assert reconfigured.linkcheck_user_agent == (
+        "Override-Linkcheck/1.0 (+https://example.org/bot)"
+    )
 
 
 @pytest.mark.asyncio

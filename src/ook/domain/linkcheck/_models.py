@@ -59,6 +59,11 @@ class LinkStatus(StrEnum):
     broken = "broken"
     """The retry ladder is exhausted, or a link never seen OK failed."""
 
+    blocked = "blocked"
+    """A bot-protection layer (e.g. a Cloudflare challenge) blocked the
+    check, so the result is inconclusive rather than a confirmed failure.
+    """
+
     unsupported = "unsupported"
     """The URL cannot be checked (non-http(s) scheme or malformed)."""
 
@@ -116,6 +121,25 @@ class RetryLadderConfig(BaseModel):
         ),
     )
 
+    broken_recheck_interval: timedelta = Field(
+        timedelta(hours=24),
+        description=(
+            "Delay until the next recheck of a broken link. Broken"
+            " links are revisited at this slow cadence so a link that"
+            " has since been fixed can heal back to ok/redirected"
+            " without waiting to be resubmitted."
+        ),
+    )
+
+    blocked_recheck_interval: timedelta = Field(
+        timedelta(hours=1),
+        description=(
+            "Delay until the next recheck of a bot-blocked link. A block"
+            " is inconclusive and tends to flap, so blocked links are"
+            " revisited at this near-term cadence to re-verify."
+        ),
+    )
+
 
 class LinkCheckOutcome(BaseModel):
     """The outcome of a single check of a URL.
@@ -154,6 +178,26 @@ class LinkCheckOutcome(BaseModel):
         description="Description of the failure, if the check failed.",
     )
 
+    is_bot_blocked: bool = Field(
+        False,
+        description=(
+            "Whether the check was blocked by an edge bot-protection"
+            " layer (e.g. a Cloudflare challenge), making the failure"
+            " inconclusive rather than a confirmed broken link."
+        ),
+    )
+
+    is_transient: bool = Field(
+        False,
+        description=(
+            "Whether the check hit a transient server condition (a"
+            " persistent HTTP 429 rate limit or an HTTP 503 outage),"
+            " making the failure inconclusive rather than a confirmed"
+            " broken link. Like a bot block, this never escalates the"
+            " failing→broken ladder."
+        ),
+    )
+
 
 class LinkState(BaseModel):
     """The health state of a link, as tracked across checks.
@@ -188,6 +232,18 @@ class LinkState(BaseModel):
         ge=0,
         description=(
             "Number of consecutive failed checks in the current streak."
+        ),
+    )
+
+    consecutive_blocked_count: int = Field(
+        0,
+        ge=0,
+        description=(
+            "Number of consecutive inconclusive (bot-blocked or"
+            " transient 429/503) checks in the current streak. Reset to"
+            " zero by any conclusive outcome (success, hard failure, or"
+            " unsupported). Drives the blocked-recheck backoff so a"
+            " permanently blocked link converges to a slow cadence."
         ),
     )
 
@@ -285,6 +341,9 @@ class CheckUrlStatus(StrEnum):
 
     broken = "broken"
     """The link is broken."""
+
+    blocked = "blocked"
+    """The check was blocked by bot protection (inconclusive)."""
 
     unsupported = "unsupported"
     """The URL cannot be checked."""

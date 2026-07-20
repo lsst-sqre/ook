@@ -203,6 +203,16 @@ class LinkCheckSummary(BaseModel):
 
     broken: Annotated[int, Field(description="Broken URLs.")] = 0
 
+    blocked: Annotated[
+        int,
+        Field(
+            description=(
+                "URLs blocked by bot protection (inconclusive; excluded"
+                " from the failing and broken counts)."
+            )
+        ),
+    ] = 0
+
     unsupported: Annotated[
         int, Field(description="URLs that cannot be checked.")
     ] = 0

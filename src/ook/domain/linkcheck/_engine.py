@@ -7,6 +7,7 @@ checking, persistence, and configuration binding live in other layers.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING
 from urllib.parse import urldefrag, urlsplit, urlunsplit
 
@@ -33,6 +34,48 @@ _SUPPORTED_SCHEMES = frozenset({"http", "https"})
 
 _PERMANENT_REDIRECT_CODES = frozenset({301, 308})
 """Redirect status codes indicating the source should be updated."""
+
+_MAX_BLOCKED_BACKOFF_DOUBLINGS = 30
+"""Ceiling on the blocked-backoff doubling exponent.
+
+Guards the ``timedelta`` multiplication against overflow for a link that
+stays blocked indefinitely. The delay is capped at the broken-recheck
+interval well before this many doublings, so this ceiling only bounds the
+arithmetic, not the observable cadence.
+"""
+
+
+def _blocked_recheck_delay(
+    ladder: RetryLadderConfig, blocked_count: int
+) -> timedelta:
+    """Compute the recheck delay for a blocked link, with backoff.
+
+    The delay doubles with each additional consecutive blocked outcome,
+    starting from the configured blocked-recheck interval, and is capped
+    at the (slower) broken-recheck interval. A permanently blocked link
+    therefore converges to the broken cadence rather than rechecking at
+    the near-term blocked interval forever, while the first block still
+    rechecks promptly (blocks tend to flap).
+
+    Parameters
+    ----------
+    ladder
+        The retry-ladder configuration supplying the base blocked
+        interval and the cap.
+    blocked_count
+        The number of consecutive blocked outcomes so far (>= 1).
+
+    Returns
+    -------
+    timedelta
+        The delay until the next recheck.
+    """
+    base = ladder.blocked_recheck_interval
+    # Never let the cap fall below the base, in case broken_recheck is
+    # configured shorter than blocked_recheck.
+    cap = max(ladder.broken_recheck_interval, base)
+    exponent = min(blocked_count - 1, _MAX_BLOCKED_BACKOFF_DOUBLINGS)
+    return min(base * (2**exponent), cap)
 
 
 def canonicalize_url(url: str) -> str:
@@ -160,6 +203,7 @@ def evaluate_outcome(
             last_ok_at=prior.last_ok_at if prior is not None else None,
             failing_since=None,
             failure_count=0,
+            consecutive_blocked_count=0,
             status_code=outcome.status_code,
             redirect_status_code=None,
             redirect_url=None,
@@ -182,11 +226,45 @@ def evaluate_outcome(
             last_ok_at=outcome.checked_at,
             failing_since=None,
             failure_count=0,
+            consecutive_blocked_count=0,
             status_code=outcome.status_code,
             redirect_status_code=outcome.redirect_status_code,
             redirect_url=outcome.redirect_url,
             error=None,
             next_check_at=None,
+        )
+
+    if outcome.is_bot_blocked or outcome.is_transient:
+        # Both a bot-protection block and a transient server condition (a
+        # persistent 429 rate limit or a 503 outage) are inconclusive:
+        # the link may well be fine. Report ``blocked`` without discarding
+        # or extending the failing→broken streak (so an inconclusive check
+        # cannot push a link to broken nor reset progress toward it) and
+        # preserve the last-OK marker. Count the consecutive blocked
+        # outcomes (a dedicated counter, kept separate from the
+        # failing→broken ladder) and back off the recheck cadence as they
+        # accumulate, so a permanently blocked link converges to the slow
+        # broken cadence instead of rechecking hourly forever.
+        prior_blocked = (
+            prior.consecutive_blocked_count if prior is not None else 0
+        )
+        blocked_count = prior_blocked + 1
+        return LinkState(
+            url=url,
+            status=LinkStatus.blocked,
+            checked_at=outcome.checked_at,
+            last_ok_at=prior.last_ok_at if prior is not None else None,
+            failing_since=prior.failing_since if prior is not None else None,
+            failure_count=prior.failure_count if prior is not None else 0,
+            consecutive_blocked_count=blocked_count,
+            status_code=outcome.status_code,
+            redirect_status_code=None,
+            redirect_url=None,
+            error=outcome.error,
+            next_check_at=(
+                outcome.checked_at
+                + _blocked_recheck_delay(ladder, blocked_count)
+            ),
         )
 
     # Failure path: extend (or start) the consecutive-failure streak.
@@ -218,6 +296,11 @@ def evaluate_outcome(
         next_check_at = (
             outcome.checked_at + ladder.recheck_intervals[interval_index]
         )
+    else:
+        # Broken links are revisited at a slow cadence so a since-fixed
+        # link heals back to ok/redirected via the success path without
+        # waiting to be resubmitted.
+        next_check_at = outcome.checked_at + ladder.broken_recheck_interval
 
     return LinkState(
         url=url,
@@ -226,6 +309,7 @@ def evaluate_outcome(
         last_ok_at=last_ok_at,
         failing_since=failing_since,
         failure_count=failure_count,
+        consecutive_blocked_count=0,
         status_code=outcome.status_code,
         redirect_status_code=None,
         redirect_url=None,

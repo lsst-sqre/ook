@@ -71,6 +71,7 @@ def create_url_states_stmt(urls: Sequence[str]) -> Select:
         SqlCheckedUrl.last_ok_at,
         SqlCheckedUrl.failing_since,
         SqlCheckedUrl.failure_count,
+        SqlCheckedUrl.consecutive_blocked_count,
         SqlCheckedUrl.status_code,
         SqlCheckedUrl.redirect_status_code,
         SqlCheckedUrl.redirect_url,

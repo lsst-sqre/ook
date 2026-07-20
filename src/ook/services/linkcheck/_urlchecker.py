@@ -9,6 +9,7 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
 
 import httpx
@@ -22,6 +23,11 @@ from ook.domain.linkcheck import (
 )
 
 __all__ = ["HostResolver", "UrlChecker"]
+
+_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+"""Browser-like Accept header so bot-protection heuristics treating the
+default automation Accept as suspicious do not block link-check requests.
+"""
 
 HostResolver = Callable[[str], Awaitable[Sequence[str]]]
 """Type of a callable resolving a hostname to IP address strings."""
@@ -37,6 +43,30 @@ _PERMANENT_REDIRECT_CODES = frozenset({301, 308})
 
 _MAX_REDIRECTS = 20
 """Maximum number of redirect hops followed before giving up."""
+
+_RATE_LIMITED_CODE = 429
+"""HTTP status code signalling the client is being rate limited."""
+
+_TRANSIENT_CODES = frozenset({429, 503})
+"""HTTP status codes treated as transient server conditions.
+
+Following Sphinx linkcheck, a persistent 429 (rate limit) or a 503
+(server-side outage) says nothing about whether the link is broken, so
+these outcomes are inconclusive: they never escalate the failing→broken
+ladder.
+"""
+
+_MAX_RETRY_AFTER_SECONDS = 60.0
+"""Ceiling on an honored ``Retry-After`` delay, so a hostile or mistaken
+header cannot stall a check indefinitely. The effective cap is further
+bounded by the per-request timeout budget.
+"""
+
+_DIAGNOSTIC_HEADERS = ("server", "cf-mitigated", "cf-ray")
+"""Terminal-response headers captured into failure error details, in the
+order they are rendered. These surface whether a 4xx/5xx block came from an
+edge mitigation (e.g. a Cloudflare challenge) rather than the origin.
+"""
 
 
 class _TooManyRedirectsError(Exception):
@@ -62,9 +92,58 @@ class _FetchResult:
     redirect_hops: list[int] = field(default_factory=list)
     """Status codes of the redirect responses followed, in order."""
 
+    diagnostic_headers: dict[str, str] = field(default_factory=dict)
+    """Select diagnostic headers from the terminal response, keyed by
+    lowercased header name, present only when the response carried them.
+    """
+
+    retry_after: str | None = None
+    """The raw ``Retry-After`` header of the terminal response, if any."""
+
     @property
     def is_success(self) -> bool:
         return self.status_code in _SUCCESS_CODES
+
+    @property
+    def is_transient(self) -> bool:
+        """Whether this is a transient server condition (429/503).
+
+        A persistent rate limit or a server-side outage is inconclusive:
+        it does not confirm the link is broken.
+        """
+        return self.status_code in _TRANSIENT_CODES
+
+    @property
+    def is_bot_blocked(self) -> bool:
+        """Whether this is a 403 served by a Cloudflare edge.
+
+        True for a 403 whose terminal response either carries a
+        ``cf-mitigated`` header (which Cloudflare stamps when its edge
+        actively challenged or blocked the request) or is served by
+        Cloudflare (a ``server: cloudflare`` header). Real-world bot
+        blocks routinely return a plain 403 with only ``server:
+        cloudflare`` and ``cf-ray`` — no ``cf-mitigated`` — because the
+        block is driven by IP or user-agent reputation rather than a
+        managed challenge, so requiring ``cf-mitigated`` alone misses
+        them and fails builds on links that load fine in a browser.
+
+        ``blocked`` is an *inconclusive* disposition that the retry
+        ladder re-verifies on a recheck cadence, not a terminal failure,
+        so classifying a genuine origin 403 that happens to sit behind
+        Cloudflare (an auth-walled or removed resource) as ``blocked``
+        schedules a recheck rather than hiding it — an acceptable trade
+        for never failing a build on an unverifiable bot block. A
+        ``cf-ray`` alone (present on every Cloudflare response, success or
+        failure) does not qualify. The edge headers are captured into the
+        failure detail regardless, for diagnostics.
+        """
+        if self.status_code != 403:
+            return False
+        if "cf-mitigated" in self.diagnostic_headers:
+            return True
+        return (
+            "cloudflare" in self.diagnostic_headers.get("server", "").lower()
+        )
 
     @property
     def redirect_status_code(self) -> int | None:
@@ -113,6 +192,9 @@ class UrlChecker:
         Maximum number of concurrent HTTP requests across all hosts.
     host_interval
         Minimum politeness interval between requests to the same host.
+    user_agent
+        User-Agent header sent on every request (HEAD, GET fallback, and
+        redirect hops).
     resolve_host
         Hostname resolver used by the SSRF guard, mainly injectable for
         testing. Defaults to asyncio's ``getaddrinfo``. The address it
@@ -129,12 +211,14 @@ class UrlChecker:
         request_timeout: timedelta = timedelta(seconds=30),
         max_concurrency: int = 10,
         host_interval: timedelta = timedelta(seconds=1),
+        user_agent: str,
         resolve_host: HostResolver | None = None,
     ) -> None:
         self._http_client = http_client
         self._logger = logger
         self._timeout_seconds = request_timeout.total_seconds()
         self._host_interval = host_interval.total_seconds()
+        self._user_agent = user_agent
         self._resolve_host = resolve_host or _default_resolve_host
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._host_locks: defaultdict[str, asyncio.Lock] = defaultdict(
@@ -159,6 +243,10 @@ class UrlChecker:
         try:
             pinned = await self._resolve_and_validate(url)
             result = await self._head_then_get(url, pinned)
+            if result.status_code == _RATE_LIMITED_CODE:
+                # A 429 is inconclusive, but honor a Retry-After delay with
+                # a single in-run retry before giving up on it.
+                result = await self._retry_after_once(url, pinned, result)
         except _UnsupportedUrlError as e:
             return self._unsupported_outcome(str(e))
         except socket.gaierror as e:
@@ -193,6 +281,12 @@ class UrlChecker:
             result = await self._fetch(url, "HEAD", pinned)
             if result.is_success:
                 return result
+            if result.status_code == _RATE_LIMITED_CODE:
+                # A 429 is a rate limit, not the server mishandling HEAD.
+                # Return it so the caller's Retry-After logic governs the
+                # next request rather than firing an immediate GET (a
+                # second request) straight into the rate limit.
+                return result
         except TimeoutError, httpx.TimeoutException:
             raise
         except httpx.HTTPError as e:
@@ -202,6 +296,47 @@ class UrlChecker:
                 error=str(e),
             )
         return await self._fetch(url, "GET", pinned)
+
+    async def _retry_after_once(
+        self, url: str, pinned: str, result: _FetchResult
+    ) -> _FetchResult:
+        """Retry a rate-limited fetch once after honoring ``Retry-After``.
+
+        If the terminal 429 response carries a parseable ``Retry-After``
+        delay, wait for it (capped) and re-run the HEAD/GET fetch a single
+        time; the retry's result replaces the original. Without a usable
+        delay there is nothing to honor, so the original 429 result stands
+        and the caller reports it as an inconclusive transient outcome.
+
+        Parameters
+        ----------
+        url
+            The hostname URL to re-fetch.
+        pinned
+            The guard-validated address to connect to for the first hop.
+        result
+            The rate-limited terminal result of the first attempt.
+        """
+        delay = self._retry_after_delay(result.retry_after)
+        if delay is None:
+            return result
+        await asyncio.sleep(delay)
+        return await self._head_then_get(url, pinned)
+
+    def _retry_after_delay(self, value: str | None) -> float | None:
+        """Compute the delay to honor from a ``Retry-After`` header value.
+
+        Returns the delay in seconds, clamped to at least zero and capped
+        by both the 60 s ceiling and the per-request timeout budget, or
+        None if the header is absent or not parseable.
+        """
+        if value is None:
+            return None
+        seconds = _parse_retry_after(value)
+        if seconds is None:
+            return None
+        cap = min(_MAX_RETRY_AFTER_SECONDS, self._timeout_seconds)
+        return min(max(seconds, 0.0), cap)
 
     async def _fetch(self, url: str, method: str, pinned: str) -> _FetchResult:
         """Fetch a URL, following redirects manually so that every hop
@@ -234,6 +369,12 @@ class UrlChecker:
                 status_code=response.status_code,
                 final_url=current_url,
                 redirect_hops=hops,
+                diagnostic_headers={
+                    name: response.headers[name]
+                    for name in _DIAGNOSTIC_HEADERS
+                    if name in response.headers
+                },
+                retry_after=response.headers.get("Retry-After"),
             )
         raise _TooManyRedirectsError
 
@@ -278,7 +419,11 @@ class UrlChecker:
             return await self._http_client.request(
                 method,
                 request_url,
-                headers={"Host": authority},
+                headers={
+                    "Host": authority,
+                    "User-Agent": self._user_agent,
+                    "Accept": _ACCEPT,
+                },
                 extensions={"sni_hostname": sni_host},
                 follow_redirects=False,
                 timeout=self._timeout_seconds,
@@ -317,13 +462,29 @@ class UrlChecker:
                 redirect_status_code=redirect_status_code,
                 redirect_url=redirect_url,
             )
+        error = f"HTTP {result.status_code}"
+        detail_parts: list[str] = []
+        if result.is_bot_blocked:
+            detail_parts.append("likely blocked by bot protection")
+        elif result.status_code == _RATE_LIMITED_CODE:
+            detail_parts.append("rate limited")
+        elif result.is_transient:
+            detail_parts.append("transient server error")
+        detail_parts.extend(
+            f"{name}={value}"
+            for name, value in result.diagnostic_headers.items()
+        )
+        if detail_parts:
+            error = f"{error} ({'; '.join(detail_parts)})"
         return LinkCheckOutcome(
             checked_at=datetime.now(tz=UTC),
             result=CheckResult.failure,
             status_code=result.status_code,
             redirect_status_code=redirect_status_code,
             redirect_url=redirect_url,
-            error=f"HTTP {result.status_code}",
+            error=error,
+            is_bot_blocked=result.is_bot_blocked,
+            is_transient=result.is_transient,
         )
 
     async def _resolve_and_validate(self, url: str) -> str:
@@ -400,6 +561,27 @@ class UrlChecker:
             result=CheckResult.failure,
             error=error,
         )
+
+
+def _parse_retry_after(value: str) -> float | None:
+    """Parse a ``Retry-After`` header into a delay in seconds.
+
+    Supports both forms defined by RFC 9110: a non-negative delta-seconds
+    integer, or an HTTP-date (interpreted as a delay from now). Returns
+    None if the value is neither.
+    """
+    value = value.strip()
+    try:
+        return float(int(value))
+    except ValueError:
+        pass
+    try:
+        parsed = parsedate_to_datetime(value)
+    except TypeError, ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return (parsed - datetime.now(tz=UTC)).total_seconds()
 
 
 def _describe_error(error: Exception) -> str:

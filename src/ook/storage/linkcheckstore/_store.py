@@ -195,6 +195,7 @@ class LinkCheckStore:
             "last_ok_at": state.last_ok_at,
             "failing_since": state.failing_since,
             "failure_count": state.failure_count,
+            "consecutive_blocked_count": state.consecutive_blocked_count,
             "status_code": state.status_code,
             "redirect_status_code": state.redirect_status_code,
             "redirect_url": state.redirect_url,

@@ -164,7 +164,43 @@ def test_failing_link_becomes_broken_when_ladder_exhausted() -> None:
     assert state.status == LinkStatus.broken
     assert state.failing_since == T0
     assert state.failure_count == 3
-    assert state.next_check_at is None
+    assert state.next_check_at == checked_at + LADDER.broken_recheck_interval
+
+
+def test_broken_link_is_scheduled_for_slow_recheck() -> None:
+    """A newly-broken link (ladder exhausted) is scheduled for a slow
+    recheck so a recovered link can heal without waiting for resubmission.
+    """
+    prior = make_failing_state(T0, 2)
+    checked_at = T0 + timedelta(hours=48)
+    ladder = RetryLadderConfig(
+        broken_threshold=timedelta(hours=48),
+        min_attempts=3,
+        recheck_intervals=(timedelta(hours=1),),
+        broken_recheck_interval=timedelta(hours=12),
+    )
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=fail_at(checked_at), ladder=ladder
+    )
+    assert state.status == LinkStatus.broken
+    assert state.next_check_at == checked_at + timedelta(hours=12)
+
+
+def test_new_broken_link_is_scheduled_for_slow_recheck() -> None:
+    """A never-seen-OK link that fails is broken immediately but still
+    scheduled for a slow recheck at the broken cadence.
+    """
+    outcome = LinkCheckOutcome(
+        checked_at=T0,
+        result=CheckResult.failure,
+        status_code=404,
+        error="404 Not Found",
+    )
+    state = evaluate_outcome(
+        url=URL, prior=None, outcome=outcome, ladder=LADDER
+    )
+    assert state.status == LinkStatus.broken
+    assert state.next_check_at == T0 + LADDER.broken_recheck_interval
 
 
 @pytest.mark.parametrize(
@@ -283,6 +319,220 @@ def test_ladder_thresholds_are_caller_supplied() -> None:
     )
     assert state.status == LinkStatus.failing
     assert state.next_check_at == checked_at + LADDER.recheck_intervals[1]
+
+
+def block_at(checked_at: datetime) -> LinkCheckOutcome:
+    """Create a bot-blocked failure outcome at ``checked_at``."""
+    return LinkCheckOutcome(
+        checked_at=checked_at,
+        result=CheckResult.failure,
+        status_code=403,
+        error="HTTP 403 (likely blocked by bot protection; server=cloudflare)",
+        is_bot_blocked=True,
+    )
+
+
+def test_bot_blocked_outcome_is_blocked() -> None:
+    """A bot-blocked failure yields ``blocked`` (inconclusive), preserves
+    the last-OK marker, retains the diagnostic error, and schedules a
+    near-term recheck because blocks flap.
+    """
+    prior = make_ok_state(T0)
+    checked_at = T0 + timedelta(hours=12)
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=block_at(checked_at), ladder=LADDER
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.last_ok_at == T0
+    assert state.status_code == 403
+    assert state.error is not None
+    assert "bot protection" in state.error
+    assert state.next_check_at == (
+        checked_at + LADDER.blocked_recheck_interval
+    )
+
+
+def test_bot_blocked_does_not_extend_failure_streak() -> None:
+    """A bot-blocked check of a failing link neither extends nor discards
+    the failing→broken streak: ``failing_since`` and ``failure_count``
+    carry over unchanged so the block cannot push the link to broken.
+    """
+    prior = make_failing_state(T0, 2)
+    checked_at = T0 + timedelta(hours=72)
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=block_at(checked_at), ladder=LADDER
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.failing_since == T0
+    assert state.failure_count == 2
+
+
+def test_bot_blocked_never_seen_ok_is_blocked_not_broken() -> None:
+    """A never-seen-OK link that is bot-blocked reports ``blocked``, not
+    ``broken``: the block is inconclusive, so it is not treated as an
+    authoring error.
+    """
+    state = evaluate_outcome(
+        url=URL, prior=None, outcome=block_at(T0), ladder=LADDER
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.last_ok_at is None
+    assert state.failing_since is None
+    assert state.failure_count == 0
+    assert state.next_check_at == T0 + LADDER.blocked_recheck_interval
+
+
+def transient_at(checked_at: datetime, status_code: int) -> LinkCheckOutcome:
+    """Create a transient-server-condition failure outcome (429/503)."""
+    label = "rate limited" if status_code == 429 else "transient server error"
+    return LinkCheckOutcome(
+        checked_at=checked_at,
+        result=CheckResult.failure,
+        status_code=status_code,
+        error=f"HTTP {status_code} ({label})",
+        is_transient=True,
+    )
+
+
+def test_transient_outcome_is_blocked() -> None:
+    """A transient 429/503 failure yields ``blocked`` (inconclusive),
+    preserves the last-OK marker, retains the diagnostic error, and
+    schedules a near-term recheck rather than confirming rot.
+    """
+    prior = make_ok_state(T0)
+    checked_at = T0 + timedelta(hours=12)
+    state = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=transient_at(checked_at, 503),
+        ladder=LADDER,
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.last_ok_at == T0
+    assert state.status_code == 503
+    assert state.error is not None
+    assert "transient server error" in state.error
+    assert state.next_check_at == (
+        checked_at + LADDER.blocked_recheck_interval
+    )
+
+
+def test_transient_does_not_extend_failure_streak() -> None:
+    """A transient check of a failing link neither extends nor discards
+    the failing→broken streak, so a 429/503 cannot push a link to broken
+    nor reset its progress toward it.
+    """
+    prior = make_failing_state(T0, 2)
+    checked_at = T0 + timedelta(hours=72)
+    state = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=transient_at(checked_at, 429),
+        ladder=LADDER,
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.failing_since == T0
+    assert state.failure_count == 2
+
+
+def test_transient_never_seen_ok_is_blocked_not_broken() -> None:
+    """A never-seen-OK link hitting a transient 503 reports ``blocked``,
+    not ``broken``: a server-side outage says nothing about whether the
+    link is broken.
+    """
+    state = evaluate_outcome(
+        url=URL, prior=None, outcome=transient_at(T0, 503), ladder=LADDER
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.last_ok_at is None
+    assert state.failing_since is None
+    assert state.failure_count == 0
+    assert state.next_check_at == T0 + LADDER.blocked_recheck_interval
+
+
+def make_blocked_state(
+    checked_at: datetime, consecutive_blocked_count: int
+) -> LinkState:
+    """Create a prior state for a link currently in the blocked streak."""
+    return LinkState(
+        url=URL,
+        status=LinkStatus.blocked,
+        checked_at=checked_at,
+        last_ok_at=checked_at - timedelta(days=1),
+        consecutive_blocked_count=consecutive_blocked_count,
+        status_code=403,
+    )
+
+
+def test_first_block_counts_one_and_rechecks_at_base_interval() -> None:
+    """The first blocked outcome sets the counter to 1 and rechecks at the
+    base blocked interval (no backoff yet, since blocks tend to flap).
+    """
+    prior = make_ok_state(T0)
+    checked_at = T0 + timedelta(hours=12)
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=block_at(checked_at), ladder=LADDER
+    )
+    assert state.consecutive_blocked_count == 1
+    assert state.next_check_at == (
+        checked_at + LADDER.blocked_recheck_interval
+    )
+
+
+def test_consecutive_blocks_back_off_the_recheck_interval() -> None:
+    """Each additional consecutive blocked outcome doubles the recheck
+    interval so a persistently blocked link is polled less often.
+    """
+    prior = make_blocked_state(T0, consecutive_blocked_count=2)
+    checked_at = T0 + timedelta(hours=2)
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=block_at(checked_at), ladder=LADDER
+    )
+    # Third consecutive block: 1h base doubled twice = 4h.
+    assert state.consecutive_blocked_count == 3
+    assert state.next_check_at == checked_at + timedelta(hours=4)
+
+
+def test_blocked_backoff_caps_at_broken_recheck_interval() -> None:
+    """The blocked backoff never exceeds the (slower) broken-recheck
+    interval, so a permanently blocked link converges to that cadence
+    instead of rechecking at the near-term blocked interval forever.
+    """
+    prior = make_blocked_state(T0, consecutive_blocked_count=20)
+    checked_at = T0 + timedelta(hours=1)
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=block_at(checked_at), ladder=LADDER
+    )
+    assert state.consecutive_blocked_count == 21
+    assert state.next_check_at == (checked_at + LADDER.broken_recheck_interval)
+
+
+def test_conclusive_outcome_resets_blocked_count() -> None:
+    """A conclusive outcome (here a success) clears the consecutive
+    blocked counter, so a later block starts its backoff fresh.
+    """
+    prior = make_blocked_state(T0, consecutive_blocked_count=5)
+    checked_at = T0 + timedelta(hours=1)
+    outcome = LinkCheckOutcome(
+        checked_at=checked_at, result=CheckResult.success, status_code=200
+    )
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=outcome, ladder=LADDER
+    )
+    assert state.status == LinkStatus.ok
+    assert state.consecutive_blocked_count == 0
+
+
+def test_hard_failure_resets_blocked_count() -> None:
+    """A conclusive hard failure also clears the blocked counter: the
+    blocked streak is broken by a definite outcome.
+    """
+    prior = make_blocked_state(T0, consecutive_blocked_count=5)
+    checked_at = T0 + timedelta(hours=1)
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=fail_at(checked_at), ladder=LADDER
+    )
+    assert state.consecutive_blocked_count == 0
 
 
 def test_unsupported_outcome_is_unsupported() -> None:

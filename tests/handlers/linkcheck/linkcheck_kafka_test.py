@@ -102,6 +102,7 @@ async def test_post_enqueues_and_consumer_executes(
         "redirected": 0,
         "failing": 0,
         "broken": 1,
+        "blocked": 0,
         "unsupported": 0,
     }
     results = {u["url"]: u for u in data["urls"]}
