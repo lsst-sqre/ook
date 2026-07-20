@@ -463,6 +463,29 @@ async def test_bot_blocked_403_sets_structured_flag(
 
 
 @pytest.mark.asyncio
+async def test_403_non_cloudflare_server_not_bot_blocked(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The widened rule stays scoped to Cloudflare: a 403 from a
+    non-Cloudflare origin (e.g. ``server: nginx``) is a genuine failure,
+    not an inconclusive block.
+    """
+    headers = {"server": "nginx"}
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.is_bot_blocked is False
+
+
+@pytest.mark.asyncio
 async def test_plain_403_is_not_bot_blocked(
     http_client: httpx.AsyncClient,
     respx_mock: respx.Router,
@@ -509,16 +532,16 @@ async def test_bot_blocked_403_cf_mitigated_only(
 
 
 @pytest.mark.asyncio
-async def test_403_server_cloudflare_without_mitigation_not_blocked(
+async def test_403_server_cloudflare_is_bot_blocked(
     http_client: httpx.AsyncClient,
     respx_mock: respx.Router,
 ) -> None:
-    """A 403 with only ``server: cloudflare`` (no ``cf-mitigated``) is a
-    genuine origin failure, not a bot block: Cloudflare stamps ``server:
-    cloudflare`` on every proxied response, including auth-walled or
-    removed resources, so it must not hide a real broken link behind the
-    inconclusive ``blocked`` status. The edge headers are still captured
-    in the diagnostic detail.
+    """A 403 served by Cloudflare (``server: cloudflare``) is treated as a
+    likely bot block even without a ``cf-mitigated`` header: real-world
+    reputation-based blocks return a plain 403 with only ``server:
+    cloudflare`` and ``cf-ray``. ``blocked`` is inconclusive and
+    rechecked, so this never fails a build on a link that is fine in a
+    browser. The header value match is case-insensitive.
     """
     headers = {"server": "Cloudflare", "cf-ray": "8abc123def456-DFW"}
     respx_mock.route(
@@ -531,10 +554,33 @@ async def test_403_server_cloudflare_without_mitigation_not_blocked(
     checker = make_checker(http_client)
     outcome = await checker.check("https://example.com/blocked")
     assert outcome.result is CheckResult.failure
-    assert outcome.is_bot_blocked is False
+    assert outcome.is_bot_blocked is True
     assert outcome.error == (
-        "HTTP 403 (server=Cloudflare; cf-ray=8abc123def456-DFW)"
+        "HTTP 403 (likely blocked by bot protection; server=Cloudflare; "
+        "cf-ray=8abc123def456-DFW)"
     )
+
+
+@pytest.mark.asyncio
+async def test_403_server_cloudflare_lowercase_is_bot_blocked(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The ``server: cloudflare`` match is case-insensitive, so a
+    lowercase ``server`` value marks the 403 as bot-blocked too.
+    """
+    headers = {"server": "cloudflare"}
+    respx_mock.route(
+        method="HEAD", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+    respx_mock.route(
+        method="GET", path="/blocked", headers={"Host": "example.com"}
+    ).respond(403, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/blocked")
+    assert outcome.result is CheckResult.failure
+    assert outcome.is_bot_blocked is True
 
 
 @pytest.mark.asyncio

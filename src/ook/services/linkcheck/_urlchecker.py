@@ -115,23 +115,35 @@ class _FetchResult:
 
     @property
     def is_bot_blocked(self) -> bool:
-        """Whether this is a 403 carrying a Cloudflare bot-mitigation marker.
+        """Whether this is a 403 served by a Cloudflare edge.
 
-        True only for a 403 whose terminal response carries a
-        ``cf-mitigated`` header, which Cloudflare stamps when its edge
-        actively mitigated (challenged or blocked) the request. A bare
-        ``server: cloudflare`` is deliberately *not* sufficient:
-        Cloudflare stamps that header on every proxied response,
-        including genuine origin 403s (auth-walled or removed resources),
-        so keying on it alone would hide real broken links behind the
-        inconclusive ``blocked`` status. A ``cf-ray`` (present on all
-        Cloudflare responses) likewise does not qualify. The edge headers
-        are still captured into the failure detail regardless, for
-        diagnostics.
+        True for a 403 whose terminal response either carries a
+        ``cf-mitigated`` header (which Cloudflare stamps when its edge
+        actively challenged or blocked the request) or is served by
+        Cloudflare (a ``server: cloudflare`` header). Real-world bot
+        blocks routinely return a plain 403 with only ``server:
+        cloudflare`` and ``cf-ray`` — no ``cf-mitigated`` — because the
+        block is driven by IP or user-agent reputation rather than a
+        managed challenge, so requiring ``cf-mitigated`` alone misses
+        them and fails builds on links that load fine in a browser.
+
+        ``blocked`` is an *inconclusive* disposition that the retry
+        ladder re-verifies on a recheck cadence, not a terminal failure,
+        so classifying a genuine origin 403 that happens to sit behind
+        Cloudflare (an auth-walled or removed resource) as ``blocked``
+        schedules a recheck rather than hiding it — an acceptable trade
+        for never failing a build on an unverifiable bot block. A
+        ``cf-ray`` alone (present on every Cloudflare response, success or
+        failure) does not qualify. The edge headers are captured into the
+        failure detail regardless, for diagnostics.
         """
         if self.status_code != 403:
             return False
-        return "cf-mitigated" in self.diagnostic_headers
+        if "cf-mitigated" in self.diagnostic_headers:
+            return True
+        return (
+            "cloudflare" in self.diagnostic_headers.get("server", "").lower()
+        )
 
     @property
     def redirect_status_code(self) -> int | None:
