@@ -233,6 +233,64 @@ async def test_private_host_rejected_before_fetch(
     assert stored is None
 
 
+@pytest.mark.asyncio
+async def test_ip_literal_link_local_rejected_before_fetch(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """An IP-literal link-local host (cloud metadata) is rejected and never
+    fetched.
+
+    The autouse conftest fixture patches the module's ``_default_resolve_host``
+    to return a public address, so a rejection here proves the IP-literal
+    branch — which bypasses resolution entirely — is doing the work.
+    """
+    metadata_url = "https://169.254.169.254/objects.inv"
+    route = respx_mock.get(metadata_url).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    with pytest.raises(InvalidInventoryUrlError):
+        async with factory.db_session.begin():
+            service = factory.create_intersphinx_cache_service()
+            await service.get_inventory(metadata_url)
+
+    assert route.call_count == 0
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(metadata_url)
+    assert stored is None
+
+
+@pytest.mark.asyncio
+async def test_ipv4_mapped_ipv6_literal_rejected_before_fetch(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """An IPv4-mapped IPv6 literal wrapping a link-local address is rejected.
+
+    This covers the guard's ``ipv4_mapped`` unwrapping branch: the embedded
+    IPv4 address, not the IPv6 wrapper, is what must be classified.
+    """
+    mapped_url = "https://[::ffff:169.254.169.254]/objects.inv"
+    route = respx_mock.get(mapped_url).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    with pytest.raises(InvalidInventoryUrlError):
+        async with factory.db_session.begin():
+            service = factory.create_intersphinx_cache_service()
+            await service.get_inventory(mapped_url)
+
+    assert route.call_count == 0
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(mapped_url)
+    assert stored is None
+
+
 @pytest.mark.parametrize(
     "failure",
     [

@@ -32,7 +32,10 @@ class IntersphinxInventoryStore:
 
         An existing row for the same URL is updated in place via a Postgres
         ``INSERT ... ON CONFLICT`` upsert, so a URL never yields duplicate
-        rows.
+        rows. Every non-key column is overwritten unconditionally, which is
+        how a successful re-fetch replaces the prior content in place. Use
+        `upsert_fetch_failure` for the negative-cache path, which must not
+        overwrite a content-bearing row.
 
         Parameters
         ----------
@@ -40,7 +43,62 @@ class IntersphinxInventoryStore:
             The inventory record to store. A record with null content and a
             ``failure`` status is the negative-cache shape.
         """
-        values = {
+        values = self._row_values(inventory)
+        insert_stmt = pg_insert(SqlIntersphinxInventory).values(**values)
+        # The URL is the conflict target; every non-key column is refreshed
+        # so a re-fetch overwrites the prior state in place.
+        update_columns = {
+            key: value for key, value in values.items() if key != "url"
+        }
+        await self._session.execute(
+            insert_stmt.on_conflict_do_update(
+                index_elements=["url"], set_=update_columns
+            )
+        )
+        await self._session.flush()
+
+    async def upsert_fetch_failure(
+        self, inventory: IntersphinxInventory
+    ) -> None:
+        """Store a cold-miss fetch failure without clobbering good content.
+
+        This is the negative-cache write. Unlike `upsert_inventory`, the
+        ``ON CONFLICT DO UPDATE`` is gated on the existing row having no
+        content, so the failure row only inserts when the URL is uncached
+        and only updates an existing row that is itself contentless. When a
+        content-bearing row already exists — for example, a concurrent
+        request stored a good copy between this request's cold miss and its
+        failure — the write is skipped and the good copy stands. This is what
+        makes the negative-cache invariant hold under concurrency rather than
+        only single-threaded.
+
+        Parameters
+        ----------
+        inventory
+            The negative-cache record to store: null content and a
+            ``failure`` status.
+        """
+        values = self._row_values(inventory)
+        insert_stmt = pg_insert(SqlIntersphinxInventory).values(**values)
+        update_columns = {
+            key: value for key, value in values.items() if key != "url"
+        }
+        # Only insert (no conflict) or update a contentless row: the WHERE
+        # guards the DO UPDATE against the existing row's content, so a
+        # failure never displaces a content-bearing copy.
+        await self._session.execute(
+            insert_stmt.on_conflict_do_update(
+                index_elements=["url"],
+                set_=update_columns,
+                where=SqlIntersphinxInventory.content.is_(None),
+            )
+        )
+        await self._session.flush()
+
+    @staticmethod
+    def _row_values(inventory: IntersphinxInventory) -> dict[str, object]:
+        """Build the column values for an insert or upsert of an inventory."""
+        return {
             "url": inventory.url,
             "content": inventory.content,
             "content_type": inventory.content_type,
@@ -55,18 +113,6 @@ class IntersphinxInventoryStore:
             ),
             "last_fetch_error": inventory.last_fetch_error,
         }
-        insert_stmt = pg_insert(SqlIntersphinxInventory).values(**values)
-        # The URL is the conflict target; every non-key column is refreshed
-        # so a re-fetch overwrites the prior state in place.
-        update_columns = {
-            key: value for key, value in values.items() if key != "url"
-        }
-        await self._session.execute(
-            insert_stmt.on_conflict_do_update(
-                index_elements=["url"], set_=update_columns
-            )
-        )
-        await self._session.flush()
 
     async def get_inventory(self, url: str) -> IntersphinxInventory | None:
         """Get a cached inventory by its URL.

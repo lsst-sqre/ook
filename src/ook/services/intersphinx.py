@@ -68,9 +68,12 @@ class IntersphinxCacheService:
     negatively cached for ``negative_ttl`` as a failure-status/no-content
     row and surfaced as an `UpstreamInventoryError`; a repeat request inside
     the window raises again without re-contacting upstream. Negative caching
-    never displaces a content-bearing row — an upstream failure when a
-    stale copy exists is impossible on the request path because any
-    content-bearing row is served before a fetch is attempted.
+    never displaces a content-bearing row — the store enforces this: its
+    failure-upsert
+    (`IntersphinxInventoryStore.upsert_fetch_failure`) skips the write when
+    the existing row already has content, so even a concurrent request that
+    stores a good copy between this request's cold miss and its failure
+    cannot be clobbered by the negative-cache write.
 
     Parameters
     ----------
@@ -368,12 +371,15 @@ class IntersphinxCacheService:
     ) -> NoReturn:
         """Negatively cache a cold-miss upstream failure and raise.
 
-        The failure is stored as a failure-status row with no content and
-        the request path surfaces it as an `UpstreamInventoryError`.
+        The failure is stored as a failure-status row with no content via
+        `IntersphinxInventoryStore.upsert_fetch_failure`, whose write is
+        skipped when a content-bearing row already exists (a concurrent
+        request may have stored a good copy meanwhile). Either way the
+        request path surfaces the failure as an `UpstreamInventoryError`.
         """
         detail = _describe_upstream_error(error)
         now = datetime.now(tz=UTC)
-        await self._inventory_store.upsert_inventory(
+        await self._inventory_store.upsert_fetch_failure(
             IntersphinxInventory(
                 url=url,
                 content=None,
@@ -401,6 +407,18 @@ class IntersphinxCacheService:
         ``https`` and its host must not resolve to a private, link-local,
         or loopback address. A rejected URL is never fetched and never
         stored.
+
+        The guard resolves the host itself, but httpx re-resolves at connect
+        time, so a DNS-rebinding answer could point the socket at a private
+        address in the window between this check and the connect. The
+        sibling link-check checker closes that window by pinning the
+        validated IP; here resolution is treated as advisory instead.
+        Because the fetch is ``https``-only, a host rebound to an internal
+        target between guard and connect would still have to present a TLS
+        certificate valid for the original hostname, and httpx's TLS
+        hostname verification would reject it. TLS hostname verification on
+        the https-only fetch is what backstops rebinding, so IP pinning is
+        unnecessary here.
 
         Raises
         ------

@@ -128,6 +128,117 @@ async def test_negative_cache_row(factory: Factory) -> None:
 
 
 @pytest.mark.asyncio
+async def test_failure_upsert_preserves_existing_content(
+    factory: Factory,
+) -> None:
+    """A fetch-failure upsert never displaces a content-bearing row.
+
+    This is the store-level guard for the negative-cache invariant: a
+    concurrent cold-miss failure must not clobber a good copy that another
+    request stored first.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://docs.example.com/en/latest/objects.inv"
+
+        good = _make_inventory(
+            url,
+            content=b"good payload",
+            etag='"good-etag"',
+            date_fetched=now,
+            date_requested=now,
+        )
+        await store.upsert_inventory(good)
+
+        # A racing failure upsert must be skipped: the good row stands.
+        await store.upsert_fetch_failure(
+            _make_inventory(
+                url,
+                content=None,
+                content_type=None,
+                etag=None,
+                last_modified=None,
+                date_fetched=now + timedelta(hours=1),
+                date_requested=now + timedelta(hours=1),
+                last_fetch_status=InventoryFetchStatus.failure,
+                last_fetch_error="502 Bad Gateway",
+            )
+        )
+
+        stored = await store.get_inventory(url)
+        assert stored == good
+
+
+@pytest.mark.asyncio
+async def test_failure_upsert_updates_contentless_row(
+    factory: Factory,
+) -> None:
+    """A fetch-failure upsert refreshes an existing contentless row."""
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://down.example.com/objects.inv"
+
+        first = _make_inventory(
+            url,
+            content=None,
+            content_type=None,
+            etag=None,
+            last_modified=None,
+            date_fetched=now - timedelta(hours=1),
+            date_requested=now - timedelta(hours=1),
+            last_fetch_status=InventoryFetchStatus.failure,
+            last_fetch_error="500 Internal Server Error",
+        )
+        await store.upsert_fetch_failure(first)
+
+        second = _make_inventory(
+            url,
+            content=None,
+            content_type=None,
+            etag=None,
+            last_modified=None,
+            date_fetched=now,
+            date_requested=now,
+            last_fetch_status=InventoryFetchStatus.failure,
+            last_fetch_error="502 Bad Gateway",
+        )
+        await store.upsert_fetch_failure(second)
+
+        # The contentless row is updated in place with the fresher failure.
+        assert await store.get_inventory(url) == second
+
+
+@pytest.mark.asyncio
+async def test_failure_upsert_inserts_when_absent(factory: Factory) -> None:
+    """A fetch-failure upsert inserts a negative-cache row when none
+    exists.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://new-down.example.com/objects.inv"
+
+        assert await store.get_inventory(url) is None
+
+        failure = _make_inventory(
+            url,
+            content=None,
+            content_type=None,
+            etag=None,
+            last_modified=None,
+            date_fetched=now,
+            date_requested=now,
+            last_fetch_status=InventoryFetchStatus.failure,
+            last_fetch_error="Upstream request for the inventory timed out",
+        )
+        await store.upsert_fetch_failure(failure)
+
+        assert await store.get_inventory(url) == failure
+
+
+@pytest.mark.asyncio
 async def test_touch_date_requested(factory: Factory) -> None:
     """Touching an inventory bumps its date_requested; unknown URLs are a
     no-op.
