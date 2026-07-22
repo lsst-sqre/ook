@@ -47,6 +47,21 @@ HostResolver = Callable[[str], Awaitable[Sequence[str]]]
 """Type of a callable resolving a hostname to IP address strings."""
 
 
+_DEFAULT_MAX_CONTENT_SIZE = 50 * 1024 * 1024
+"""Default cap, in bytes, on an origin inventory response body (50 MB)."""
+
+
+class _InventoryTooLargeError(httpx.HTTPError):
+    """An origin inventory response exceeded the configured size cap.
+
+    Modeled as an ``httpx.HTTPError`` so an oversized body reuses the same
+    upstream-failure plumbing as a 4xx/5xx or timeout: the cold-miss path
+    catches it and negatively caches the failure, and the refresh path
+    counts it as a per-inventory failure. Both paths therefore need no
+    extra catch clause, only a branch in `_describe_upstream_error`.
+    """
+
+
 class IntersphinxCacheService:
     """Service that serves cached Sphinx ``objects.inv`` inventories.
 
@@ -62,6 +77,13 @@ class IntersphinxCacheService:
     Before any upstream fetch the origin URL passes an SSRF guard: it must
     use ``https`` and its host must not resolve to a private, link-local,
     or loopback address. A guarded URL is never fetched and never stored.
+
+    Every upstream fetch is hardened against a hostile or misbehaving
+    origin: redirects are never followed (so the SSRF guard cannot be
+    bypassed one hop at a time), each request carries an explicit timeout,
+    and the response body is streamed under a size cap so an oversized
+    inventory is abandoned rather than buffered into memory. An oversized
+    response is treated as an upstream fetch failure.
 
     When a cold-miss upstream fetch fails (4xx/5xx, timeout, connection
     error) and there is no cached content to serve, the failure is
@@ -93,6 +115,13 @@ class IntersphinxCacheService:
         ones are skipped until a new request reactivates them.
     logger
         The logger.
+    request_timeout
+        Per-request timeout applied to each upstream inventory fetch, on
+        both the cold-miss and refresh paths.
+    max_content_size
+        Maximum accepted size, in bytes, of an origin inventory response.
+        A response whose ``Content-Length`` or streamed body exceeds this
+        cap is abandoned and treated as an upstream fetch failure.
     resolve_host
         Hostname resolver used by the SSRF guard, mainly injectable for
         testing. Defaults to asyncio's ``getaddrinfo``.
@@ -107,6 +136,8 @@ class IntersphinxCacheService:
         negative_ttl: timedelta,
         active_window: timedelta,
         logger: BoundLogger,
+        request_timeout: timedelta = timedelta(seconds=30),
+        max_content_size: int = _DEFAULT_MAX_CONTENT_SIZE,
         resolve_host: HostResolver | None = None,
     ) -> None:
         self._http_client = http_client
@@ -115,6 +146,8 @@ class IntersphinxCacheService:
         self._negative_ttl = negative_ttl
         self._active_window = active_window
         self._logger = logger
+        self._request_timeout = request_timeout.total_seconds()
+        self._max_content_size = max_content_size
         self._resolve_host = resolve_host or _default_resolve_host
 
     async def get_inventory(self, url: str) -> IntersphinxInventory:
@@ -249,7 +282,8 @@ class IntersphinxCacheService:
 
         Returns True when a ``304`` revalidated the stored copy in place and
         False when a ``200`` replaced its content. Raises on a guard
-        rejection or an upstream failure so the caller can log and skip it.
+        rejection, an upstream failure, or an oversized response so the
+        caller can log and skip it, leaving the stored copy untouched.
         """
         # Re-guard the stored URL before fetching: it passed the guard when
         # first cached, but DNS can rebind a once-public host to a private
@@ -260,7 +294,9 @@ class IntersphinxCacheService:
             headers["If-None-Match"] = inventory.etag
         if inventory.last_modified is not None:
             headers["If-Modified-Since"] = inventory.last_modified
-        response = await self._http_client.get(inventory.url, headers=headers)
+        response, content = await self._fetch_inventory(
+            inventory.url, headers=headers
+        )
         if response.status_code == 304:
             await self._inventory_store.upsert_inventory(
                 replace(
@@ -280,7 +316,7 @@ class IntersphinxCacheService:
         await self._inventory_store.upsert_inventory(
             replace(
                 inventory,
-                content=response.content,
+                content=content,
                 content_type=response.headers.get("Content-Type"),
                 etag=response.headers.get("ETag"),
                 last_modified=response.headers.get("Last-Modified"),
@@ -347,14 +383,14 @@ class IntersphinxCacheService:
             "Fetching intersphinx inventory on cache miss", url=url
         )
         try:
-            response = await self._http_client.get(url)
+            response, content = await self._fetch_inventory(url)
             response.raise_for_status()
         except httpx.HTTPError as exc:
             await self._store_failure(url, error=exc)
         now = datetime.now(tz=UTC)
         inventory = IntersphinxInventory(
             url=url,
-            content=response.content,
+            content=content,
             content_type=response.headers.get("Content-Type"),
             etag=response.headers.get("ETag"),
             last_modified=response.headers.get("Last-Modified"),
@@ -365,6 +401,72 @@ class IntersphinxCacheService:
         )
         await self._inventory_store.upsert_inventory(inventory)
         return inventory
+
+    async def _fetch_inventory(
+        self, url: str, *, headers: dict[str, str] | None = None
+    ) -> tuple[httpx.Response, bytes | None]:
+        """Fetch an origin inventory, bounding the body by the size cap.
+
+        The request never follows redirects and carries the service's
+        per-request timeout. The body is streamed so an oversized response
+        is abandoned as soon as the cap is exceeded rather than fully
+        buffered; a ``Content-Length`` already over the cap aborts before
+        any body is read.
+
+        Returns the response together with its body bytes, or ``None`` bytes
+        for a ``304 Not Modified``, which carries no body and is not read so
+        the caller can revalidate the stored copy in place.
+
+        Raises
+        ------
+        _InventoryTooLargeError
+            Raised when the response body, by its ``Content-Length`` or by
+            its streamed size, exceeds the configured cap.
+        httpx.HTTPError
+            Propagated from the transport on a timeout or connection error.
+        """
+        async with self._http_client.stream(
+            "GET",
+            url,
+            headers=headers or {},
+            follow_redirects=False,
+            timeout=self._request_timeout,
+        ) as response:
+            if response.status_code == 304:
+                return response, None
+            self._check_content_length(response)
+            content = await self._read_capped_body(response)
+            return response, content
+
+    def _check_content_length(self, response: httpx.Response) -> None:
+        """Abort before reading the body if ``Content-Length`` is over cap."""
+        raw_length = response.headers.get("Content-Length")
+        if raw_length is None:
+            return
+        try:
+            declared = int(raw_length)
+        except ValueError:
+            return
+        if declared > self._max_content_size:
+            raise self._too_large_error()
+
+    async def _read_capped_body(self, response: httpx.Response) -> bytes:
+        """Stream the response body, aborting once the cap is exceeded."""
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > self._max_content_size:
+                raise self._too_large_error()
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    def _too_large_error(self) -> _InventoryTooLargeError:
+        """Build the oversized-response error carrying the configured cap."""
+        return _InventoryTooLargeError(
+            "Upstream inventory exceeds the size cap of "
+            f"{_format_size_cap(self._max_content_size)}"
+        )
 
     async def _store_failure(
         self, url: str, *, error: httpx.HTTPError
@@ -482,12 +584,22 @@ _GENERIC_UPSTREAM_ERROR = "Upstream fetch of the inventory failed"
 """Fallback detail when a negative-cache row has no stored error message."""
 
 
+def _format_size_cap(max_content_size: int) -> str:
+    """Render the size cap for an error detail (MB when a clean multiple)."""
+    mebibyte = 1024 * 1024
+    if max_content_size % mebibyte == 0:
+        return f"{max_content_size // mebibyte} MB"
+    return f"{max_content_size} bytes"
+
+
 def _describe_upstream_error(error: httpx.HTTPError) -> str:
     """Summarize an upstream fetch failure for the client and the cache.
 
     The message is safe to return to the client and to store as the
     negative-cache row's error detail.
     """
+    if isinstance(error, _InventoryTooLargeError):
+        return str(error)
     if isinstance(error, httpx.HTTPStatusError):
         return (
             "Upstream returned HTTP "

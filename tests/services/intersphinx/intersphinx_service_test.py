@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -20,6 +21,25 @@ INVENTORY_URL = "https://docs.example.com/en/latest/objects.inv"
 
 INVENTORY_BODY = b"# Sphinx inventory version 2\nfake objects.inv payload"
 """A stand-in for the binary ``objects.inv`` payload."""
+
+
+def _make_capped_service(
+    factory: Factory, *, max_content_size: int
+) -> intersphinx_service.IntersphinxCacheService:
+    """Build a service with a small size cap for the oversize-body tests.
+
+    Constructed directly (rather than through the factory) so the tiny
+    ``max_content_size`` can be injected without generating a 50 MB body.
+    """
+    return intersphinx_service.IntersphinxCacheService(
+        http_client=factory.http_client,
+        inventory_store=factory.create_intersphinx_inventory_store(),
+        ttl=timedelta(hours=1),
+        negative_ttl=timedelta(hours=1),
+        active_window=timedelta(days=30),
+        logger=structlog.get_logger("ook"),
+        max_content_size=max_content_size,
+    )
 
 
 @pytest.mark.asyncio
@@ -339,6 +359,84 @@ async def test_cold_miss_upstream_failure_negatively_cached(
 
 
 @pytest.mark.asyncio
+async def test_cold_miss_oversized_body_negatively_cached(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A cold-miss body exceeding the size cap raises and is negatively cached.
+
+    The oversized body is streamed without a ``Content-Length`` (chunked), so
+    the abort comes from the streamed-size cap rather than the upfront
+    length check. A repeat request within the negative TTL is served from the
+    negative cache without re-contacting upstream.
+    """
+
+    async def oversized_body() -> AsyncIterator[bytes]:
+        for _ in range(4):
+            yield b"x" * 64  # 256 bytes total, well over the 64-byte cap
+
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=oversized_body())
+    )
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible to the
+    # second request, mirroring how the handler commits the failure path.
+    service = _make_capped_service(factory, max_content_size=64)
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    # The second request is served from the negative cache, not upstream.
+    assert route.call_count == 1
+
+    stored = await factory.create_intersphinx_inventory_store().get_inventory(
+        INVENTORY_URL
+    )
+    assert stored is not None
+    assert stored.content is None
+    assert stored.last_fetch_status is InventoryFetchStatus.failure
+    assert stored.last_fetch_error is not None
+    assert "cap" in stored.last_fetch_error
+
+
+@pytest.mark.asyncio
+async def test_cold_miss_content_length_over_cap_negatively_cached(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """An upfront ``Content-Length`` over the cap aborts without the body.
+
+    The declared length is over the cap while the actual body is tiny (under
+    the cap), so a negative-cache failure proves the abort came from the
+    upfront length check rather than from streaming the body.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            headers={"Content-Length": "1000000"},
+            content=b"tiny",
+        )
+    )
+
+    service = _make_capped_service(factory, max_content_size=64)
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    assert route.call_count == 1
+
+    stored = await factory.create_intersphinx_inventory_store().get_inventory(
+        INVENTORY_URL
+    )
+    assert stored is not None
+    assert stored.content is None
+    assert stored.last_fetch_status is InventoryFetchStatus.failure
+    assert stored.last_fetch_error is not None
+    assert "cap" in stored.last_fetch_error
+
+
+@pytest.mark.asyncio
 async def test_negative_cache_expiry_refetches(
     factory: Factory,
     respx_mock: respx.Router,
@@ -642,5 +740,43 @@ async def test_refresh_per_inventory_failure_does_not_abort_batch(
     async with factory.db_session.begin():
         store = factory.create_intersphinx_inventory_store()
         kept = await store.get_inventory(failing_url)
+    assert kept is not None
+    assert kept.content == b"kept payload"
+
+
+@pytest.mark.asyncio
+async def test_refresh_oversized_response_counts_as_failure(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A refresh 200 over the size cap is a failure and keeps stored content.
+
+    The oversized response is abandoned and counted as a per-inventory
+    failure; the stored copy is left untouched so it keeps serving stale.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        content=b"kept payload",
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=b"x" * 200)  # over the 64-byte cap
+    )
+
+    async with factory.db_session.begin():
+        service = _make_capped_service(factory, max_content_size=64)
+        summary = await service.refresh_inventories(now=now)
+
+    assert summary.failed == 1
+    assert summary.refreshed == 0
+    assert summary.revalidated == 0
+
+    # The stored copy is untouched, so it keeps serving stale.
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        kept = await store.get_inventory(INVENTORY_URL)
     assert kept is not None
     assert kept.content == b"kept payload"
