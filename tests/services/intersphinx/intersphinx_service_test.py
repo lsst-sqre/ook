@@ -10,11 +10,14 @@ import pytest
 import respx
 import structlog
 from httpx import Response
+from safir.database import create_async_session, create_database_engine
 
+from ook.config import config
 from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
 from ook.exceptions import InvalidInventoryUrlError, UpstreamInventoryError
 from ook.factory import Factory
 from ook.services import intersphinx as intersphinx_service
+from ook.storage.intersphinxstore import IntersphinxInventoryStore
 
 INVENTORY_URL = "https://docs.example.com/en/latest/objects.inv"
 """An origin ``objects.inv`` URL used across the cold-miss tests."""
@@ -34,6 +37,7 @@ def _make_capped_service(
     return intersphinx_service.IntersphinxCacheService(
         http_client=factory.http_client,
         inventory_store=factory.create_intersphinx_inventory_store(),
+        session=factory.db_session,
         ttl=timedelta(hours=1),
         negative_ttl=timedelta(hours=1),
         active_window=timedelta(days=30),
@@ -591,9 +595,10 @@ async def test_refresh_304_keeps_content_and_bumps_fetch(
 
     route = respx_mock.get(INVENTORY_URL).mock(side_effect=respond)
 
-    async with factory.db_session.begin():
-        service = factory.create_intersphinx_cache_service()
-        summary = await service.refresh_inventories(now=now)
+    # refresh_inventories owns its own commits, so it is called without a
+    # surrounding transaction.
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
 
     assert route.call_count == 1
     assert seen_headers.get("if-none-match") == '"stored-etag"'
@@ -644,9 +649,8 @@ async def test_refresh_200_replaces_content_and_validators(
         )
     )
 
-    async with factory.db_session.begin():
-        service = factory.create_intersphinx_cache_service()
-        summary = await service.refresh_inventories(now=now)
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
 
     assert route.call_count == 1
     assert summary.refreshed == 1
@@ -688,9 +692,8 @@ async def test_refresh_skips_inventories_outside_active_window(
         return_value=Response(304)
     )
 
-    async with factory.db_session.begin():
-        service = factory.create_intersphinx_cache_service()
-        summary = await service.refresh_inventories(now=now)
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
 
     # Only the active inventory is revalidated; the inactive one is skipped.
     assert active_route.call_count == 1
@@ -724,9 +727,8 @@ async def test_refresh_per_inventory_failure_does_not_abort_batch(
     respx_mock.get(ok_url).mock(return_value=Response(304))
 
     with structlog.testing.capture_logs() as captured:
-        async with factory.db_session.begin():
-            service = factory.create_intersphinx_cache_service()
-            summary = await service.refresh_inventories(now=now)
+        service = factory.create_intersphinx_cache_service()
+        summary = await service.refresh_inventories(now=now)
 
     assert summary.failed == 1
     assert summary.revalidated == 1
@@ -766,9 +768,8 @@ async def test_refresh_oversized_response_counts_as_failure(
         return_value=Response(200, content=b"x" * 200)  # over the 64-byte cap
     )
 
-    async with factory.db_session.begin():
-        service = _make_capped_service(factory, max_content_size=64)
-        summary = await service.refresh_inventories(now=now)
+    service = _make_capped_service(factory, max_content_size=64)
+    summary = await service.refresh_inventories(now=now)
 
     assert summary.failed == 1
     assert summary.refreshed == 0
@@ -780,3 +781,64 @@ async def test_refresh_oversized_response_counts_as_failure(
         kept = await store.get_inventory(INVENTORY_URL)
     assert kept is not None
     assert kept.content == b"kept payload"
+
+
+@pytest.mark.asyncio
+async def test_refresh_commits_each_inventory_independently(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """Each inventory's refresh outcome is committed on its own, without a
+    caller-managed transaction.
+
+    A separate database connection sees both outcomes, proving the batch
+    committed each as it went rather than leaving them pending in one caller
+    transaction that a mid-run crash would discard wholesale.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    url_a = "https://a.example.com/objects.inv"
+    url_b = "https://b.example.com/objects.inv"
+    await _seed_stale_inventory(
+        factory,
+        url_a,
+        content=b"old-a payload",
+        etag='"etag-a"',
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    await _seed_stale_inventory(
+        factory,
+        url_b,
+        date_fetched=now - timedelta(hours=3),
+        date_requested=now - timedelta(days=1),
+    )
+    new_a = b"# Sphinx inventory version 2\nnew-a payload"
+    respx_mock.get(url_a).mock(
+        return_value=Response(200, content=new_a, headers={"ETag": '"new-a"'})
+    )
+    respx_mock.get(url_b).mock(return_value=Response(304))
+
+    # No surrounding transaction: the service owns its own commit boundaries.
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
+
+    assert summary.considered == 2
+    assert summary.refreshed == 1
+    assert summary.revalidated == 1
+
+    # A fresh, independent session sees both committed outcomes.
+    logger = structlog.get_logger("test")
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    session = await create_async_session(engine)
+    store = IntersphinxInventoryStore(session=session, logger=logger)
+    stored_a = await store.get_inventory(url_a)
+    stored_b = await store.get_inventory(url_b)
+    await session.close()
+    await engine.dispose()
+
+    assert stored_a is not None
+    assert stored_a.content == new_a
+    assert stored_b is not None
+    assert stored_b.date_fetched == now

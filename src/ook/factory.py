@@ -285,6 +285,7 @@ class Factory:
         return IntersphinxCacheService(
             http_client=self.http_client,
             inventory_store=self.create_intersphinx_inventory_store(),
+            session=self._session,
             ttl=config.intersphinx_ttl,
             negative_ttl=config.intersphinx_negative_ttl,
             active_window=config.intersphinx_active_window,

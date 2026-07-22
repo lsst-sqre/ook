@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
 
 from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
@@ -103,6 +104,10 @@ class IntersphinxCacheService:
         The shared HTTP client used to fetch origin inventories.
     inventory_store
         The store for cached inventories.
+    session
+        The database session backing ``inventory_store``. Only the batch
+        `refresh_inventories` entry point uses it, to own its own commit
+        boundaries; the request path leaves committing to its caller.
     ttl
         Freshness TTL: a cached inventory whose last fetch is within this
         window is served as a fresh hit; an older one is served stale.
@@ -132,6 +137,7 @@ class IntersphinxCacheService:
         *,
         http_client: AsyncClient,
         inventory_store: IntersphinxInventoryStore,
+        session: AsyncSession,
         ttl: timedelta,
         negative_ttl: timedelta,
         active_window: timedelta,
@@ -142,6 +148,7 @@ class IntersphinxCacheService:
     ) -> None:
         self._http_client = http_client
         self._inventory_store = inventory_store
+        self._session = session
         self._ttl = ttl
         self._negative_ttl = negative_ttl
         self._active_window = active_window
@@ -214,6 +221,17 @@ class IntersphinxCacheService:
         the request path never blocks on upstream because this job keeps the
         cache warm.
 
+        Unlike the rest of this service, which leaves transaction boundaries
+        to its caller (the request handler commits `get_inventory` itself),
+        this batch-job entry point owns its own commits and must be called
+        without a surrounding transaction. The due-list selection is committed
+        as its own short transaction, then each inventory's outcome is
+        committed as soon as its refresh completes. So no DB transaction (and
+        none of the row locks its upsert takes) is held open across an HTTP
+        fetch that may run for the full request timeout, and a mid-run crash
+        preserves the outcomes of every inventory already refreshed rather
+        than discarding the whole batch.
+
         Parameters
         ----------
         now
@@ -237,6 +255,9 @@ class IntersphinxCacheService:
             active_window=self._active_window,
             limit=limit,
         )
+        # Commit the selection as its own short transaction so no read lock or
+        # snapshot is held open across the per-inventory HTTP fetches below.
+        await self._session.commit()
         refreshed = 0
         revalidated = 0
         failed = 0
@@ -244,6 +265,9 @@ class IntersphinxCacheService:
             try:
                 was_revalidated = await self._refresh_one(inventory, now=now)
             except (httpx.HTTPError, InvalidInventoryUrlError) as exc:
+                # Discard this inventory's pending write and leave the stored
+                # copy untouched so it keeps serving stale.
+                await self._session.rollback()
                 failed += 1
                 self._logger.warning(
                     "Failed to refresh intersphinx inventory",
@@ -256,6 +280,9 @@ class IntersphinxCacheService:
                     ),
                 )
                 continue
+            # Commit this inventory's outcome immediately so a later crash in
+            # the batch cannot lose it and no transaction spans the next fetch.
+            await self._session.commit()
             if was_revalidated:
                 revalidated += 1
             else:
@@ -298,7 +325,9 @@ class IntersphinxCacheService:
             inventory.url, headers=headers
         )
         if response.status_code == 304:
-            await self._inventory_store.upsert_inventory(
+            # Write only the refresh-outcome columns so a client request that
+            # bumped date_requested since the due-list read is not reverted.
+            await self._inventory_store.update_refresh_outcome(
                 replace(
                     inventory,
                     date_fetched=now,
@@ -313,7 +342,7 @@ class IntersphinxCacheService:
             )
             return True
         response.raise_for_status()
-        await self._inventory_store.upsert_inventory(
+        await self._inventory_store.update_refresh_outcome(
             replace(
                 inventory,
                 content=content,

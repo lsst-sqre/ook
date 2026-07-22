@@ -25,7 +25,7 @@ router = APIRouter(
         " stored content type and an ``Age`` header giving the seconds"
         " since the inventory was fetched from the origin. A cold-miss"
         " upstream failure returns a 502 and is negatively cached. This"
-        " endpoint is write-protected by Gafaelfawr at the ingress."
+        " endpoint is protected by Gafaelfawr at the ingress."
     ),
     response_class=Response,
     responses={

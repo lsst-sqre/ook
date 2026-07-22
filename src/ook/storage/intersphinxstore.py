@@ -95,6 +95,40 @@ class IntersphinxInventoryStore:
         )
         await self._session.flush()
 
+    async def update_refresh_outcome(
+        self, inventory: IntersphinxInventory
+    ) -> None:
+        """Persist a proactive-refresh outcome without touching
+        ``date_requested``.
+
+        This is the refresh path's write. Unlike `upsert_inventory`, which
+        rewrites every non-key column, this updates only the fetch-outcome
+        columns — content, content type, validators, fetch time, and fetch
+        status — and deliberately leaves ``date_requested`` alone. The refresh
+        job reads a row at due-list selection time and writes it back after an
+        HTTP round-trip; a client request may bump ``date_requested`` in that
+        window, so rewriting the stale value would silently shorten the
+        inventory's active window. This method never inserts: the refresh path
+        only ever writes rows that already exist.
+
+        Parameters
+        ----------
+        inventory
+            The refreshed inventory whose outcome columns to persist. Its
+            ``date_requested`` value is ignored.
+        """
+        values = self._row_values(inventory)
+        # The URL is the row key and date_requested is owned by the request
+        # path, so neither is written here.
+        del values["url"]
+        del values["date_requested"]
+        await self._session.execute(
+            update(SqlIntersphinxInventory)
+            .where(SqlIntersphinxInventory.url == inventory.url)
+            .values(**values)
+        )
+        await self._session.flush()
+
     @staticmethod
     def _row_values(inventory: IntersphinxInventory) -> dict[str, object]:
         """Build the column values for an insert or upsert of an inventory."""

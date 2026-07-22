@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -261,6 +262,60 @@ async def test_touch_date_requested(factory: Factory) -> None:
         assert stored is not None
         assert stored.date_requested == requested_at
         # Touching does not alter the freshness anchor.
+        assert stored.date_fetched == now
+
+
+@pytest.mark.asyncio
+async def test_update_refresh_outcome_preserves_date_requested(
+    factory: Factory,
+) -> None:
+    """A refresh-outcome write updates content and validators in place but
+    leaves ``date_requested`` untouched.
+
+    The refresh path reads a row at due-list selection time and writes its
+    outcome back after an HTTP round-trip. A client request may bump
+    ``date_requested`` in that window, so the write must not revert it to the
+    stale value or it would silently shorten the inventory's active window.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://docs.example.com/en/latest/objects.inv"
+
+        # Seed a stale row; this is the read the refresh path starts from.
+        stale_read = _make_inventory(
+            url,
+            content=b"old payload",
+            etag='"old-etag"',
+            last_modified="Wed, 01 Jan 2025 00:00:00 GMT",
+            date_fetched=now - timedelta(hours=2),
+            date_requested=now - timedelta(days=1),
+        )
+        await store.upsert_inventory(stale_read)
+
+        # A concurrent client request touches date_requested after the read.
+        touched_at = now
+        assert await store.touch_date_requested(url, now=touched_at) is True
+
+        # The refresh path writes its outcome, built from the stale read.
+        refreshed = replace(
+            stale_read,
+            content=b"new payload",
+            etag='"new-etag"',
+            last_modified="Fri, 10 Jul 2026 00:00:00 GMT",
+            date_fetched=now,
+        )
+        await store.update_refresh_outcome(refreshed)
+
+        stored = await store.get_inventory(url)
+        assert stored is not None
+        # The concurrent client's newer date_requested is preserved, not
+        # reverted to the value the refresh path read.
+        assert stored.date_requested == touched_at
+        # The refresh-outcome columns are updated.
+        assert stored.content == b"new payload"
+        assert stored.etag == '"new-etag"'
+        assert stored.last_modified == "Fri, 10 Jul 2026 00:00:00 GMT"
         assert stored.date_fetched == now
 
 

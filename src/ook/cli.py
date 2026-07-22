@@ -356,9 +356,11 @@ async def run_refresh_intersphinx(
     """Proactively refresh stale, still-active cached intersphinx inventories.
 
     Inventories past the freshness TTL that a client requested within the
-    active window are conditionally revalidated in one transaction, committed
-    once the run completes. Per-inventory failures are logged by the service
-    and do not abort the batch.
+    active window are conditionally revalidated. The service owns its own
+    transaction boundaries here — it commits each inventory's outcome as soon
+    as its refresh completes — so this must not wrap the call in a
+    transaction. Per-inventory failures are logged by the service and do not
+    abort the batch.
 
     Parameters
     ----------
@@ -375,8 +377,7 @@ async def run_refresh_intersphinx(
         failed.
     """
     service = factory.create_intersphinx_cache_service()
-    async with factory.db_session.begin():
-        return await service.refresh_inventories(limit=limit)
+    return await service.refresh_inventories(limit=limit)
 
 
 @main.command(name="refresh-intersphinx")
@@ -405,8 +406,13 @@ async def refresh_intersphinx(*, limit: int | None) -> None:
     async with Factory.create_standalone(
         logger=logger, engine=engine
     ) as factory:
-        await run_refresh_intersphinx(factory, limit=limit)
+        summary = await run_refresh_intersphinx(factory, limit=limit)
     await engine.dispose()
+    click.echo(
+        f"Refreshed intersphinx inventories: {summary.considered} considered, "
+        f"{summary.refreshed} refreshed, {summary.revalidated} revalidated, "
+        f"{summary.failed} failed."
+    )
 
 
 timespan_pattern = re.compile(
