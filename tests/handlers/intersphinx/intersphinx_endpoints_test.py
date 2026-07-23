@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+from dataclasses import replace
+from datetime import UTC, datetime
+
 import pytest
 import respx
 import structlog
@@ -17,6 +21,11 @@ INVENTORY_URL = "https://docs.example.com/en/latest/objects.inv"
 
 INVENTORY_BODY = b"# Sphinx inventory version 2\nfake objects.inv payload"
 """A stand-in for the binary ``objects.inv`` payload."""
+
+
+def _expected_etag(content: bytes) -> str:
+    """Return the strong ETag the endpoint emits: quoted SHA-256 hex."""
+    return f'"{hashlib.sha256(content).hexdigest()}"'
 
 
 @pytest.mark.asyncio
@@ -165,3 +174,137 @@ async def test_cold_miss_upstream_failure_returns_502(
     assert stored is not None
     assert stored.content is None
     assert stored.last_fetch_status is InventoryFetchStatus.failure
+
+
+@pytest.mark.asyncio
+async def test_cold_miss_emits_etag(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A cold-miss 200 carries a strong ETag of the served bytes."""
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["etag"] == _expected_etag(INVENTORY_BODY)
+    # The Age header and content-type behavior are unchanged.
+    assert "age" in response.headers
+    assert response.headers["content-type"] == "application/octet-stream"
+
+
+@pytest.mark.asyncio
+async def test_warm_hit_emits_etag(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A warm-hit 200 carries the same strong ETag as the cold miss."""
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    first = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert first.status_code == 200
+    assert route.call_count == 1
+
+    second = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert second.status_code == 200
+    # No second upstream fetch, and the warm-hit ETag matches the cold-miss
+    # ETag for the same cached bytes.
+    assert route.call_count == 1
+    assert second.headers["etag"] == _expected_etag(INVENTORY_BODY)
+    assert second.headers["etag"] == first.headers["etag"]
+
+
+@pytest.mark.asyncio
+async def test_etag_stable_across_repeated_requests(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """Repeated requests for unchanged cached bytes return the same ETag."""
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    etags = set()
+    for _ in range(3):
+        response = await client.get(
+            f"{config.path_prefix}/intersphinx/inventory",
+            params={"url": INVENTORY_URL},
+        )
+        assert response.status_code == 200
+        etags.add(response.headers["etag"])
+
+    assert etags == {_expected_etag(INVENTORY_BODY)}
+
+
+@pytest.mark.asyncio
+async def test_etag_changes_when_cached_bytes_change(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The ETag changes when the cached inventory bytes change."""
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    first = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert first.status_code == 200
+    assert first.headers["etag"] == _expected_etag(INVENTORY_BODY)
+
+    # Overwrite the cached bytes in place so a subsequent warm hit serves a
+    # different representation.
+    new_body = INVENTORY_BODY + b" (revised)"
+    logger = structlog.get_logger("test")
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    session = await create_async_session(engine)
+    store = IntersphinxInventoryStore(session=session, logger=logger)
+    stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    await store.upsert_inventory(
+        replace(stored, content=new_body, date_fetched=datetime.now(tz=UTC))
+    )
+    await session.commit()
+    await session.close()
+    await engine.dispose()
+
+    second = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert second.status_code == 200
+    assert second.content == new_body
+    assert second.headers["etag"] == _expected_etag(new_body)
+    assert second.headers["etag"] != first.headers["etag"]

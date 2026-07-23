@@ -1,5 +1,6 @@
 """Endpoints for the /ook/intersphinx APIs."""
 
+import hashlib
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -68,8 +69,15 @@ async def get_intersphinx_inventory(
                 (datetime.now(tz=UTC) - inventory.date_fetched).total_seconds()
             ),
         )
+    # A strong ETag identifying the bytes Ook currently serves: the quoted
+    # SHA-256 hex digest of the served content (RFC 9110). It is hashed per
+    # request over the 100-500 KB body; a stored digest is a later
+    # optimization. This is distinct from ``inventory.etag``, which is the
+    # origin's upstream validator.
+    content = inventory.content or b""
+    etag = f'"{hashlib.sha256(content).hexdigest()}"'
     return Response(
         content=inventory.content,
         media_type=inventory.content_type or "application/octet-stream",
-        headers={"Age": str(age)},
+        headers={"Age": str(age), "ETag": etag},
     )
