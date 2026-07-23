@@ -2,6 +2,15 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.25.0'></a>
+## 0.25.0 (2026-07-23)
+
+### New features
+
+- Added a caching proxy for Sphinx intersphinx object inventories. `GET /ook/intersphinx/inventory?url=...` serves a cached `objects.inv` inventory keyed by its full origin URL. On a cache miss the origin is fetched synchronously (SSRF-guarded and bounded by redirect count, timeout, and response size), stored, and served. The response carries the stored content type and an `Age` header giving the seconds since the inventory was fetched upstream. Cache freshness is TTL-aware: an inventory within the TTL is served as a fresh hit, while a stale one is served immediately from the cache and revalidated out of band by the refresh job. A cold-miss upstream failure returns a 502 and is negatively cached so a repeat request inside the negative-TTL window fails fast without re-contacting the origin. The endpoint should be protected via Gafaelfawr ingress configuration. The endpoint returns a strong `ETag` on every `200` response. The value is the quoted SHA-256 hex digest of the served inventory bytes (RFC 9110), so it identifies the bytes Ook currently serves and changes only when the cached inventory content changes. The header is emitted on both the warm cache-hit and cold-miss fetch-then-serve paths, letting clients store it for cheap conditional revalidation. The same endpoint honors the `If-None-Match` request header for cheap revalidation: when a client's validator matches the currently-cached inventory's `ETag`, Ook responds `304 Not Modified` with an empty body and the same `ETag` (and no `Age` header). Comparison follows RFC 9110 weak semantics — the `W/` weakness prefix is ignored, a comma-separated list of validators is accepted, and `If-None-Match: *` matches any cached representation. A stale or non-matching validator still returns the full `200` response with the current `ETag`.
+- Added a new `ook refresh-intersphinx` CLI command, intended to run as a scheduled cron job. It conditionally revalidates cached inventories that are past the freshness TTL and were requested by a client within the active window: a `304 Not Modified` keeps the stored content and bumps its fetch time, and a `200` replaces the content and validators. Inventories not requested within the active window are skipped (not deleted) until a new request reactivates them. A `--limit` option caps the number of inventories refreshed per run, and the command reports how many were considered, refreshed, revalidated, and failed.
+- New configuration settings for the intersphinx cache: `OOK_INTERSPHINX_TTL` (default 1h) sets the freshness window before a cached inventory is served stale and revalidated, `OOK_INTERSPHINX_NEGATIVE_TTL` (default 5m) sets how long a cold-miss upstream failure is negatively cached, and `OOK_INTERSPHINX_ACTIVE_WINDOW` (default 30d) bounds which recently-requested inventories the `ook refresh-intersphinx` job revalidates.
+
 <a id='changelog-0.24.0'></a>
 ## 0.24.0 (2026-07-20)
 
