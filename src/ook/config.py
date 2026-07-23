@@ -260,6 +260,41 @@ class Configuration(BaseSettings):
         ),
     )
 
+    intersphinx_ttl: HumanTimedelta = Field(
+        timedelta(hours=1),
+        validation_alias="OOK_INTERSPHINX_TTL",
+        description=(
+            "Freshness TTL for cached intersphinx inventories. An inventory"
+            " fetched within this window is served as a fresh cache hit; an"
+            " older one is served stale on the request path while the"
+            " background refresh job revalidates it."
+        ),
+    )
+
+    intersphinx_negative_ttl: HumanTimedelta = Field(
+        timedelta(minutes=5),
+        validation_alias="OOK_INTERSPHINX_NEGATIVE_TTL",
+        description=(
+            "Negative-cache TTL for cold-miss intersphinx inventory fetch"
+            " failures. When an upstream fetch fails on a cold miss the"
+            " failure is cached for this window; a repeat request inside it"
+            " returns the error without re-contacting upstream. After the"
+            " window a new request re-fetches the origin."
+        ),
+    )
+
+    intersphinx_active_window: HumanTimedelta = Field(
+        timedelta(days=30),
+        validation_alias="OOK_INTERSPHINX_ACTIVE_WINDOW",
+        description=(
+            "Active window for the intersphinx refresh job. The scheduled"
+            " refresh only revalidates cached inventories requested by a"
+            " client within this window; inventories last requested longer"
+            " ago are skipped (not deleted) until a new request reactivates"
+            " them."
+        ),
+    )
+
     slack_webhook: SecretStr | None = Field(
         None,
         validation_alias="OOK_SLACK_WEBHOOK",

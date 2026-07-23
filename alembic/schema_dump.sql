@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict IqAvRCBQTDIQHRz2C0hUoT0slvPwRs543gGHHv4Ueo1HxCImPYQ8NVOsGLgrIhl
+\restrict GeTegtAFP9hG25Jy8avxXaBPc4Yhyt5bFfSOmZdVlknmif4324zuFueNbI22ItA
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -325,6 +325,47 @@ ALTER SEQUENCE public.external_reference_id_seq OWNER TO test;
 --
 
 ALTER SEQUENCE public.external_reference_id_seq OWNED BY public.external_reference.id;
+
+
+--
+-- Name: intersphinx_inventory; Type: TABLE; Schema: public; Owner: test
+--
+
+CREATE TABLE public.intersphinx_inventory (
+    id bigint NOT NULL,
+    url text NOT NULL,
+    content bytea,
+    content_type text,
+    etag text,
+    last_modified text,
+    date_fetched timestamp with time zone,
+    date_requested timestamp with time zone NOT NULL,
+    last_fetch_status text,
+    last_fetch_error text
+);
+
+
+ALTER TABLE public.intersphinx_inventory OWNER TO test;
+
+--
+-- Name: intersphinx_inventory_id_seq; Type: SEQUENCE; Schema: public; Owner: test
+--
+
+CREATE SEQUENCE public.intersphinx_inventory_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.intersphinx_inventory_id_seq OWNER TO test;
+
+--
+-- Name: intersphinx_inventory_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: test
+--
+
+ALTER SEQUENCE public.intersphinx_inventory_id_seq OWNED BY public.intersphinx_inventory.id;
 
 
 --
@@ -738,6 +779,13 @@ ALTER TABLE ONLY public.external_reference ALTER COLUMN id SET DEFAULT nextval('
 
 
 --
+-- Name: intersphinx_inventory id; Type: DEFAULT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.intersphinx_inventory ALTER COLUMN id SET DEFAULT nextval('public.intersphinx_inventory_id_seq'::regclass);
+
+
+--
 -- Name: link id; Type: DEFAULT; Schema: public; Owner: test
 --
 
@@ -799,7 +847,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-818fdc36974d
+c2a2c14c0e60
 \.
 
 
@@ -856,6 +904,14 @@ COPY public.document_resource (id, series, handle, generator, number) FROM stdin
 --
 
 COPY public.external_reference (id, url, doi, arxiv_id, isbn, issn, ads_bibcode, type, title, publication_year, volume, issue, number, number_type, first_page, last_page, publisher, edition, contributors) FROM stdin;
+\.
+
+
+--
+-- Data for Name: intersphinx_inventory; Type: TABLE DATA; Schema: public; Owner: test
+--
+
+COPY public.intersphinx_inventory (id, url, content, content_type, etag, last_modified, date_fetched, date_requested, last_fetch_status, last_fetch_error) FROM stdin;
 \.
 
 
@@ -1011,6 +1067,13 @@ SELECT pg_catalog.setval('public.contributor_id_seq', 1, false);
 --
 
 SELECT pg_catalog.setval('public.external_reference_id_seq', 1, false);
+
+
+--
+-- Name: intersphinx_inventory_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
+--
+
+SELECT pg_catalog.setval('public.intersphinx_inventory_id_seq', 1, false);
 
 
 --
@@ -1180,6 +1243,14 @@ ALTER TABLE ONLY public.external_reference
 
 ALTER TABLE ONLY public.external_reference
     ADD CONSTRAINT external_reference_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: intersphinx_inventory intersphinx_inventory_pkey; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.intersphinx_inventory
+    ADD CONSTRAINT intersphinx_inventory_pkey PRIMARY KEY (id);
 
 
 --
@@ -1550,6 +1621,27 @@ CREATE UNIQUE INDEX ix_checked_url_url ON public.checked_url USING btree (url);
 
 
 --
+-- Name: ix_intersphinx_inventory_date_fetched; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_intersphinx_inventory_date_fetched ON public.intersphinx_inventory USING btree (date_fetched);
+
+
+--
+-- Name: ix_intersphinx_inventory_date_requested; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_intersphinx_inventory_date_requested ON public.intersphinx_inventory USING btree (date_requested);
+
+
+--
+-- Name: ix_intersphinx_inventory_url; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE UNIQUE INDEX ix_intersphinx_inventory_url ON public.intersphinx_inventory USING btree (url);
+
+
+--
 -- Name: ix_linkcheck_check_date_created; Type: INDEX; Schema: public; Owner: test
 --
 
@@ -1862,5 +1954,5 @@ ALTER TABLE ONLY public.url_occurrence
 -- PostgreSQL database dump complete
 --
 
-\unrestrict IqAvRCBQTDIQHRz2C0hUoT0slvPwRs543gGHHv4Ueo1HxCImPYQ8NVOsGLgrIhl
+\unrestrict GeTegtAFP9hG25Jy8avxXaBPc4Yhyt5bFfSOmZdVlknmif4324zuFueNbI22ItA
 

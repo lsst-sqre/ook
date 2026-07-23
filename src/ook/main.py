@@ -31,6 +31,7 @@ from .handlers.authors import authors_router
 from .handlers.glossary import glossary_router
 from .handlers.ingest import ingest_router
 from .handlers.internal import internal_router
+from .handlers.intersphinx import intersphinx_router
 
 # Import kafka router and also load the handler functions.
 from .handlers.kafka import kafka_router  # type: ignore [attr-defined]
@@ -125,6 +126,14 @@ app = FastAPI(
             ),
         },
         {
+            "name": "intersphinx",
+            "description": (
+                "Cached Sphinx intersphinx object inventories. These "
+                "endpoints should be protected via Gafaelfawr ingress "
+                "configuration."
+            ),
+        },
+        {
             "name": "admin",
             "description": (
                 "Administrative operations. These endpoints should be "
@@ -146,6 +155,7 @@ app.include_router(authors_router)
 app.include_router(glossary_router)
 app.include_router(ingest_router)
 app.include_router(linkcheck_router)
+app.include_router(intersphinx_router)
 app.include_router(links_router)
 app.include_router(resources_router)
 app.include_router(kafka_router)
