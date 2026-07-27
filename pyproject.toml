@@ -203,7 +203,6 @@ extend-ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["ook", "tests"]
-split-on-trailing-comma = false
 
 [tool.ruff.lint.pep8-naming]
 classmethod-decorators = [
