@@ -20,7 +20,10 @@ classifiers = [
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "fastapi",
+    # fastapi capped below 0.140 because FastAPI 0.140's slotted Dependant
+    # breaks FastStream's FastAPI plugin.
+    # TODO: remove when ag2ai/faststream#2959 is fixed
+    "fastapi<0.140",
     "starlette",
     "uvicorn[standard]",
     "pydantic >= 2.0.0",
