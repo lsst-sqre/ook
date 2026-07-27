@@ -68,6 +68,7 @@ class SdmSchemasIngestService:
     @classmethod
     async def create(
         cls,
+        *,
         http_client: AsyncClient,
         logger: BoundLogger,
         link_store: LinkStore,
