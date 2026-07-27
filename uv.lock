@@ -1927,7 +1927,7 @@ requires-dist = [
     { name = "cssselect" },
     { name = "dataclasses-avroschema" },
     { name = "dateparser" },
-    { name = "fastapi" },
+    { name = "fastapi", specifier = "<0.140" },
     { name = "faststream", extras = ["kafka"], specifier = ">=0.3.5" },
     { name = "google-i18n-address", specifier = ">=3.1.0" },
     { name = "lsst-felis" },
