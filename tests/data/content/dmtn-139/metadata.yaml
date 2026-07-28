@@ -39,11 +39,11 @@ copyright: "2019, California Institute of Technology"
 # Description. A short, 1-2 sentence statemement used by document indices.
 description: "This document describes the architecture for Internet-visible image services to be provided by LSST.  It explains the use of IVOA standards to provide these services, and discusses where LSST's needs may require extensions to those standards.  It addresses the back-end architecture that supports these services, including especially the role of the Gen3 Butler.
 
-Image services include: observation metadata services based on ObsCore and CAOM2, image retrieval services, image cutout and mosiacing services, image-recreation-on-demand, and HiPS multi-resolution image map services.
+  Image services include: observation metadata services based on ObsCore and CAOM2, image retrieval services, image cutout and mosiacing services, image-recreation-on-demand, and HiPS multi-resolution image map services.
 
-This note discusses the role of the image services in the LSST Science Platform and outlines expectations for how they will be used internally and externally.
+  This note discusses the role of the image services in the LSST Science Platform and outlines expectations for how they will be used internally and externally.
 
-Later editions of this note may discuss issues associated with IVOA Registry representation of the services, or they may be moved to a separate technote on our Registry interface."
+  Later editions of this note may discuss issues associated with IVOA Registry representation of the services, or they may be moved to a separate technote on our Registry interface."
 
 # Abstract, if available
 # abstract: >
