@@ -16,6 +16,7 @@ from importlib.metadata import metadata, version
 
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
+from faststream_fastapi import FastStreamAPI
 from safir.database import create_database_engine, is_database_current
 from safir.dependencies.db_session import db_session_dependency
 from safir.fastapi import ClientRequestError, client_request_error_handler
@@ -33,8 +34,8 @@ from .handlers.ingest import ingest_router
 from .handlers.internal import internal_router
 from .handlers.intersphinx import intersphinx_router
 
-# Import kafka router and also load the handler functions.
-from .handlers.kafka import kafka_router  # type: ignore [attr-defined]
+# Import the kafka broker module and also load the handler functions.
+from .handlers.kafka import kafka_broker  # type: ignore [attr-defined]
 from .handlers.linkcheck import linkcheck_router
 from .handlers.links import links_router
 from .handlers.resources import resources_router
@@ -44,7 +45,7 @@ __all__ = ["app", "create_openapi"]
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator:
+async def lifespan(fastapi_app: FastAPI) -> AsyncIterator:
     """Context manager for the application lifespan."""
     logger = get_logger("ook")
     logger.info("Ook is starting up.")
@@ -91,7 +92,7 @@ configure_logging(
 )
 configure_uvicorn_logging(config.log_level)
 
-app = FastAPI(
+fastapi_app = FastAPI(
     title="Ook",
     description=metadata("ook")["Summary"],
     version=version("ook"),
@@ -146,35 +147,44 @@ app = FastAPI(
     redoc_url=f"{config.path_prefix}/redoc",
     lifespan=lifespan,
 )
-"""The main FastAPI application for ook."""
+"""The inner FastAPI application for ook."""
 
 # Attach the routers. Prefixes are set in the routers themselves.
-app.include_router(internal_router)
-app.include_router(root_router)
-app.include_router(authors_router)
-app.include_router(glossary_router)
-app.include_router(ingest_router)
-app.include_router(linkcheck_router)
-app.include_router(intersphinx_router)
-app.include_router(links_router)
-app.include_router(resources_router)
-app.include_router(kafka_router)
-app.include_router(admin_router)
+fastapi_app.include_router(internal_router)
+fastapi_app.include_router(root_router)
+fastapi_app.include_router(authors_router)
+fastapi_app.include_router(glossary_router)
+fastapi_app.include_router(ingest_router)
+fastapi_app.include_router(linkcheck_router)
+fastapi_app.include_router(intersphinx_router)
+fastapi_app.include_router(links_router)
+fastapi_app.include_router(resources_router)
+fastapi_app.include_router(admin_router)
 
 # Set up middleware
-app.add_middleware(XForwardedMiddleware)
+fastapi_app.add_middleware(XForwardedMiddleware)
 
 # Set up error handling
-app.exception_handler(ClientRequestError)(client_request_error_handler)
+fastapi_app.exception_handler(ClientRequestError)(client_request_error_handler)
+
+# Wrap the FastAPI app with the FastStream broker. This must come after
+# every subscriber-module import (guaranteed by the `from .handlers.kafka
+# import kafka_broker` import above) so that FastStreamAPI wraps all of
+# ook's Kafka subscribers.
+app = FastStreamAPI(
+    kafka_broker,
+    application=fastapi_app,
+    asyncapi_path=f"{config.path_prefix}/asyncapi",
+)
 
 
 def create_openapi() -> str:
     """Create the OpenAPI spec for static documentation."""
     spec = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        tags=app.openapi_tags,
-        routes=app.routes,
+        title=fastapi_app.title,
+        version=fastapi_app.version,
+        description=fastapi_app.description,
+        tags=fastapi_app.openapi_tags,
+        routes=fastapi_app.routes,
     )
     return json.dumps(spec)

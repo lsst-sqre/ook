@@ -22,7 +22,7 @@ from ook.services.authors import AuthorService
 from .config import config
 from .dependencies.algoliasearch import algolia_client_dependency
 from .domain.linkcheck import RetryLadderConfig
-from .kafkarouter import kafka_router
+from .kafkabroker import kafka_broker as default_kafka_broker
 from .services.algoliaaudit import AlgoliaAuditService
 from .services.algoliadocindex import AlgoliaDocIndexService
 from .services.classification import ClassificationService
@@ -85,7 +85,7 @@ class ProcessContext:
         http_client = AsyncClient()
 
         # Use the provided broker (typically for CLI contexts)
-        broker = kafka_broker or kafka_router.broker
+        broker = kafka_broker or default_kafka_broker
 
         algolia_client = await algolia_client_dependency()
 
@@ -187,7 +187,7 @@ class Factory:
                 yield factory
             finally:
                 # Stop the broker on the same event loop that connected it.
-                # The broker may be a module-level singleton (kafka_router's),
+                # The broker may be a module-level singleton (kafka_broker's),
                 # so leaving it connected leaks producers bound to this loop.
                 await broker.stop()
 

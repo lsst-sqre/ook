@@ -21,7 +21,7 @@ from safir.database import create_async_session, create_database_engine
 from ook.config import config
 from ook.domain.kafka import RecheckUrlsMessageV1
 from ook.domain.linkcheck import LinkState, LinkStatus, UrlOccurrence
-from ook.kafkarouter import kafka_router
+from ook.kafkabroker import kafka_broker
 from ook.storage.linkcheckstore import LinkCheckStore
 from tests.support.github import GitHubMocker
 
@@ -169,7 +169,7 @@ async def test_recheck_message_advances_ladder(
         await engine.dispose()
 
     message = RecheckUrlsMessageV1(url_ids=[ids[url]])
-    await kafka_router.broker.publish(
+    await kafka_broker.publish(
         message.model_dump(mode="json"), topic=config.linkcheck_kafka_topic
     )
 
