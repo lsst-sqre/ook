@@ -20,17 +20,15 @@ classifiers = [
 ]
 requires-python = ">=3.14"
 dependencies = [
-    # fastapi capped below 0.140 because FastAPI 0.140's slotted Dependant
-    # breaks FastStream's FastAPI plugin.
-    # TODO: remove when ag2ai/faststream#2959 is fixed
-    "fastapi<0.140",
+    "fastapi",
     "starlette",
     "uvicorn[standard]",
     "pydantic >= 2.0.0",
     "pydantic_settings",
     "safir[db,kafka]>=15",
     "alembic[tz]",
-    "faststream[kafka]>=0.3.5",
+    "faststream[kafka]>=0.7.3,<0.8",
+    "faststream-fastapi>=1.2.1,<2",
     "algoliasearch>=3.0,<4.0",
     "dataclasses-avroschema",
     "click",

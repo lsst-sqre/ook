@@ -5,13 +5,16 @@ from typing import Annotated, Any
 
 from aiokafka import ConsumerRecord
 from fastapi import Depends
-from faststream.kafka.fastapi import KafkaMessage
+from faststream.kafka import KafkaMessage as _KafkaMessage
+from faststream_fastapi import Context
 from safir.dependencies.db_session import db_session_dependency
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog import get_logger
 from structlog.stdlib import BoundLogger
 
 from ..factory import Factory, ProcessContext
+
+KafkaMessage = Annotated[_KafkaMessage, Context("message")]
 
 
 @dataclass(slots=True, kw_only=True)
