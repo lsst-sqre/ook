@@ -2,6 +2,17 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.25.1'></a>
+## 0.25.1 (2026-08-13)
+
+### Other changes
+
+- Adopted [`faststream_fastapi`](https://faststream-community.github.io/faststream_fastapi/) in place of FastStream's now-deprecated built-in FastAPI plugin (`faststream.kafka.fastapi.KafkaRouter`), which FastStream will remove in 1.0.0. The Kafka subscribers now hang off a plain `KafkaBroker` (`ook.kafkabroker`), and `FastStreamAPI` wraps the FastAPI app in `ook.main` to start and stop the broker around its lifespan. `fastapi.Depends` continues to work inside Kafka handlers, so the `ConsumerContext` injection is unchanged.
+
+- Re-synced the vendored `ruff-shared.toml` with the `lsst/templates` `fastapi_safir_app` copy to ignore `CPY001` (`missing-copyright-notice`), which ruff 0.16 stabilized out of preview and which would otherwise fire on every source file under `select = ["ALL"]`. The redundant `split-on-trailing-comma` setting was dropped from `pyproject.toml`, since `ruff-shared.toml` already sets it.
+
+- Use [prek](https://github.com/j178/prek) in place of `pre-commit` to run the hooks, in the `lint` dependency group, the `Makefile`, the noxfile `lint` session, and CI. `.pre-commit-config.yaml` is unchanged — prek consumes it as-is — so the hook set and its revisions are the same.
+
 <a id='changelog-0.25.0'></a>
 ## 0.25.0 (2026-07-23)
 
