@@ -15,12 +15,12 @@ from ook.domain.kafka import (
     LtdUrlIngestV2,
     RecheckUrlsMessageV1,
 )
-from ook.kafkarouter import kafka_router
+from ook.kafkabroker import kafka_broker
 
 __all__ = ["handle_linkcheck_execution", "handle_ltd_document_ingest"]
 
 
-@kafka_router.subscriber(
+@kafka_broker.subscriber(
     config.ingest_kafka_topic, group_id=config.kafka_consumer_group_id
 )
 async def handle_ltd_document_ingest(
@@ -66,7 +66,7 @@ async def handle_ltd_document_ingest(
     logger.info("Finished processing LTD document ingest request.")
 
 
-@kafka_router.subscriber(
+@kafka_broker.subscriber(
     config.linkcheck_kafka_topic, group_id=config.kafka_consumer_group_id
 )
 async def handle_linkcheck_execution(

@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 import structlog
 from asgi_lifespan import LifespanManager
-from fastapi import FastAPI
+from faststream_fastapi import FastStreamAPI
 from httpx import ASGITransport, AsyncClient
 from safir.database import (
     create_database_engine,
@@ -20,7 +20,6 @@ from ook import main
 from ook.config import config
 from ook.dbschema import Base
 from ook.factory import Factory
-from ook.kafkarouter import kafka_router
 from ook.services import intersphinx as intersphinx_service
 from ook.services.linkcheck import _urlchecker
 
@@ -74,7 +73,7 @@ async def http_client() -> AsyncIterator[AsyncClient]:
 async def app(
     mock_algoliasearch: MockSearchClient,
     mock_github: GitHubMocker,
-) -> AsyncIterator[FastAPI]:
+) -> AsyncIterator[FastStreamAPI]:
     """Return a configured test application.
 
     Wraps the application in a lifespan manager so that startup and shutdown
@@ -87,18 +86,15 @@ async def app(
     await initialize_database(engine, logger, schema=Base.metadata, reset=True)
     await stamp_database_async(engine)
     await engine.dispose()
-    # FastStream's StreamRouter starts its broker only on the first
-    # application startup in a process (guarded by the private
-    # _lifespan_started flag) but stops the broker on every shutdown.
-    # Each test runs the application lifespan anew, so reset the flag to
-    # give every test a started broker for publishers and subscribers.
-    kafka_router._lifespan_started = False
+    # FastStreamAPI starts the broker before entering the app's own
+    # lifespan and stops it after exit, so every test gets a freshly
+    # started broker for publishers and subscribers.
     async with LifespanManager(main.app):
         yield main.app
 
 
 @pytest_asyncio.fixture
-async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
+async def client(app: FastStreamAPI) -> AsyncIterator[AsyncClient]:
     """Return an ``httpx.AsyncClient`` configured to talk to the test app."""
     async with AsyncClient(
         base_url="https://example.com/", transport=ASGITransport(app=app)
