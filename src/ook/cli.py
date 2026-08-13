@@ -60,7 +60,7 @@ def main() -> None:
 @main.command()
 @click.argument("topic", default=None, required=False, nargs=1)
 @click.pass_context
-def help(ctx: click.Context, topic: None | str, **kw: Any) -> None:
+def help(ctx: click.Context, topic: str | None, **kw: Any) -> None:
     """Show help for any command."""
     # The help command implementation is taken from
     # https://www.burgundywall.com/post/having-click-help-subcommand
