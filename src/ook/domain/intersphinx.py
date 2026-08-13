@@ -77,3 +77,19 @@ class IntersphinxInventory:
     """A description of the last fetch failure, or None if the last fetch
     succeeded.
     """
+
+    resolved_url: str | None
+    """The terminal URL the last fetch's redirect chain ended at, or None
+    when the chain did not redirect.
+
+    Recorded so a redirected inventory's resolved location can be surfaced
+    without re-contacting the origin.
+    """
+
+    resolved_redirect_permanent: bool | None
+    """Whether the last fetch's redirect chain was entirely permanent.
+
+    True when every hop was a 301 or 308, False when any hop was temporary,
+    and None when the chain did not redirect. Only an all-permanent chain
+    means the requested URL itself should be updated at its source.
+    """

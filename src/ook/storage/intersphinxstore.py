@@ -70,13 +70,14 @@ class IntersphinxInventoryStore:
         request stored a good copy between this request's cold miss and its
         failure — the write is skipped and the good copy stands. This is what
         makes the negative-cache invariant hold under concurrency rather than
-        only single-threaded.
+        only single-threaded. That same guard is what keeps a failure from
+        clearing a content-bearing row's resolved-redirect columns.
 
         Parameters
         ----------
         inventory
-            The negative-cache record to store: null content and a
-            ``failure`` status.
+            The negative-cache record to store: null content, null
+            resolved-redirect columns, and a ``failure`` status.
         """
         values = self._row_values(inventory)
         insert_stmt = pg_insert(SqlIntersphinxInventory).values(**values)
@@ -103,8 +104,9 @@ class IntersphinxInventoryStore:
 
         This is the refresh path's write. Unlike `upsert_inventory`, which
         rewrites every non-key column, this updates only the fetch-outcome
-        columns — content, content type, validators, fetch time, and fetch
-        status — and deliberately leaves ``date_requested`` alone. The refresh
+        columns — content, content type, validators, fetch time, fetch
+        status, and the resolved-redirect columns — and deliberately leaves
+        ``date_requested`` alone. The refresh
         job reads a row at due-list selection time and writes it back after an
         HTTP round-trip; a client request may bump ``date_requested`` in that
         window, so rewriting the stale value would silently shorten the
@@ -146,6 +148,10 @@ class IntersphinxInventoryStore:
                 else None
             ),
             "last_fetch_error": inventory.last_fetch_error,
+            "resolved_url": inventory.resolved_url,
+            "resolved_redirect_permanent": (
+                inventory.resolved_redirect_permanent
+            ),
         }
 
     async def get_inventory(self, url: str) -> IntersphinxInventory | None:
@@ -269,4 +275,6 @@ class IntersphinxInventoryStore:
                 else None
             ),
             last_fetch_error=row.last_fetch_error,
+            resolved_url=row.resolved_url,
+            resolved_redirect_permanent=row.resolved_redirect_permanent,
         )

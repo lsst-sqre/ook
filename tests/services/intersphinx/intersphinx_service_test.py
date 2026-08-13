@@ -180,6 +180,8 @@ async def test_expired_inventory_served_stale_without_upstream(
                 date_requested=stale_fetched,
                 last_fetch_status=InventoryFetchStatus.success,
                 last_fetch_error=None,
+                resolved_url=None,
+                resolved_redirect_permanent=None,
             )
         )
 
@@ -464,6 +466,8 @@ async def test_negative_cache_expiry_refetches(
                 date_requested=expired_fetched,
                 last_fetch_status=InventoryFetchStatus.failure,
                 last_fetch_error="Upstream returned HTTP 500",
+                resolved_url=None,
+                resolved_redirect_permanent=None,
             )
         )
 
@@ -586,6 +590,103 @@ async def test_cold_miss_follows_cross_host_redirect_chain(
         stored = await store.get_inventory(INVENTORY_URL)
     assert stored is not None
     assert stored.content == INVENTORY_BODY
+
+
+@pytest.mark.asyncio
+async def test_cold_miss_stores_temporary_redirect_chain(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """An all-302 chain records its terminal URL as a temporary redirect.
+
+    This is the SQLAlchemy shape: the ``latest`` alias legitimately moves,
+    so the resolved URL is recorded but not marked permanent.
+    """
+    hop_1 = "https://www.example.com/docs/latest/objects.inv"
+    terminal = "https://docs.example.com/en/21/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": hop_1})
+    )
+    respx_mock.get(hop_1).mock(
+        return_value=Response(302, headers={"Location": terminal})
+    )
+    respx_mock.get(terminal).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_cache_service()
+        await service.get_inventory(INVENTORY_URL)
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert stored.resolved_url == terminal
+    assert stored.resolved_redirect_permanent is False
+
+
+@pytest.mark.asyncio
+async def test_cold_miss_stores_permanent_redirect_chain(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A chain of only 301 and 308 hops is recorded as permanent.
+
+    This is the pydantic shape: the requested URL itself has moved, which
+    is the case worth surfacing to a doc author.
+    """
+    hop_1 = "https://www.example.com/docs/latest/objects.inv"
+    terminal = "https://www.example.com/docs/validation/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(301, headers={"Location": hop_1})
+    )
+    respx_mock.get(hop_1).mock(
+        return_value=Response(308, headers={"Location": terminal})
+    )
+    respx_mock.get(terminal).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_cache_service()
+        await service.get_inventory(INVENTORY_URL)
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert stored.resolved_url == terminal
+    assert stored.resolved_redirect_permanent is True
+
+
+@pytest.mark.asyncio
+async def test_cold_miss_without_redirect_leaves_resolved_columns_null(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A chain-free fetch records no resolved URL and no permanence.
+
+    Null, not the requested URL, so a reader can tell "did not redirect"
+    from "redirected somewhere".
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_cache_service()
+        inventory = await service.get_inventory(INVENTORY_URL)
+
+    assert inventory.resolved_url is None
+    assert inventory.resolved_redirect_permanent is None
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert stored.resolved_url is None
+    assert stored.resolved_redirect_permanent is None
 
 
 @pytest.mark.asyncio
@@ -742,6 +843,8 @@ async def _seed_stale_inventory(
     date_fetched: datetime,
     date_requested: datetime,
     last_fetch_status: InventoryFetchStatus = InventoryFetchStatus.success,
+    resolved_url: str | None = None,
+    resolved_redirect_permanent: bool | None = None,
 ) -> None:
     """Seed a cached inventory row for the refresh-path tests."""
     async with factory.db_session.begin():
@@ -757,6 +860,8 @@ async def _seed_stale_inventory(
                 date_requested=date_requested,
                 last_fetch_status=last_fetch_status,
                 last_fetch_error=None,
+                resolved_url=resolved_url,
+                resolved_redirect_permanent=resolved_redirect_permanent,
             )
         )
 
@@ -809,6 +914,88 @@ async def test_refresh_304_keeps_content_and_bumps_fetch(
     assert stored.content == INVENTORY_BODY
     assert stored.date_fetched == now
     assert stored.last_fetch_status is InventoryFetchStatus.success
+
+
+@pytest.mark.asyncio
+async def test_refresh_304_records_chain_from_this_revalidation(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A 304 records the chain walked during that revalidation.
+
+    The 304 says the *content* is unchanged, which says nothing about the
+    chain: the row was cached with no redirect at all, and this
+    revalidation went through a permanent one.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    terminal = "https://docs.example.com/en/21/objects.inv"
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(301, headers={"Location": terminal})
+    )
+    respx_mock.get(terminal).mock(return_value=Response(304))
+
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
+
+    assert summary.revalidated == 1
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert stored.content == INVENTORY_BODY
+    assert stored.resolved_url == terminal
+    assert stored.resolved_redirect_permanent is True
+
+
+@pytest.mark.asyncio
+async def test_refresh_updates_resolved_url_when_chain_changes(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A chain that moves between fetches rewrites the stored resolved URL.
+
+    The stored value is never carried forward: upstream can re-point the
+    alias, and a stale terminal URL would be worse than none.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    old_terminal = "https://docs.example.com/en/20/objects.inv"
+    new_terminal = "https://docs.example.com/en/21/objects.inv"
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+        resolved_url=old_terminal,
+        resolved_redirect_permanent=True,
+    )
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": new_terminal})
+    )
+    respx_mock.get(new_terminal).mock(
+        return_value=Response(
+            200, content=b"# Sphinx inventory version 2\nnew"
+        )
+    )
+
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
+
+    assert summary.refreshed == 1
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert stored.resolved_url == new_terminal
+    # The new chain is temporary, so the stored permanence flips too.
+    assert stored.resolved_redirect_permanent is False
 
 
 @pytest.mark.asyncio

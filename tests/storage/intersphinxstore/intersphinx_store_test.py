@@ -26,6 +26,8 @@ def _make_inventory(
         InventoryFetchStatus.success
     ),
     last_fetch_error: str | None = None,
+    resolved_url: str | None = None,
+    resolved_redirect_permanent: bool | None = None,
 ) -> IntersphinxInventory:
     return IntersphinxInventory(
         url=url,
@@ -37,6 +39,8 @@ def _make_inventory(
         date_requested=date_requested,
         last_fetch_status=last_fetch_status,
         last_fetch_error=last_fetch_error,
+        resolved_url=resolved_url,
+        resolved_redirect_permanent=resolved_redirect_permanent,
     )
 
 
@@ -56,6 +60,31 @@ async def test_upsert_get_roundtrip(factory: Factory) -> None:
 
         stored = await store.get_inventory(url)
         assert stored == inventory
+
+
+@pytest.mark.asyncio
+async def test_upsert_stores_resolved_redirect(factory: Factory) -> None:
+    """An upsert round-trips the resolved redirect columns."""
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://docs.example.com/en/latest/objects.inv"
+
+        inventory = _make_inventory(
+            url,
+            date_fetched=now,
+            date_requested=now,
+            resolved_url="https://docs.example.com/en/21/objects.inv",
+            resolved_redirect_permanent=False,
+        )
+        await store.upsert_inventory(inventory)
+
+        stored = await store.get_inventory(url)
+        assert stored is not None
+        assert (
+            stored.resolved_url == "https://docs.example.com/en/21/objects.inv"
+        )
+        assert stored.resolved_redirect_permanent is False
 
 
 @pytest.mark.asyncio
@@ -149,6 +178,8 @@ async def test_failure_upsert_preserves_existing_content(
             etag='"good-etag"',
             date_fetched=now,
             date_requested=now,
+            resolved_url="https://docs.example.com/en/21/objects.inv",
+            resolved_redirect_permanent=True,
         )
         await store.upsert_inventory(good)
 
@@ -168,7 +199,44 @@ async def test_failure_upsert_preserves_existing_content(
         )
 
         stored = await store.get_inventory(url)
+        # The good row's resolved-redirect columns survive the skipped write
+        # alongside its content: the negative-cache write clears nothing.
         assert stored == good
+
+
+@pytest.mark.asyncio
+async def test_failure_upsert_leaves_resolved_columns_null(
+    factory: Factory,
+) -> None:
+    """A negative-cache row carries no resolved-redirect information.
+
+    A failure row has no content and no resolved chain, so both columns
+    stay null rather than recording whatever chain the failed attempt
+    happened to walk.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://down.example.com/objects.inv"
+
+        await store.upsert_fetch_failure(
+            _make_inventory(
+                url,
+                content=None,
+                content_type=None,
+                etag=None,
+                last_modified=None,
+                date_fetched=now,
+                date_requested=now,
+                last_fetch_status=InventoryFetchStatus.failure,
+                last_fetch_error="502 Bad Gateway",
+            )
+        )
+
+        stored = await store.get_inventory(url)
+        assert stored is not None
+        assert stored.resolved_url is None
+        assert stored.resolved_redirect_permanent is None
 
 
 @pytest.mark.asyncio
@@ -317,6 +385,47 @@ async def test_update_refresh_outcome_preserves_date_requested(
         assert stored.etag == '"new-etag"'
         assert stored.last_modified == "Fri, 10 Jul 2026 00:00:00 GMT"
         assert stored.date_fetched == now
+
+
+@pytest.mark.asyncio
+async def test_update_refresh_outcome_rewrites_resolved_redirect(
+    factory: Factory,
+) -> None:
+    """A refresh-outcome write replaces the stored resolved-redirect state.
+
+    The chain an inventory redirects through can change between fetches, so
+    the refresh path overwrites both columns from the chain it just walked
+    rather than carrying the stored values forward.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://docs.example.com/en/latest/objects.inv"
+
+        seeded = _make_inventory(
+            url,
+            date_fetched=now - timedelta(hours=2),
+            date_requested=now - timedelta(days=1),
+            resolved_url="https://docs.example.com/en/20/objects.inv",
+            resolved_redirect_permanent=True,
+        )
+        await store.upsert_inventory(seeded)
+
+        await store.update_refresh_outcome(
+            replace(
+                seeded,
+                date_fetched=now,
+                resolved_url="https://docs.example.com/en/21/objects.inv",
+                resolved_redirect_permanent=False,
+            )
+        )
+
+        stored = await store.get_inventory(url)
+        assert stored is not None
+        assert (
+            stored.resolved_url == "https://docs.example.com/en/21/objects.inv"
+        )
+        assert stored.resolved_redirect_permanent is False
 
 
 @pytest.mark.asyncio

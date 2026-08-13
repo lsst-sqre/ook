@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, LargeBinary, UnicodeText
+from sqlalchemy import BigInteger, Boolean, DateTime, LargeBinary, UnicodeText
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -87,4 +87,23 @@ class SqlIntersphinxInventory(Base):
     )
     """A description of the last fetch failure, or null if the last fetch
     succeeded.
+    """
+
+    resolved_url: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True
+    )
+    """The terminal URL the last fetch's redirect chain ended at, or null
+    when the chain did not redirect.
+
+    Nullable with no backfill: rows cached before this column existed
+    populate on their next fetch or refresh.
+    """
+
+    resolved_redirect_permanent: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    """Whether the last fetch's redirect chain was entirely permanent.
+
+    True when every hop was a 301 or 308, false when any hop was temporary,
+    and null when the chain did not redirect.
     """

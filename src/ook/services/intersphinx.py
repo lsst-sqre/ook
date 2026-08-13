@@ -54,6 +54,13 @@ _DEFAULT_MAX_CONTENT_SIZE = 50 * 1024 * 1024
 _REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 """HTTP status codes followed as redirects when fetching an inventory."""
 
+_PERMANENT_REDIRECT_CODES = frozenset({301, 308})
+"""Redirect status codes meaning the requested URL itself has moved.
+
+Matches the link-check URL checker's set so both of Ook's fetch paths draw
+the permanent/temporary line identically.
+"""
+
 _MAX_REDIRECTS = 20
 """Maximum number of redirect hops followed before giving up.
 
@@ -111,6 +118,31 @@ class _InventoryFetch:
     redirect_hops: list[int]
     """Status codes of the redirect responses followed, in order."""
 
+    @property
+    def resolved_url(self) -> str | None:
+        """The terminal URL when the chain redirected, else None.
+
+        None rather than the requested URL when nothing redirected, so the
+        stored column distinguishes "did not redirect" from "redirected
+        back to itself".
+        """
+        return self.final_url if self.redirect_hops else None
+
+    @property
+    def resolved_redirect_permanent(self) -> bool | None:
+        """Whether every hop in the chain was permanent, or None if no
+        redirect.
+
+        A chain counts as permanent only when *every* hop is a 301 or 308: a
+        single temporary hop means the terminal URL is not a stable
+        replacement for the requested one, so the whole chain is temporary.
+        """
+        if not self.redirect_hops:
+            return None
+        return all(
+            code in _PERMANENT_REDIRECT_CODES for code in self.redirect_hops
+        )
+
 
 class IntersphinxCacheService:
     """Service that serves cached Sphinx ``objects.inv`` inventories.
@@ -136,6 +168,13 @@ class IntersphinxCacheService:
     under a size cap so an oversized inventory is abandoned rather than
     buffered into memory. An oversized response, an over-long chain, and a
     hop rejected by the guard are all treated as upstream fetch failures.
+
+    When a fetch does redirect, its terminal URL and whether every hop was
+    permanent are stored on the row, so a permanently-moved inventory URL
+    can be surfaced from a cache hit without re-contacting the origin. Both
+    are rewritten from the chain observed on each fetch — including a
+    ``304`` revalidation, which speaks only to the content — and are left
+    null on a negative-cache row, which has no resolved chain at all.
 
     When a cold-miss upstream fetch fails (4xx/5xx, timeout, connection
     error) and there is no cached content to serve, the failure is
@@ -383,6 +422,14 @@ class IntersphinxCacheService:
                     date_fetched=now,
                     last_fetch_status=InventoryFetchStatus.success,
                     last_fetch_error=None,
+                    # A 304 says the content is unchanged, which says
+                    # nothing about the chain: record the one this
+                    # revalidation walked rather than carrying the stored
+                    # one forward.
+                    resolved_url=fetch.resolved_url,
+                    resolved_redirect_permanent=(
+                        fetch.resolved_redirect_permanent
+                    ),
                 )
             )
             self._logger.info(
@@ -404,6 +451,10 @@ class IntersphinxCacheService:
                 date_fetched=now,
                 last_fetch_status=InventoryFetchStatus.success,
                 last_fetch_error=None,
+                resolved_url=fetch.resolved_url,
+                resolved_redirect_permanent=(
+                    fetch.resolved_redirect_permanent
+                ),
             )
         )
         self._logger.info(
@@ -489,6 +540,8 @@ class IntersphinxCacheService:
             date_requested=now,
             last_fetch_status=InventoryFetchStatus.success,
             last_fetch_error=None,
+            resolved_url=fetch.resolved_url,
+            resolved_redirect_permanent=fetch.resolved_redirect_permanent,
         )
         await self._inventory_store.upsert_inventory(inventory)
         return inventory
@@ -612,6 +665,9 @@ class IntersphinxCacheService:
                 date_requested=now,
                 last_fetch_status=InventoryFetchStatus.failure,
                 last_fetch_error=detail,
+                # A negative-cache row has no content and no resolved chain.
+                resolved_url=None,
+                resolved_redirect_permanent=None,
             )
         )
         self._logger.warning(

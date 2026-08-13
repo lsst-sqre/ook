@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict GeTegtAFP9hG25Jy8avxXaBPc4Yhyt5bFfSOmZdVlknmif4324zuFueNbI22ItA
+\restrict WFlhuPDpu3dBqlefvfxWsqe5bZdV9Apez25cjwfGkFfIyb9Y3YK684YeAzKUcuq
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -341,7 +341,9 @@ CREATE TABLE public.intersphinx_inventory (
     date_fetched timestamp with time zone,
     date_requested timestamp with time zone NOT NULL,
     last_fetch_status text,
-    last_fetch_error text
+    last_fetch_error text,
+    resolved_url text,
+    resolved_redirect_permanent boolean
 );
 
 
@@ -847,7 +849,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-c2a2c14c0e60
+4acb43afff3d
 \.
 
 
@@ -911,7 +913,7 @@ COPY public.external_reference (id, url, doi, arxiv_id, isbn, issn, ads_bibcode,
 -- Data for Name: intersphinx_inventory; Type: TABLE DATA; Schema: public; Owner: test
 --
 
-COPY public.intersphinx_inventory (id, url, content, content_type, etag, last_modified, date_fetched, date_requested, last_fetch_status, last_fetch_error) FROM stdin;
+COPY public.intersphinx_inventory (id, url, content, content_type, etag, last_modified, date_fetched, date_requested, last_fetch_status, last_fetch_error, resolved_url, resolved_redirect_permanent) FROM stdin;
 \.
 
 
@@ -1954,5 +1956,5 @@ ALTER TABLE ONLY public.url_occurrence
 -- PostgreSQL database dump complete
 --
 
-\unrestrict GeTegtAFP9hG25Jy8avxXaBPc4Yhyt5bFfSOmZdVlknmif4324zuFueNbI22ItA
+\unrestrict WFlhuPDpu3dBqlefvfxWsqe5bZdV9Apez25cjwfGkFfIyb9Y3YK684YeAzKUcuq
 
