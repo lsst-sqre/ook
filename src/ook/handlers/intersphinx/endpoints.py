@@ -8,12 +8,16 @@ from fastapi import APIRouter, Depends, Header, Query, Response
 
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
+from ook.domain.intersphinx import IntersphinxInventory
 from ook.exceptions import UpstreamInventoryError
 
 router = APIRouter(
     prefix=f"{config.path_prefix}/intersphinx", tags=["intersphinx"]
 )
 """FastAPI router for all intersphinx inventory cache handlers."""
+
+PERMANENT_REDIRECT_HEADER = "X-Ook-Inventory-Permanent-Redirect"
+"""Header naming the URL a permanently-moved inventory now lives at."""
 
 
 def _strip_weak_prefix(etag: str) -> str:
@@ -42,6 +46,22 @@ def _if_none_match_matches(header_value: str, current_etag: str) -> bool:
     )
 
 
+def _permanent_redirect_headers(
+    inventory: IntersphinxInventory,
+) -> dict[str, str]:
+    """Return the permanent-redirect header for an inventory, if warranted.
+
+    The header is emitted only for a chain whose every hop was permanent: a
+    chain with any temporary hop means the requested URL is still the right
+    one to ask for (a ``latest`` alias legitimately moves), so there is
+    nothing for a doc author to fix and no header. The values come from the
+    stored row, so a cache hit answers without contacting the origin.
+    """
+    if inventory.resolved_redirect_permanent and inventory.resolved_url:
+        return {PERMANENT_REDIRECT_HEADER: inventory.resolved_url}
+    return {}
+
+
 @router.get(
     "/inventory",
     summary="Get a cached intersphinx inventory",
@@ -51,20 +71,53 @@ def _if_none_match_matches(header_value: str, current_etag: str) -> bool:
         " synchronously, stored, and served. The response carries the"
         " stored content type and an ``Age`` header giving the seconds"
         " since the inventory was fetched from the origin. A cold-miss"
-        " upstream failure returns a 502 and is negatively cached. This"
-        " endpoint is protected by Gafaelfawr at the ingress."
+        " upstream failure returns a 502 and is negatively cached."
+        "\n\n"
+        "Redirects are followed when fetching the origin. If the chain"
+        " was made up entirely of permanent redirects (301 or 308), the"
+        " response carries an"
+        " ``X-Ook-Inventory-Permanent-Redirect`` header whose value is"
+        " the URL the chain resolved to, on both a ``200`` and a"
+        " ``304``. That signals the requested URL has moved for good and"
+        " should be updated at its source. The header is absent when the"
+        " chain included any temporary redirect — a ``latest`` alias"
+        " legitimately moves, so there is nothing to fix — and when the"
+        " URL did not redirect at all. Its value is read from the cached"
+        " row, so it is served without re-contacting the origin."
+        "\n\n"
+        "This endpoint is protected by Gafaelfawr at the ingress."
     ),
     response_class=Response,
     responses={
         200: {
             "content": {"application/octet-stream": {}},
             "description": "The cached inventory bytes.",
+            "headers": {
+                "X-Ook-Inventory-Permanent-Redirect": {
+                    "description": (
+                        "The URL this inventory's origin URL permanently"
+                        " redirects to. Present only when every hop of"
+                        " the redirect chain was permanent."
+                    ),
+                    "schema": {"type": "string", "format": "uri"},
+                }
+            },
         },
         304: {
             "description": (
                 "The client's ``If-None-Match`` validator matches the"
                 " currently-cached inventory; no body is returned."
-            )
+            ),
+            "headers": {
+                "X-Ook-Inventory-Permanent-Redirect": {
+                    "description": (
+                        "The URL this inventory's origin URL permanently"
+                        " redirects to. Present only when every hop of"
+                        " the redirect chain was permanent."
+                    ),
+                    "schema": {"type": "string", "format": "uri"},
+                }
+            },
         },
         502: {"description": "The origin inventory could not be fetched."},
     },
@@ -123,13 +176,20 @@ async def get_intersphinx_inventory(
     # Conditional-request handling: when the client already holds the
     # currently-cached representation, revalidate cheaply with a bodyless 304
     # that carries only the ETag (not the Age-bearing 200 response shape).
+    # A permanently-moved inventory URL is reported on both response
+    # shapes, so a client that only ever revalidates still learns its
+    # configured URL is stale.
+    redirect_headers = _permanent_redirect_headers(inventory)
+
     if if_none_match is not None and _if_none_match_matches(
         if_none_match, etag
     ):
-        return Response(status_code=304, headers={"ETag": etag})
+        return Response(
+            status_code=304, headers={"ETag": etag, **redirect_headers}
+        )
 
     return Response(
         content=inventory.content,
         media_type=inventory.content_type or "application/octet-stream",
-        headers={"Age": str(age), "ETag": etag},
+        headers={"Age": str(age), "ETag": etag, **redirect_headers},
     )

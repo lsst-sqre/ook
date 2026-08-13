@@ -461,6 +461,163 @@ async def test_if_none_match_list_returns_304(
     assert response.content == b""
 
 
+PERMANENT_HOP = "https://docs.example.com/en/stable/objects.inv"
+"""The first hop of the all-permanent redirect chain used in these tests."""
+
+PERMANENT_TERMINAL = "https://example.com/docs/stable/objects.inv"
+"""The terminal URL of the all-permanent redirect chain."""
+
+
+def _mock_permanent_chain(respx_mock: respx.Router) -> respx.Route:
+    """Mock an all-permanent (301 then 308) chain to a served inventory.
+
+    Returns the route for the originally-requested URL so a test can assert
+    the origin is contacted exactly once.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(301, headers={"Location": PERMANENT_HOP})
+    )
+    respx_mock.get(PERMANENT_HOP).mock(
+        return_value=Response(308, headers={"Location": PERMANENT_TERMINAL})
+    )
+    respx_mock.get(PERMANENT_TERMINAL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+    return route
+
+
+@pytest.mark.asyncio
+async def test_permanent_redirect_header_on_200(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 200 for an all-permanent chain names the resolved URL."""
+    _mock_permanent_chain(respx_mock)
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+
+    assert response.status_code == 200
+    assert response.content == INVENTORY_BODY
+    assert (
+        response.headers["x-ook-inventory-permanent-redirect"]
+        == PERMANENT_TERMINAL
+    )
+
+
+@pytest.mark.asyncio
+async def test_permanent_redirect_header_on_304(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 304 still names the resolved URL, from the cached row alone.
+
+    A client that holds the current bytes only ever revalidates, so without
+    this it would never learn its configured URL has permanently moved.
+    """
+    route = _mock_permanent_chain(respx_mock)
+
+    etag = await _prime_cache(client)
+    assert route.call_count == 1
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+        headers={"If-None-Match": etag},
+    )
+
+    assert response.status_code == 304
+    assert response.content == b""
+    assert (
+        response.headers["x-ook-inventory-permanent-redirect"]
+        == PERMANENT_TERMINAL
+    )
+    # The header is served from the cached row, with no upstream contact.
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_no_permanent_redirect_header_for_temporary_chain(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A chain with a temporary hop gets no header, on a 200 or a 304.
+
+    This is the SQLAlchemy shape: an all-302 chain whose ``latest`` alias
+    legitimately moves, so the requested URL is still the right one to ask
+    for and there is nothing for a doc author to fix.
+    """
+    temporary_terminal = "https://docs.example.com/en/21/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(301, headers={"Location": PERMANENT_HOP})
+    )
+    respx_mock.get(PERMANENT_HOP).mock(
+        return_value=Response(302, headers={"Location": temporary_terminal})
+    )
+    respx_mock.get(temporary_terminal).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    etag = await _prime_cache(client)
+
+    ok = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert ok.status_code == 200
+    assert "x-ook-inventory-permanent-redirect" not in ok.headers
+
+    not_modified = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+        headers={"If-None-Match": etag},
+    )
+    assert not_modified.status_code == 304
+    assert "x-ook-inventory-permanent-redirect" not in not_modified.headers
+
+
+@pytest.mark.asyncio
+async def test_no_permanent_redirect_header_without_redirect(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A URL that does not redirect gets no header, on a 200 or a 304."""
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    etag = await _prime_cache(client)
+
+    ok = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert ok.status_code == 200
+    assert "x-ook-inventory-permanent-redirect" not in ok.headers
+
+    not_modified = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+        headers={"If-None-Match": etag},
+    )
+    assert not_modified.status_code == 304
+    assert "x-ook-inventory-permanent-redirect" not in not_modified.headers
+
+
 @pytest.mark.asyncio
 async def test_if_none_match_stale_after_change_returns_200(
     client: AsyncClient,
