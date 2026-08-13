@@ -540,6 +540,198 @@ async def test_guard_rejection_logs_origin_url(
     assert any(event.get("url") == http_url for event in captured)
 
 
+@pytest.mark.asyncio
+async def test_cold_miss_follows_cross_host_redirect_chain(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A cold miss behind a three-hop cross-host 302 chain resolves.
+
+    The chain mirrors the real SQLAlchemy inventory: it leaves the origin
+    host and comes back. The terminal inventory is stored under the
+    originally requested URL, which is the cache key clients ask for.
+    """
+    hop_1 = "https://www.example.com/docs/latest/objects.inv"
+    hop_2 = "https://docs.example.com/21/objects.inv"
+    terminal = "https://docs.example.com/en/21/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": hop_1})
+    )
+    respx_mock.get(hop_1).mock(
+        return_value=Response(302, headers={"Location": hop_2})
+    )
+    respx_mock.get(hop_2).mock(
+        return_value=Response(302, headers={"Location": terminal})
+    )
+    terminal_route = respx_mock.get(terminal).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_cache_service()
+        inventory = await service.get_inventory(INVENTORY_URL)
+
+    assert terminal_route.call_count == 1
+    assert inventory.content == INVENTORY_BODY
+    assert inventory.last_fetch_status is InventoryFetchStatus.success
+
+    # The terminal content is cached under the requested URL, not the
+    # terminal one, so the next request for the same URL is a hit.
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert stored.content == INVENTORY_BODY
+
+
+@pytest.mark.asyncio
+async def test_relative_location_joins_against_current_hop(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A relative ``Location`` resolves against the hop that sent it.
+
+    The first hop crosses to another host, which then answers with a
+    relative ``Location``. Joining that against the originally requested
+    URL would land on the wrong host and path entirely, so the correct
+    target resolving proves the join uses the current hop.
+    """
+    hop_1 = "https://www.example.com/docs/latest/objects.inv"
+    terminal = "https://www.example.com/docs/21/objects.inv"
+    wrong = "https://docs.example.com/en/21/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": hop_1})
+    )
+    respx_mock.get(hop_1).mock(
+        return_value=Response(302, headers={"Location": "../21/objects.inv"})
+    )
+    terminal_route = respx_mock.get(terminal).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+    wrong_route = respx_mock.get(wrong).mock(
+        return_value=Response(200, content=b"wrong host")
+    )
+
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_cache_service()
+        inventory = await service.get_inventory(INVENTORY_URL)
+
+    assert terminal_route.call_count == 1
+    assert wrong_route.call_count == 0
+    assert inventory.content == INVENTORY_BODY
+
+
+@pytest.mark.asyncio
+async def test_redirect_hop_to_private_address_rejected(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A redirect to a private address is rejected as an upstream failure.
+
+    The requested URL is public and valid, so this is upstream misbehaving
+    rather than a bad client request: it surfaces as an
+    `UpstreamInventoryError` (502) and is negatively cached, unlike a guard
+    rejection of the originally requested URL, which is a 400.
+    """
+    internal = "https://internal.example.com/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": internal})
+    )
+    internal_route = respx_mock.get(internal).mock(
+        return_value=Response(200, content=b"internal secrets")
+    )
+
+    async def resolve(host: str) -> list[str]:
+        return (
+            ["10.0.0.1"]
+            if host == "internal.example.com"
+            else ["93.184.216.34"]
+        )
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible to the
+    # second request, mirroring how the handler commits the failure path.
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    # The rejected hop is never fetched.
+    assert internal_route.call_count == 0
+
+    stored = await factory.create_intersphinx_inventory_store().get_inventory(
+        INVENTORY_URL
+    )
+    assert stored is not None
+    assert stored.content is None
+    assert stored.last_fetch_status is InventoryFetchStatus.failure
+    assert stored.last_fetch_error is not None
+    assert "redirected" in stored.last_fetch_error
+
+
+@pytest.mark.asyncio
+async def test_redirect_loop_stops_at_hop_cap(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A redirect loop stops at the hop cap instead of spinning forever."""
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": INVENTORY_URL})
+    )
+
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError, match="Exceeded 20 redirects"):
+        await service.get_inventory(INVENTORY_URL)
+
+    # One request per allowed hop, plus the one that trips the cap.
+    assert route.call_count == 21
+
+    stored = await factory.create_intersphinx_inventory_store().get_inventory(
+        INVENTORY_URL
+    )
+    assert stored is not None
+    assert stored.content is None
+    assert stored.last_fetch_error == "Exceeded 20 redirects"
+
+
+@pytest.mark.asyncio
+async def test_redirect_hop_bodies_not_counted_against_size_cap(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """Redirect-hop bodies never count against the size cap.
+
+    Each hop carries a body larger than the cap on its own, yet the chain
+    resolves because only the terminal response's body is read and
+    measured.
+    """
+    hop_1 = "https://www.example.com/docs/latest/objects.inv"
+    terminal = "https://docs.example.com/en/21/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            302, headers={"Location": hop_1}, content=b"x" * 200
+        )
+    )
+    respx_mock.get(hop_1).mock(
+        return_value=Response(
+            302, headers={"Location": terminal}, content=b"y" * 200
+        )
+    )
+    respx_mock.get(terminal).mock(return_value=Response(200, content=b"small"))
+
+    service = _make_capped_service(factory, max_content_size=64)
+    async with factory.db_session.begin():
+        inventory = await service.get_inventory(INVENTORY_URL)
+
+    assert inventory.content == b"small"
+    assert inventory.last_fetch_status is InventoryFetchStatus.success
+
+
 async def _seed_stale_inventory(
     factory: Factory,
     url: str,
@@ -842,3 +1034,115 @@ async def test_refresh_commits_each_inventory_independently(
     assert stored_a.content == new_a
     assert stored_b is not None
     assert stored_b.date_fetched == now
+
+
+@pytest.mark.asyncio
+async def test_refresh_follows_redirect_with_conditional_headers(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A refresh follows a chain with its conditional headers intact.
+
+    Every hop re-sends ``If-None-Match`` / ``If-Modified-Since``, so a
+    ``304`` at the end of the chain still revalidates the stored copy in
+    place rather than re-downloading it.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    terminal = "https://docs.example.com/en/21/objects.inv"
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+
+    seen: list[dict[str, str]] = []
+
+    def record(request: httpx.Request) -> Response:
+        seen.append(dict(request.headers))
+        if str(request.url) == INVENTORY_URL:
+            return Response(302, headers={"Location": terminal})
+        return Response(304)
+
+    respx_mock.get(INVENTORY_URL).mock(side_effect=record)
+    terminal_route = respx_mock.get(terminal).mock(side_effect=record)
+
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
+
+    assert terminal_route.call_count == 1
+    assert summary.revalidated == 1
+    assert summary.failed == 0
+    # Both the redirecting hop and the terminal request carry the stored
+    # validators, so the 304 is a genuine revalidation of the stored copy.
+    assert len(seen) == 2
+    for headers in seen:
+        assert headers.get("if-none-match") == '"stored-etag"'
+        assert (
+            headers.get("if-modified-since") == "Wed, 01 Jan 2025 00:00:00 GMT"
+        )
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert stored.content == INVENTORY_BODY
+    assert stored.date_fetched == now
+
+
+@pytest.mark.asyncio
+async def test_cold_miss_logs_terminal_url_and_hop_count(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A cold-miss fetch logs the terminal URL and the hop count."""
+    terminal = "https://docs.example.com/en/21/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(301, headers={"Location": terminal})
+    )
+    respx_mock.get(terminal).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        async with factory.db_session.begin():
+            service = factory.create_intersphinx_cache_service()
+            await service.get_inventory(INVENTORY_URL)
+
+    assert any(
+        event.get("url") == INVENTORY_URL
+        and event.get("final_url") == terminal
+        and event.get("redirect_hops") == 1
+        for event in captured
+    )
+
+
+@pytest.mark.asyncio
+async def test_refresh_logs_terminal_url_and_hop_count(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A refresh logs the terminal URL and the hop count."""
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    terminal = "https://docs.example.com/en/21/objects.inv"
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(301, headers={"Location": terminal})
+    )
+    respx_mock.get(terminal).mock(return_value=Response(304))
+
+    service = factory.create_intersphinx_cache_service()
+    with structlog.testing.capture_logs() as captured:
+        await service.refresh_inventories(now=now)
+
+    assert any(
+        event.get("cache_status") == "revalidated"
+        and event.get("final_url") == terminal
+        and event.get("redirect_hops") == 1
+        for event in captured
+    )

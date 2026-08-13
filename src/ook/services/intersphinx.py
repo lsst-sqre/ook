@@ -51,6 +51,16 @@ HostResolver = Callable[[str], Awaitable[Sequence[str]]]
 _DEFAULT_MAX_CONTENT_SIZE = 50 * 1024 * 1024
 """Default cap, in bytes, on an origin inventory response body (50 MB)."""
 
+_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
+"""HTTP status codes followed as redirects when fetching an inventory."""
+
+_MAX_REDIRECTS = 20
+"""Maximum number of redirect hops followed before giving up.
+
+Matches the link-check URL checker's cap so both of Ook's manually-followed
+fetch paths bound a redirect chain identically.
+"""
+
 
 class _InventoryTooLargeError(httpx.HTTPError):
     """An origin inventory response exceeded the configured size cap.
@@ -61,6 +71,45 @@ class _InventoryTooLargeError(httpx.HTTPError):
     counts it as a per-inventory failure. Both paths therefore need no
     extra catch clause, only a branch in `_describe_upstream_error`.
     """
+
+
+class _TooManyRedirectsError(httpx.HTTPError):
+    """An origin inventory's redirect chain exceeded the hop cap.
+
+    An ``httpx.HTTPError`` for the same reason as `_InventoryTooLargeError`:
+    the client's URL was fine and upstream misbehaved, so this reuses the
+    existing upstream-failure plumbing and surfaces as a 502.
+    """
+
+
+class _UnsafeRedirectError(httpx.HTTPError):
+    """A redirect hop's target failed the SSRF guard.
+
+    Distinct from `InvalidInventoryUrlError`, which reports a URL the
+    *client* asked for and can fix. A hop chosen by upstream is upstream's
+    misbehavior, so this is an ``httpx.HTTPError`` that surfaces as a 502
+    and is negatively cached like any other upstream failure.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class _InventoryFetch:
+    """The terminal response of an origin inventory fetch."""
+
+    response: httpx.Response
+    """The terminal response, after any redirect hops were followed."""
+
+    content: bytes | None
+    """The terminal response body, or None for a ``304 Not Modified``."""
+
+    final_url: str
+    """The URL that produced the terminal response.
+
+    Equal to the requested URL when the chain did not redirect.
+    """
+
+    redirect_hops: list[int]
+    """Status codes of the redirect responses followed, in order."""
 
 
 class IntersphinxCacheService:
@@ -80,11 +129,13 @@ class IntersphinxCacheService:
     or loopback address. A guarded URL is never fetched and never stored.
 
     Every upstream fetch is hardened against a hostile or misbehaving
-    origin: redirects are never followed (so the SSRF guard cannot be
-    bypassed one hop at a time), each request carries an explicit timeout,
-    and the response body is streamed under a size cap so an oversized
-    inventory is abandoned rather than buffered into memory. An oversized
-    response is treated as an upstream fetch failure.
+    origin: redirects are followed by hand, one guarded hop at a time and
+    bounded by a hop cap (so the SSRF guard cannot be bypassed via an
+    upstream ``Location`` and a redirect loop terminates), each request
+    carries an explicit timeout, and the terminal response body is streamed
+    under a size cap so an oversized inventory is abandoned rather than
+    buffered into memory. An oversized response, an over-long chain, and a
+    hop rejected by the guard are all treated as upstream fetch failures.
 
     When a cold-miss upstream fetch fails (4xx/5xx, timeout, connection
     error) and there is no cached content to serve, the failure is
@@ -321,9 +372,8 @@ class IntersphinxCacheService:
             headers["If-None-Match"] = inventory.etag
         if inventory.last_modified is not None:
             headers["If-Modified-Since"] = inventory.last_modified
-        response, content = await self._fetch_inventory(
-            inventory.url, headers=headers
-        )
+        fetch = await self._fetch_inventory(inventory.url, headers=headers)
+        response = fetch.response
         if response.status_code == 304:
             # Write only the refresh-outcome columns so a client request that
             # bumped date_requested since the due-list read is not reverted.
@@ -339,13 +389,15 @@ class IntersphinxCacheService:
                 "Revalidated intersphinx inventory (304 Not Modified)",
                 url=inventory.url,
                 cache_status="revalidated",
+                final_url=fetch.final_url,
+                redirect_hops=len(fetch.redirect_hops),
             )
             return True
         response.raise_for_status()
         await self._inventory_store.update_refresh_outcome(
             replace(
                 inventory,
-                content=content,
+                content=fetch.content,
                 content_type=response.headers.get("Content-Type"),
                 etag=response.headers.get("ETag"),
                 last_modified=response.headers.get("Last-Modified"),
@@ -358,6 +410,8 @@ class IntersphinxCacheService:
             "Refreshed intersphinx inventory (200 OK)",
             url=inventory.url,
             cache_status="refreshed",
+            final_url=fetch.final_url,
+            redirect_hops=len(fetch.redirect_hops),
         )
         return False
 
@@ -412,14 +466,22 @@ class IntersphinxCacheService:
             "Fetching intersphinx inventory on cache miss", url=url
         )
         try:
-            response, content = await self._fetch_inventory(url)
-            response.raise_for_status()
+            fetch = await self._fetch_inventory(url)
+            fetch.response.raise_for_status()
         except httpx.HTTPError as exc:
             await self._store_failure(url, error=exc)
+        response = fetch.response
+        self._logger.info(
+            "Fetched intersphinx inventory from origin",
+            url=url,
+            cache_status="miss",
+            final_url=fetch.final_url,
+            redirect_hops=len(fetch.redirect_hops),
+        )
         now = datetime.now(tz=UTC)
         inventory = IntersphinxInventory(
             url=url,
-            content=content,
+            content=fetch.content,
             content_type=response.headers.get("Content-Type"),
             etag=response.headers.get("ETag"),
             last_modified=response.headers.get("Last-Modified"),
@@ -433,39 +495,68 @@ class IntersphinxCacheService:
 
     async def _fetch_inventory(
         self, url: str, *, headers: dict[str, str] | None = None
-    ) -> tuple[httpx.Response, bytes | None]:
-        """Fetch an origin inventory, bounding the body by the size cap.
+    ) -> _InventoryFetch:
+        """Fetch an origin inventory, following redirects under the guard.
 
-        The request never follows redirects and carries the service's
-        per-request timeout. The body is streamed so an oversized response
-        is abandoned as soon as the cap is exceeded rather than fully
-        buffered; a ``Content-Length`` already over the cap aborts before
-        any body is read.
+        Redirects are followed by hand rather than by httpx, one hop at a
+        time, so the SSRF guard runs against every hop target before it is
+        fetched and cannot be bypassed by an upstream ``Location``. A
+        relative ``Location`` is resolved against the hop that sent it, not
+        against the originally requested URL. The chain is bounded by
+        `_MAX_REDIRECTS` hops so a redirect loop terminates.
 
-        Returns the response together with its body bytes, or ``None`` bytes
-        for a ``304 Not Modified``, which carries no body and is not read so
-        the caller can revalidate the stored copy in place.
+        Only the terminal response's body is read: a redirect hop's body is
+        discarded unread and never counted against the size cap, and both
+        the ``Content-Length`` pre-check and the streamed-size cap apply to
+        the terminal response alone. The terminal body is streamed so an
+        oversized response is abandoned as soon as the cap is exceeded
+        rather than fully buffered.
+
+        The conditional-request headers, if any, are re-sent on every hop so
+        a chain ending in a ``304 Not Modified`` still revalidates.
 
         Raises
         ------
         _InventoryTooLargeError
-            Raised when the response body, by its ``Content-Length`` or by
-            its streamed size, exceeds the configured cap.
+            Raised when the terminal response body, by its
+            ``Content-Length`` or by its streamed size, exceeds the
+            configured cap.
+        _TooManyRedirectsError
+            Raised when the chain exceeds `_MAX_REDIRECTS` hops.
+        _UnsafeRedirectError
+            Raised when a redirect hop's target fails the SSRF guard.
         httpx.HTTPError
             Propagated from the transport on a timeout or connection error.
         """
-        async with self._http_client.stream(
-            "GET",
-            url,
-            headers=headers or {},
-            follow_redirects=False,
-            timeout=self._request_timeout,
-        ) as response:
-            if response.status_code == 304:
-                return response, None
-            self._check_content_length(response)
-            content = await self._read_capped_body(response)
-            return response, content
+        current_url = url
+        hops: list[int] = []
+        for _ in range(_MAX_REDIRECTS + 1):
+            async with self._http_client.stream(
+                "GET",
+                current_url,
+                headers=headers or {},
+                follow_redirects=False,
+                timeout=self._request_timeout,
+            ) as response:
+                location = response.headers.get("Location")
+                if response.status_code not in _REDIRECT_CODES or not location:
+                    if response.status_code == 304:
+                        return _InventoryFetch(
+                            response, None, current_url, hops
+                        )
+                    self._check_content_length(response)
+                    content = await self._read_capped_body(response)
+                    return _InventoryFetch(
+                        response, content, current_url, hops
+                    )
+                hops.append(response.status_code)
+                next_url = str(httpx.URL(current_url).join(location))
+            # Guard outside the stream context so the hop's connection is
+            # released — and its body left unread — before the guard's DNS
+            # lookup and the next hop's request.
+            await self._guard_redirect_url(next_url)
+            current_url = next_url
+        raise _TooManyRedirectsError(f"Exceeded {_MAX_REDIRECTS} redirects")
 
     def _check_content_length(self, response: httpx.Response) -> None:
         """Abort before reading the body if ``Content-Length`` is over cap."""
@@ -592,6 +683,28 @@ class IntersphinxCacheService:
                     f" {address}",
                 )
 
+    async def _guard_redirect_url(self, url: str) -> None:
+        """Run the SSRF guard on a redirect hop's target.
+
+        Same check as `_guard_url`, but a rejection is re-raised as an
+        `_UnsafeRedirectError` rather than an `InvalidInventoryUrlError`:
+        the requested URL was valid and upstream chose this hop, so it is
+        an upstream failure (502, negatively cached) rather than a bad
+        client request (400).
+
+        Raises
+        ------
+        _UnsafeRedirectError
+            Raised if the hop target uses a non-``https`` scheme or its host
+            resolves to a non-public address.
+        """
+        try:
+            await self._guard_url(url)
+        except InvalidInventoryUrlError as exc:
+            raise _UnsafeRedirectError(
+                f"Upstream redirected the inventory to a rejected URL: {exc}"
+            ) from exc
+
     def _reject_url(self, url: str, reason: str) -> NoReturn:
         """Log a guard rejection and raise ``InvalidInventoryUrlError``."""
         self._logger.warning(
@@ -627,7 +740,12 @@ def _describe_upstream_error(error: httpx.HTTPError) -> str:
     The message is safe to return to the client and to store as the
     negative-cache row's error detail.
     """
-    if isinstance(error, _InventoryTooLargeError):
+    if isinstance(
+        error,
+        _InventoryTooLargeError
+        | _TooManyRedirectsError
+        | _UnsafeRedirectError,
+    ):
         return str(error)
     if isinstance(error, httpx.HTTPStatusError):
         return (
