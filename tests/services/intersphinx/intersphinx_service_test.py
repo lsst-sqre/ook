@@ -17,6 +17,7 @@ from structlog.testing import capture_logs
 
 from ook.config import config
 from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
+from ook.domain.redirects import MAX_REDIRECTS
 from ook.exceptions import InvalidInventoryUrlError, UpstreamInventoryError
 from ook.factory import Factory
 from ook.services import intersphinx as intersphinx_service
@@ -1062,11 +1063,7 @@ async def test_hop_cap_reported_before_touching_the_next_target(
     def respond(request: httpx.Request) -> Response:
         nonlocal calls
         calls += 1
-        location = (
-            poison
-            if calls > intersphinx_service._MAX_REDIRECTS
-            else INVENTORY_URL
-        )
+        location = poison if calls > MAX_REDIRECTS else INVENTORY_URL
         return Response(302, headers={"Location": location})
 
     route = respx_mock.get(INVENTORY_URL).mock(side_effect=respond)
@@ -1161,7 +1158,7 @@ async def test_slow_redirect_chain_stops_at_the_time_budget(
         await service.get_inventory(INVENTORY_URL)
 
     # The budget ended the chain well before the hop cap would have.
-    assert route.call_count < intersphinx_service._MAX_REDIRECTS
+    assert route.call_count < MAX_REDIRECTS
 
     stored = await factory.create_intersphinx_inventory_store().get_inventory(
         INVENTORY_URL

@@ -11,6 +11,8 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 from urllib.parse import urldefrag, urlsplit, urlunsplit
 
+from ook.domain.redirects import PERMANENT_REDIRECT_CODES
+
 from ._models import (
     CheckResult,
     LinkCheckOutcome,
@@ -31,9 +33,6 @@ __all__ = [
 
 _SUPPORTED_SCHEMES = frozenset({"http", "https"})
 """URL schemes the link checker is able to check."""
-
-_PERMANENT_REDIRECT_CODES = frozenset({301, 308})
-"""Redirect status codes indicating the source should be updated."""
 
 _MAX_BLOCKED_BACKOFF_DOUBLINGS = 30
 """Ceiling on the blocked-backoff doubling exponent.
@@ -215,7 +214,7 @@ def evaluate_outcome(
         # Permanent redirects mean the link works but the source should
         # be updated to the recorded final location. Temporary
         # redirects resolve OK, with redirect metadata retained.
-        if outcome.redirect_status_code in _PERMANENT_REDIRECT_CODES:
+        if outcome.redirect_status_code in PERMANENT_REDIRECT_CODES:
             status = LinkStatus.redirected
         else:
             status = LinkStatus.ok

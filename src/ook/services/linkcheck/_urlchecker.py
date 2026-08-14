@@ -21,6 +21,13 @@ from ook.domain.linkcheck import (
     LinkCheckOutcome,
     is_supported_url,
 )
+from ook.domain.redirects import (
+    MAX_REDIRECTS,
+    PERMANENT_REDIRECT_CODES,
+    REDIRECT_CODES,
+    TooManyRedirectsError,
+    is_permanent_chain,
+)
 
 __all__ = ["HostResolver", "UrlChecker"]
 
@@ -34,15 +41,6 @@ HostResolver = Callable[[str], Awaitable[Sequence[str]]]
 
 _SUCCESS_CODES = range(200, 300)
 """HTTP status codes counted as a successful resolution."""
-
-_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
-"""HTTP status codes followed as redirects."""
-
-_PERMANENT_REDIRECT_CODES = frozenset({301, 308})
-"""Redirect status codes indicating the source should be updated."""
-
-_MAX_REDIRECTS = 20
-"""Maximum number of redirect hops followed before giving up."""
 
 _RATE_LIMITED_CODE = 429
 """HTTP status code signalling the client is being rate limited."""
@@ -67,10 +65,6 @@ _DIAGNOSTIC_HEADERS = ("server", "cf-mitigated", "cf-ray")
 order they are rendered. These surface whether a 4xx/5xx block came from an
 edge mitigation (e.g. a Cloudflare challenge) rather than the origin.
 """
-
-
-class _TooManyRedirectsError(Exception):
-    """The redirect chain exceeded the maximum number of hops."""
 
 
 class _UnsupportedUrlError(Exception):
@@ -155,12 +149,13 @@ class _FetchResult:
         """
         if not self.redirect_hops:
             return None
-        temporary = [
+        if is_permanent_chain(self.redirect_hops):
+            return self.redirect_hops[0]
+        return next(
             code
             for code in self.redirect_hops
-            if code not in _PERMANENT_REDIRECT_CODES
-        ]
-        return temporary[0] if temporary else self.redirect_hops[0]
+            if code not in PERMANENT_REDIRECT_CODES
+        )
 
 
 class UrlChecker:
@@ -253,10 +248,8 @@ class UrlChecker:
             return self._failure_outcome(f"DNS resolution failed: {e}")
         except TimeoutError, httpx.TimeoutException:
             return self._failure_outcome("Request timed out")
-        except _TooManyRedirectsError:
-            return self._failure_outcome(
-                f"Exceeded {_MAX_REDIRECTS} redirects"
-            )
+        except TooManyRedirectsError:
+            return self._failure_outcome(f"Exceeded {MAX_REDIRECTS} redirects")
         except httpx.HTTPError as e:
             return self._failure_outcome(_describe_error(e))
         return self._response_outcome(result)
@@ -354,10 +347,10 @@ class UrlChecker:
         current_url = url
         current_pinned = pinned
         hops: list[int] = []
-        for _ in range(_MAX_REDIRECTS + 1):
+        for _ in range(MAX_REDIRECTS + 1):
             response = await self._send(method, current_url, current_pinned)
             location = response.headers.get("Location")
-            if response.status_code in _REDIRECT_CODES and location:
+            if response.status_code in REDIRECT_CODES and location:
                 hops.append(response.status_code)
                 current_url = str(httpx.URL(current_url).join(location))
                 # The caller guards the original URL; guard each redirect
@@ -376,7 +369,7 @@ class UrlChecker:
                 },
                 retry_after=response.headers.get("Retry-After"),
             )
-        raise _TooManyRedirectsError
+        raise TooManyRedirectsError
 
     async def _send(
         self, method: str, url: str, pinned: str

@@ -18,6 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
 
 from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
+from ook.domain.redirects import (
+    MAX_REDIRECTS,
+    REDIRECT_CODES,
+    TooManyRedirectsError,
+    is_permanent_chain,
+)
 from ook.exceptions import InvalidInventoryUrlError, UpstreamInventoryError
 from ook.storage.intersphinxstore import IntersphinxInventoryStore
 
@@ -52,23 +58,6 @@ HostResolver = Callable[[str], Awaitable[Sequence[str]]]
 _DEFAULT_MAX_CONTENT_SIZE = 50 * 1024 * 1024
 """Default cap, in bytes, on an origin inventory response body (50 MB)."""
 
-_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
-"""HTTP status codes followed as redirects when fetching an inventory."""
-
-_PERMANENT_REDIRECT_CODES = frozenset({301, 308})
-"""Redirect status codes meaning the requested URL itself has moved.
-
-Matches the link-check URL checker's set so both of Ook's fetch paths draw
-the permanent/temporary line identically.
-"""
-
-_MAX_REDIRECTS = 20
-"""Maximum number of redirect hops followed before giving up.
-
-Matches the link-check URL checker's cap so both of Ook's manually-followed
-fetch paths bound a redirect chain identically.
-"""
-
 
 class _InventoryTooLargeError(httpx.HTTPError):
     """An origin inventory response exceeded the configured size cap.
@@ -81,12 +70,16 @@ class _InventoryTooLargeError(httpx.HTTPError):
     """
 
 
-class _TooManyRedirectsError(httpx.HTTPError):
+class _UpstreamTooManyRedirectsError(TooManyRedirectsError, httpx.HTTPError):
     """An origin inventory's redirect chain exceeded the hop cap.
 
-    An ``httpx.HTTPError`` for the same reason as `_InventoryTooLargeError`:
-    the client's URL was fine and upstream misbehaved, so this reuses the
-    existing upstream-failure plumbing and surfaces as a 502.
+    Also an ``httpx.HTTPError``, for the same reason as
+    `_InventoryTooLargeError`: the client's URL was fine and upstream
+    misbehaved, so this reuses the existing upstream-failure plumbing and
+    surfaces as a 502. The shared
+    `ook.domain.redirects.TooManyRedirectsError` base keeps a catch of the
+    shared class correct here too, and the distinct name keeps this from
+    shadowing the link checker's plain-``Exception`` handling.
     """
 
 
@@ -97,19 +90,20 @@ class _FetchDeadlineExceededError(httpx.HTTPError):
     answers each redirect just inside that timeout could otherwise hold the
     fetch — and, on the cold-miss path, the request's open DB session — for
     the hop cap times the per-request timeout. An ``httpx.HTTPError`` for
-    the same reason as `_TooManyRedirectsError`, so an exhausted budget
-    lands in the existing upstream-failure plumbing: a negatively cached
-    502 on the request path, a skipped inventory on the refresh path.
+    the same reason as `_UpstreamTooManyRedirectsError`, so an exhausted
+    budget lands in the existing upstream-failure plumbing: a negatively
+    cached 502 on the request path, a skipped inventory on the refresh
+    path.
     """
 
 
 class _InvalidRedirectError(httpx.HTTPError):
     """An origin's ``Location`` header could not be resolved to a URL.
 
-    An ``httpx.HTTPError`` for the same reason as `_TooManyRedirectsError`:
-    a ``Location`` the client never chose is upstream's misbehavior, so it
-    surfaces as a 502 and is negatively cached rather than escaping as an
-    unhandled error.
+    An ``httpx.HTTPError`` for the same reason as
+    `_UpstreamTooManyRedirectsError`: a ``Location`` the client never chose
+    is upstream's misbehavior, so it surfaces as a 502 and is negatively
+    cached rather than escaping as an unhandled error.
     """
 
 
@@ -177,15 +171,13 @@ class _InventoryFetch:
         """Whether every hop in the chain was permanent, or None if no
         redirect.
 
-        A chain counts as permanent only when *every* hop is a 301 or 308: a
-        single temporary hop means the terminal URL is not a stable
-        replacement for the requested one, so the whole chain is temporary.
+        Permanence is `ook.domain.redirects.is_permanent_chain`'s call, the
+        same one the link checker's ``redirected`` status is drawn from, so
+        an identical chain is classified identically by both.
         """
         if not self.redirect_hops:
             return None
-        return all(
-            code in _PERMANENT_REDIRECT_CODES for code in self.redirect_hops
-        )
+        return is_permanent_chain(self.redirect_hops)
 
 
 class IntersphinxCacheService:
@@ -688,7 +680,7 @@ class IntersphinxCacheService:
         fetched and cannot be bypassed by an upstream ``Location``. A
         relative ``Location`` is resolved against the hop that sent it, not
         against the originally requested URL. The chain is bounded by
-        `_MAX_REDIRECTS` hops so a redirect loop terminates.
+        `MAX_REDIRECTS` hops so a redirect loop terminates.
 
         Only the terminal response's body is read: a redirect hop's body is
         discarded unread and never counted against the size cap, and both
@@ -727,8 +719,8 @@ class IntersphinxCacheService:
             configured cap.
         _InvalidRedirectError
             Raised when a hop's ``Location`` cannot be resolved to a URL.
-        _TooManyRedirectsError
-            Raised when the chain exceeds `_MAX_REDIRECTS` hops.
+        _UpstreamTooManyRedirectsError
+            Raised when the chain exceeds `MAX_REDIRECTS` hops.
         _UnsafeRedirectError
             Raised when a redirect hop's target fails the SSRF guard,
             including when its host cannot be resolved.
@@ -748,7 +740,7 @@ class IntersphinxCacheService:
                 timeout=self._remaining_budget(deadline),
             ) as response:
                 location = response.headers.get("Location")
-                if response.status_code not in _REDIRECT_CODES or not location:
+                if response.status_code not in REDIRECT_CODES or not location:
                     if response.status_code == 304:
                         return _InventoryFetch(
                             response, None, current_url, hops
@@ -760,13 +752,13 @@ class IntersphinxCacheService:
                     return _InventoryFetch(
                         response, content, current_url, hops
                     )
-                if len(hops) >= _MAX_REDIRECTS:
+                if len(hops) >= MAX_REDIRECTS:
                     # Give up on the hop count alone, before joining or
                     # guarding a target this fetch will never request, so
                     # the reported failure never depends on a URL already
                     # ruled out.
-                    raise _TooManyRedirectsError(
-                        f"Exceeded {_MAX_REDIRECTS} redirects"
+                    raise _UpstreamTooManyRedirectsError(
+                        f"Exceeded {MAX_REDIRECTS} redirects"
                     )
                 hops.append(response.status_code)
                 next_url = _join_redirect_url(current_url, location)
@@ -1085,7 +1077,7 @@ def _describe_upstream_error(error: httpx.HTTPError) -> str:
         error,
         _FetchDeadlineExceededError
         | _InventoryTooLargeError
-        | _TooManyRedirectsError
+        | _UpstreamTooManyRedirectsError
         | _UnsafeRedirectError
         | _InvalidRedirectError,
     ):
