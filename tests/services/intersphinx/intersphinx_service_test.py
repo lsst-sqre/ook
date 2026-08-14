@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
@@ -776,6 +777,134 @@ async def test_redirect_hop_to_private_address_rejected(
 
 
 @pytest.mark.asyncio
+async def test_redirect_hop_dns_failure_negatively_cached(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A redirect hop whose host fails to resolve is an upstream failure.
+
+    ``socket.gaierror`` is not an ``httpx.HTTPError``, so an unconverted
+    resolution failure would escape the cold-miss path's handler as a 500
+    with no negative-cache row, leaving the origin chain to be re-walked on
+    every request. It must land in the same 502-and-negatively-cache
+    treatment as any other hop the guard refuses.
+    """
+    retired = "https://retired.example.com/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": retired})
+    )
+    retired_route = respx_mock.get(retired).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    async def resolve(host: str) -> list[str]:
+        if host == "retired.example.com":
+            raise socket.gaierror(
+                socket.EAI_NONAME, "Name or service not known"
+            )
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible,
+    # mirroring how the handler commits the failure path.
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    # The unresolvable hop is never fetched.
+    assert retired_route.call_count == 0
+
+    stored = await factory.create_intersphinx_inventory_store().get_inventory(
+        INVENTORY_URL
+    )
+    assert stored is not None
+    assert stored.content is None
+    assert stored.last_fetch_status is InventoryFetchStatus.failure
+    assert stored.last_fetch_error is not None
+    assert "redirected" in stored.last_fetch_error
+
+
+@pytest.mark.asyncio
+async def test_malformed_redirect_location_negatively_cached(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A ``Location`` that is not a parseable URL is an upstream failure.
+
+    httpx builds a redirect request for any 3xx carrying a ``Location``
+    even with ``follow_redirects=False``, so a non-numeric port is reported
+    as an ``httpx.RemoteProtocolError`` from the request itself rather than
+    reaching this service's own join. Either way it must be a negatively
+    cached 502, never an unhandled exception.
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            302, headers={"Location": "https://docs.example.com:notaport/x"}
+        )
+    )
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible,
+    # mirroring how the handler commits the failure path.
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    stored = await factory.create_intersphinx_inventory_store().get_inventory(
+        INVENTORY_URL
+    )
+    assert stored is not None
+    assert stored.content is None
+    assert stored.last_fetch_status is InventoryFetchStatus.failure
+    assert stored.last_fetch_error is not None
+
+
+def test_join_redirect_url_rejects_unparseable_location() -> None:
+    """The redirect join converts an unparseable target to an upstream error.
+
+    A ``Location`` httpx itself refuses never reaches this join, so this is
+    the backstop for the residue httpx does accept — a relative target that
+    only overflows the URL length limit once joined, say — and for httpx
+    ever moving that validation. ``httpx.InvalidURL`` is not an
+    ``httpx.HTTPError``, so without the conversion such a target would
+    escape both fetch paths' handlers.
+    """
+    with pytest.raises(httpx.HTTPError, match="malformed URL"):
+        intersphinx_service._join_redirect_url(
+            INVENTORY_URL, "https://docs.example.com:notaport/x"
+        )
+
+
+@pytest.mark.asyncio
+async def test_requested_url_dns_failure_rejected_as_invalid(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A requested URL whose host fails to resolve is a bad client request.
+
+    Unlike a hop upstream chose, the client picked this hostname and can
+    fix it, so the guard's existing 400 rejection covers it rather than the
+    502 an upstream failure gets.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    async def resolve(host: str) -> list[str]:
+        raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(InvalidInventoryUrlError):
+        await service.get_inventory(INVENTORY_URL)
+
+    assert route.call_count == 0
+
+
+@pytest.mark.asyncio
 async def test_redirect_loop_stops_at_hop_cap(
     factory: Factory,
     respx_mock: respx.Router,
@@ -797,6 +926,63 @@ async def test_redirect_loop_stops_at_hop_cap(
     )
     assert stored is not None
     assert stored.content is None
+    assert stored.last_fetch_error == "Exceeded 20 redirects"
+
+
+@pytest.mark.asyncio
+async def test_hop_cap_reported_before_touching_the_next_target(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hop cap is reported without inspecting the target it rules out.
+
+    The hop that trips the cap points at a host that cannot be resolved, so
+    a cap enforced only after joining and guarding that target would report
+    the guard's failure — or, worse, whatever the resolver raised — for a
+    URL this fetch was never going to request. The failure a client sees
+    must depend on the hop count alone.
+    """
+    poison = "https://poison.example.com/objects.inv"
+    calls = 0
+
+    def respond(request: httpx.Request) -> Response:
+        nonlocal calls
+        calls += 1
+        location = (
+            poison
+            if calls > intersphinx_service._MAX_REDIRECTS
+            else INVENTORY_URL
+        )
+        return Response(302, headers={"Location": location})
+
+    route = respx_mock.get(INVENTORY_URL).mock(side_effect=respond)
+
+    resolved_hosts: list[str] = []
+
+    async def resolve(host: str) -> list[str]:
+        resolved_hosts.append(host)
+        if host == "poison.example.com":
+            raise socket.gaierror(
+                socket.EAI_NONAME, "Name or service not known"
+            )
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError, match="Exceeded 20 redirects"):
+        await service.get_inventory(INVENTORY_URL)
+
+    # One request per allowed hop, plus the one that trips the cap.
+    assert route.call_count == 21
+    # The ruled-out target is never joined, guarded, or resolved.
+    assert "poison.example.com" not in resolved_hosts
+
+    stored = await factory.create_intersphinx_inventory_store().get_inventory(
+        INVENTORY_URL
+    )
+    assert stored is not None
     assert stored.last_fetch_error == "Exceeded 20 redirects"
 
 
@@ -1121,6 +1307,104 @@ async def test_refresh_per_inventory_failure_does_not_abort_batch(
     async with factory.db_session.begin():
         store = factory.create_intersphinx_inventory_store()
         kept = await store.get_inventory(failing_url)
+    assert kept is not None
+    assert kept.content == b"kept payload"
+
+
+@pytest.mark.asyncio
+async def test_refresh_redirect_hop_dns_failure_skips_one_inventory(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hop that fails to resolve skips its inventory, not the whole batch.
+
+    The failing inventory is the stalest, so it is refreshed first: an
+    unconverted ``socket.gaierror`` would escape the per-inventory handler
+    and abort the run before the second inventory is ever attempted — and,
+    because the aborted row keeps its old ``date_fetched``, it would sort
+    first again on every later run and starve the rest of the cache.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    failing_url = "https://failing.example.com/objects.inv"
+    ok_url = "https://ok.example.com/objects.inv"
+    retired = "https://retired.example.com/objects.inv"
+    await _seed_stale_inventory(
+        factory,
+        failing_url,
+        content=b"kept payload",
+        date_fetched=now - timedelta(hours=3),
+        date_requested=now - timedelta(days=1),
+    )
+    await _seed_stale_inventory(
+        factory,
+        ok_url,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    respx_mock.get(failing_url).mock(
+        return_value=Response(302, headers={"Location": retired})
+    )
+    ok_route = respx_mock.get(ok_url).mock(return_value=Response(304))
+
+    async def resolve(host: str) -> list[str]:
+        if host == "retired.example.com":
+            raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure")
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
+
+    assert summary.failed == 1
+    assert summary.revalidated == 1
+    # The rest of the batch ran despite the first inventory's failure.
+    assert ok_route.call_count == 1
+
+    # The failing inventory keeps its stored content for stale serving.
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        kept = await store.get_inventory(failing_url)
+    assert kept is not None
+    assert kept.content == b"kept payload"
+
+
+@pytest.mark.asyncio
+async def test_refresh_malformed_redirect_location_counts_as_failure(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A malformed ``Location`` on the refresh path fails just that
+    inventory.
+
+    Its stored copy is left untouched so it keeps serving stale, exactly as
+    for any other upstream misbehavior.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        content=b"kept payload",
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            301, headers={"Location": "https://docs.example.com:notaport/x"}
+        )
+    )
+
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
+
+    assert summary.failed == 1
+    assert summary.refreshed == 0
+    assert summary.revalidated == 0
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        kept = await store.get_inventory(INVENTORY_URL)
     assert kept is not None
     assert kept.content == b"kept payload"
 

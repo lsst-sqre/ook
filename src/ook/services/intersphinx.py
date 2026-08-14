@@ -89,8 +89,22 @@ class _TooManyRedirectsError(httpx.HTTPError):
     """
 
 
+class _InvalidRedirectError(httpx.HTTPError):
+    """An origin's ``Location`` header could not be resolved to a URL.
+
+    An ``httpx.HTTPError`` for the same reason as `_TooManyRedirectsError`:
+    a ``Location`` the client never chose is upstream's misbehavior, so it
+    surfaces as a 502 and is negatively cached rather than escaping as an
+    unhandled error.
+    """
+
+
 class _UnsafeRedirectError(httpx.HTTPError):
     """A redirect hop's target failed the SSRF guard.
+
+    Covers every way the guard can refuse a hop, including a host that will
+    not resolve at all: the guard reports those as rejections so no
+    resolver failure escapes as something other than an upstream failure.
 
     Distinct from `InvalidInventoryUrlError`, which reports a URL the
     *client* asked for and can fix. A hop chosen by upstream is upstream's
@@ -166,8 +180,12 @@ class IntersphinxCacheService:
     upstream ``Location`` and a redirect loop terminates), each request
     carries an explicit timeout, and the terminal response body is streamed
     under a size cap so an oversized inventory is abandoned rather than
-    buffered into memory. An oversized response, an over-long chain, and a
-    hop rejected by the guard are all treated as upstream fetch failures.
+    buffered into memory. An oversized response, an over-long chain, an
+    unusable ``Location``, and a hop the guard rejects — including one whose
+    host will not resolve — are all treated as upstream fetch failures, so
+    every way a chain can fail lands in the same negative-cache-and-502
+    treatment on the request path and the same skip-one-inventory treatment
+    on the refresh path.
 
     When a fetch does redirect, its terminal URL and whether every hop was
     permanent are stored on the row, so a permanently-moved inventory URL
@@ -574,16 +592,19 @@ class IntersphinxCacheService:
             Raised when the terminal response body, by its
             ``Content-Length`` or by its streamed size, exceeds the
             configured cap.
+        _InvalidRedirectError
+            Raised when a hop's ``Location`` cannot be resolved to a URL.
         _TooManyRedirectsError
             Raised when the chain exceeds `_MAX_REDIRECTS` hops.
         _UnsafeRedirectError
-            Raised when a redirect hop's target fails the SSRF guard.
+            Raised when a redirect hop's target fails the SSRF guard,
+            including when its host cannot be resolved.
         httpx.HTTPError
             Propagated from the transport on a timeout or connection error.
         """
         current_url = url
         hops: list[int] = []
-        for _ in range(_MAX_REDIRECTS + 1):
+        while True:
             async with self._http_client.stream(
                 "GET",
                 current_url,
@@ -602,14 +623,21 @@ class IntersphinxCacheService:
                     return _InventoryFetch(
                         response, content, current_url, hops
                     )
+                if len(hops) >= _MAX_REDIRECTS:
+                    # Give up on the hop count alone, before joining or
+                    # guarding a target this fetch will never request, so
+                    # the reported failure never depends on a URL already
+                    # ruled out.
+                    raise _TooManyRedirectsError(
+                        f"Exceeded {_MAX_REDIRECTS} redirects"
+                    )
                 hops.append(response.status_code)
-                next_url = str(httpx.URL(current_url).join(location))
+                next_url = _join_redirect_url(current_url, location)
             # Guard outside the stream context so the hop's connection is
             # released — and its body left unread — before the guard's DNS
             # lookup and the next hop's request.
             await self._guard_redirect_url(next_url)
             current_url = next_url
-        raise _TooManyRedirectsError(f"Exceeded {_MAX_REDIRECTS} redirects")
 
     def _check_content_length(self, response: httpx.Response) -> None:
         """Abort before reading the body if ``Content-Length`` is over cap."""
@@ -701,8 +729,9 @@ class IntersphinxCacheService:
         Raises
         ------
         InvalidInventoryUrlError
-            Raised if the URL uses a non-``https`` scheme or its host
-            resolves to a non-public address.
+            Raised if the URL uses a non-``https`` scheme, its host cannot
+            be resolved at all, or its host resolves to a non-public
+            address.
         """
         parts = urlsplit(url)
         if parts.scheme != "https":
@@ -717,7 +746,20 @@ class IntersphinxCacheService:
             addresses = [ipaddress.ip_address(host)]
         except ValueError:
             # Not an IP literal: resolve the hostname to its addresses.
-            resolved = list(await self._resolve_host(host))
+            try:
+                resolved = list(await self._resolve_host(host))
+            except (OSError, UnicodeError) as exc:
+                # getaddrinfo reports a retired hostname or a transient DNS
+                # failure as socket.gaierror (an OSError) and a host label
+                # IDNA cannot encode as UnicodeEncodeError. Neither is an
+                # httpx.HTTPError, so left to propagate they escape both
+                # fetch paths' handlers; a rejection here keeps every
+                # resolution failure inside the guard's own taxonomy, which
+                # the redirect-hop wrapper then re-raises as an upstream
+                # failure.
+                self._reject_url(
+                    url, f"Host {host!r} could not be resolved: {exc}"
+                )
             addresses = [ipaddress.ip_address(a) for a in resolved]
         if not addresses:
             self._reject_url(
@@ -751,8 +793,9 @@ class IntersphinxCacheService:
         Raises
         ------
         _UnsafeRedirectError
-            Raised if the hop target uses a non-``https`` scheme or its host
-            resolves to a non-public address.
+            Raised if the hop target uses a non-``https`` scheme, its host
+            cannot be resolved, or its host resolves to a non-public
+            address.
         """
         try:
             await self._guard_url(url)
@@ -769,6 +812,33 @@ class IntersphinxCacheService:
             reason=reason,
         )
         raise InvalidInventoryUrlError(reason)
+
+
+def _join_redirect_url(current_url: str, location: str) -> str:
+    """Resolve a redirect's ``Location`` against the hop that sent it.
+
+    httpx builds a redirect request for every 3xx carrying a ``Location``,
+    even with ``follow_redirects=False``, and reports a ``Location`` it
+    cannot parse as an ``httpx.RemoteProtocolError`` before the response is
+    ever returned — so in practice this join only sees targets httpx has
+    already accepted. This conversion is the backstop for the residue (a
+    relative target that overflows the URL length limit only once joined)
+    and for that httpx behavior changing: ``httpx.InvalidURL`` is not an
+    ``httpx.HTTPError``, so an unconverted join failure would escape both
+    fetch paths' handlers instead of being negatively cached as an upstream
+    failure.
+
+    Raises
+    ------
+    _InvalidRedirectError
+        Raised when the ``Location`` cannot be resolved to a valid URL.
+    """
+    try:
+        return str(httpx.URL(current_url).join(location))
+    except (httpx.InvalidURL, UnicodeError) as exc:
+        raise _InvalidRedirectError(
+            f"Upstream redirected the inventory to a malformed URL: {exc}"
+        ) from exc
 
 
 async def _default_resolve_host(host: str) -> Sequence[str]:
@@ -800,7 +870,8 @@ def _describe_upstream_error(error: httpx.HTTPError) -> str:
         error,
         _InventoryTooLargeError
         | _TooManyRedirectsError
-        | _UnsafeRedirectError,
+        | _UnsafeRedirectError
+        | _InvalidRedirectError,
     ):
         return str(error)
     if isinstance(error, httpx.HTTPStatusError):
