@@ -13,6 +13,7 @@ import respx
 import structlog
 from httpx import Response
 from safir.database import create_async_session, create_database_engine
+from structlog.testing import capture_logs
 
 from ook.config import config
 from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
@@ -798,6 +799,94 @@ async def test_redirect_hop_to_private_address_rejected(
     assert stored.last_fetch_status is InventoryFetchStatus.failure
     assert stored.last_fetch_error is not None
     assert "redirected" in stored.last_fetch_error
+
+
+@pytest.mark.asyncio
+async def test_rejected_redirect_hop_detail_omits_resolution(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rejected hop's served detail names no host and no address.
+
+    The detail is stored on the negative-cache row and replayed in the 502
+    body to every client for the whole negative-TTL window, so an origin
+    that redirects to an internal cluster name must not turn Ook's own DNS
+    view into a client-visible oracle.
+    """
+    internal = "https://internal.example.com/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": internal})
+    )
+    respx_mock.get(internal).mock(
+        return_value=Response(200, content=b"internal secrets")
+    )
+
+    async def resolve(host: str) -> list[str]:
+        return (
+            ["10.0.0.1"]
+            if host == "internal.example.com"
+            else ["93.184.216.34"]
+        )
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible,
+    # mirroring how the handler commits the failure path.
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError) as raised:
+        await service.get_inventory(INVENTORY_URL)
+
+    detail = "Upstream redirected the inventory to a disallowed target"
+    assert str(raised.value) == detail
+
+    stored = await factory.create_intersphinx_inventory_store().get_inventory(
+        INVENTORY_URL
+    )
+    assert stored is not None
+    assert stored.last_fetch_error == detail
+
+
+@pytest.mark.asyncio
+async def test_rejected_redirect_hop_logs_the_specific_reason(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rejection an operator needs is logged, not served.
+
+    One record has to carry both halves: the URL the client asked for —
+    which is all the generic served detail and the negative-cache row name —
+    and the hop that was refused with the guard's specific reason.
+    """
+    internal = "https://internal.example.com/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": internal})
+    )
+    respx_mock.get(internal).mock(
+        return_value=Response(200, content=b"internal secrets")
+    )
+
+    async def resolve(host: str) -> list[str]:
+        return (
+            ["10.0.0.1"]
+            if host == "internal.example.com"
+            else ["93.184.216.34"]
+        )
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    service = factory.create_intersphinx_cache_service()
+    with capture_logs() as logs, pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    hop_records = [record for record in logs if record.get("hop_url")]
+    assert len(hop_records) == 1
+    record = hop_records[0]
+    assert record["url"] == INVENTORY_URL
+    assert record["hop_url"] == internal
+    assert "10.0.0.1" in record["reason"]
+    assert record["log_level"] == "warning"
 
 
 @pytest.mark.asyncio

@@ -113,6 +113,22 @@ class _InvalidRedirectError(httpx.HTTPError):
     """
 
 
+_UNSAFE_REDIRECT_DETAIL = (
+    "Upstream redirected the inventory to a disallowed target"
+)
+"""Client-facing detail for a redirect hop the SSRF guard refused.
+
+Deliberately says nothing about *why* the guard refused. The guard's reason
+names the hop's host and, for the non-public-address rejection, what that
+host resolves to *from inside the cluster* — and a redirect-hop rejection's
+detail is not a transient message to one client: it is stored on the
+negative-cache row and replayed in the 502 body to every client for the
+whole negative-TTL window. An origin that redirects to an internal name
+would otherwise publish Ook's own DNS view. The specific reason is logged
+instead, where operators can read it and clients cannot.
+"""
+
+
 class _UnsafeRedirectError(httpx.HTTPError):
     """A redirect hop's target failed the SSRF guard.
 
@@ -200,7 +216,10 @@ class IntersphinxCacheService:
     rejects — including one whose host will not resolve — are all treated as
     upstream fetch failures, so every way a chain can fail lands in the same
     negative-cache-and-502 treatment on the request path and the same
-    skip-one-inventory treatment on the refresh path.
+    skip-one-inventory treatment on the refresh path. A guard-rejected hop's
+    stored and served detail is deliberately generic; the guard's specific
+    reason, which would report Ook's own resolution of an upstream-chosen
+    host, is logged rather than replayed to clients.
 
     When a fetch does redirect, its terminal URL and whether every hop was
     permanent are stored on the row, so a permanently-moved inventory URL
@@ -757,7 +776,9 @@ class IntersphinxCacheService:
             # Guard outside the stream context so the hop's connection is
             # released — and its body left unread — before the guard's DNS
             # lookup and the next hop's request.
-            await self._guard_redirect_url(next_url, deadline=deadline)
+            await self._guard_redirect_url(
+                next_url, requested_url=url, deadline=deadline
+            )
             current_url = next_url
 
     def _remaining_budget(self, deadline: float) -> float:
@@ -938,7 +959,9 @@ class IntersphinxCacheService:
                     f" {address}",
                 )
 
-    async def _guard_redirect_url(self, url: str, *, deadline: float) -> None:
+    async def _guard_redirect_url(
+        self, url: str, *, requested_url: str, deadline: float
+    ) -> None:
         """Run the SSRF guard on a redirect hop's target, inside the budget.
 
         Same check as `_guard_url`, but a rejection is re-raised as an
@@ -946,6 +969,12 @@ class IntersphinxCacheService:
         the requested URL was valid and upstream chose this hop, so it is
         an upstream failure (502, negatively cached) rather than a bad
         client request (400).
+
+        The rejection carries `_UNSAFE_REDIRECT_DETAIL`, which says nothing
+        about the hop or why it was refused, so the reason is logged here
+        instead — in one record naming both halves, since the served detail
+        and the negative-cache row now name only the requested URL while the
+        guard's own rejection log names only the hop.
 
         The guard's own resolver has no timeout, so the lookup is bounded by
         whatever is left of the fetch's time budget: a chain can point at as
@@ -968,9 +997,13 @@ class IntersphinxCacheService:
         except TimeoutError as exc:
             raise self._deadline_error() from exc
         except InvalidInventoryUrlError as exc:
-            raise _UnsafeRedirectError(
-                f"Upstream redirected the inventory to a rejected URL: {exc}"
-            ) from exc
+            self._logger.warning(
+                "Rejected an intersphinx inventory redirect hop",
+                url=requested_url,
+                hop_url=url,
+                reason=str(exc),
+            )
+            raise _UnsafeRedirectError(_UNSAFE_REDIRECT_DETAIL) from exc
 
     def _reject_url(self, url: str, reason: str) -> NoReturn:
         """Log a guard rejection and raise ``InvalidInventoryUrlError``."""
