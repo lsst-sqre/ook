@@ -334,11 +334,14 @@ class IntersphinxCacheService:
         Each inventory past the freshness TTL that a client requested within
         the active window is revalidated with a conditional GET carrying its
         stored ``ETag`` (as ``If-None-Match``) and ``Last-Modified`` (as
-        ``If-Modified-Since``). A ``304 Not Modified`` keeps the stored
-        content and bumps ``date_fetched``; a ``200`` replaces the content
-        and validators. Inventories requested longer ago than the active
-        window are skipped, not deleted — a new client request reactivates
-        them via ``date_requested``.
+        ``If-Modified-Since``). A ``304 Not Modified`` from the terminal the
+        stored copy came from keeps the stored content and bumps
+        ``date_fetched``; a ``200`` replaces the content and validators. A
+        ``304`` from anywhere else is not a revalidation of this copy at all
+        and forces an unconditional re-fetch — see `_revalidate`.
+        Inventories requested longer ago than the active window are skipped,
+        not deleted — a new client request reactivates them via
+        ``date_requested``.
 
         A per-inventory failure (SSRF guard rejection, upstream 4xx/5xx,
         timeout, connection error) is logged and skipped, and the rest of the
@@ -445,7 +448,7 @@ class IntersphinxCacheService:
     async def _refresh_one(
         self, inventory: IntersphinxInventory, *, now: datetime
     ) -> bool:
-        """Revalidate one cached inventory with a conditional GET.
+        """Revalidate one cached inventory against its origin.
 
         Returns True when a ``304`` revalidated the stored copy in place and
         False when a ``200`` replaced its content. Raises on a guard
@@ -457,12 +460,7 @@ class IntersphinxCacheService:
         # first cached, but DNS can rebind a once-public host to a private
         # address, so the cheap re-check preserves the SSRF invariant.
         await self._guard_url(inventory.url)
-        headers: dict[str, str] = {}
-        if inventory.etag is not None:
-            headers["If-None-Match"] = inventory.etag
-        if inventory.last_modified is not None:
-            headers["If-Modified-Since"] = inventory.last_modified
-        fetch = await self._fetch_inventory(inventory.url, headers=headers)
+        fetch = await self._revalidate(inventory)
         response = fetch.response
         if response.status_code == 304:
             # Write only the refresh-outcome columns so a client request that
@@ -522,6 +520,62 @@ class IntersphinxCacheService:
             redirect_hops=len(fetch.redirect_hops),
         )
         return False
+
+    async def _revalidate(
+        self, inventory: IntersphinxInventory
+    ) -> _InventoryFetch:
+        """Fetch one cached inventory conditionally, but only where it holds.
+
+        The conditional request carries the stored ``ETag`` (as
+        ``If-None-Match``) and ``Last-Modified`` (as ``If-Modified-Since``),
+        but those validators were minted by the terminal of the chain
+        observed at the *last* fetch, and nothing pins the chain in place:
+        upstream can re-point an alias at a different resource between
+        refreshes. Replaying them blind is what lets a moved chain answer a
+        false 304 that marks the wrong bytes fresh forever, so a 304 is
+        trusted only when it came from the same terminal the stored copy was
+        fetched from. Otherwise the 304 validated some other resource and
+        the new terminal is re-fetched unconditionally — the whole chain is
+        re-walked from the requested URL, so the terminal and hop record
+        stored alongside the new content describe the chain that actually
+        produced it.
+
+        `_fetch_inventory` complements this by dropping
+        ``If-Modified-Since`` once a hop has redirected, which heads off the
+        common case; this check covers the rest, where a strong validator
+        survives the chain (`If-None-Match` is kept per RFC 9110 §13.1.3)
+        and the moved terminal happens to answer 304 to it.
+        """
+        headers: dict[str, str] = {}
+        if inventory.etag is not None:
+            headers["If-None-Match"] = inventory.etag
+        if inventory.last_modified is not None:
+            headers["If-Modified-Since"] = inventory.last_modified
+        fetch = await self._fetch_inventory(inventory.url, headers=headers)
+        # A row cached from a chain that did not redirect has no stored
+        # terminal, so the requested URL is the terminal its content came
+        # from.
+        stored_terminal = inventory.resolved_url or inventory.url
+        if (
+            fetch.response.status_code != 304
+            or fetch.final_url == stored_terminal
+        ):
+            return fetch
+        self._logger.info(
+            "Discarding intersphinx revalidation from a moved chain",
+            url=inventory.url,
+            cache_status="refetch",
+            stored_url=stored_terminal,
+            final_url=fetch.final_url,
+        )
+        fetch = await self._fetch_inventory(inventory.url)
+        if fetch.response.status_code == 304:
+            # An unconditional request carries nothing to revalidate
+            # against, so a 304 answering one is upstream misbehavior, not a
+            # revalidation. Report it as the upstream failure it is rather
+            # than accepting the very 304 this method just refused.
+            fetch.response.raise_for_status()
+        return fetch
 
     def _is_negative_cache_fresh(self, cached: IntersphinxInventory) -> bool:
         """Return whether a cached row is a live negative-cache entry.
@@ -625,7 +679,14 @@ class IntersphinxCacheService:
         rather than fully buffered.
 
         The conditional-request headers, if any, are re-sent on every hop so
-        a chain ending in a ``304 Not Modified`` still revalidates.
+        a chain ending in a ``304 Not Modified`` still revalidates — except
+        ``If-Modified-Since``, which is dropped as soon as a hop redirects.
+        A modification date is only meaningful against the resource it was
+        read from, and once the chain has moved the terminal may be an
+        entirely different — possibly older — resource, which would answer
+        a false ``304``. ``If-None-Match`` is kept: a strong validator stays
+        trustworthy wherever the chain lands, and RFC 9110 §13.1.3 gives it
+        precedence regardless.
 
         The whole chain runs against a single time budget of
         ``request_timeout``, taken from the monotonic clock when the fetch
@@ -657,12 +718,13 @@ class IntersphinxCacheService:
         """
         deadline = time.monotonic() + self._request_timeout
         current_url = url
+        request_headers = headers or {}
         hops: list[int] = []
         while True:
             async with self._http_client.stream(
                 "GET",
                 current_url,
-                headers=headers or {},
+                headers=request_headers,
                 follow_redirects=False,
                 timeout=self._remaining_budget(deadline),
             ) as response:
@@ -689,6 +751,9 @@ class IntersphinxCacheService:
                     )
                 hops.append(response.status_code)
                 next_url = _join_redirect_url(current_url, location)
+            # Past a redirect the request is no longer aimed at the URL the
+            # stored modification date was minted for, so stop sending it.
+            request_headers = _without_if_modified_since(request_headers)
             # Guard outside the stream context so the hop's connection is
             # released — and its body left unread — before the guard's DNS
             # lookup and the next hop's request.
@@ -942,6 +1007,20 @@ def _join_redirect_url(current_url: str, location: str) -> str:
         raise _InvalidRedirectError(
             f"Upstream redirected the inventory to a malformed URL: {exc}"
         ) from exc
+
+
+def _without_if_modified_since(headers: dict[str, str]) -> dict[str, str]:
+    """Return the headers with any ``If-Modified-Since`` removed.
+
+    A copy rather than a mutation, so the caller's header dict — reused
+    across a retried fetch — is never edited from under it. The match is
+    case-insensitive because HTTP field names are.
+    """
+    return {
+        name: value
+        for name, value in headers.items()
+        if name.lower() != "if-modified-since"
+    }
 
 
 async def _default_resolve_host(host: str) -> Sequence[str]:

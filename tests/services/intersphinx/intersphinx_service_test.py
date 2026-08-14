@@ -1296,8 +1296,10 @@ async def test_refresh_304_records_chain_from_this_revalidation(
     """A 304 records the chain walked during that revalidation.
 
     The 304 says the *content* is unchanged, which says nothing about the
-    chain: the row was cached with no redirect at all, and this
-    revalidation went through a permanent one.
+    chain: the row was cached from a temporary chain and this revalidation
+    reached the same terminal through a permanent one. The terminal is
+    unmoved, so the 304 is trusted and only the chain's permanence is
+    rewritten.
     """
     now = datetime.now(tz=UTC).replace(microsecond=0)
     terminal = "https://docs.example.com/en/21/objects.inv"
@@ -1306,6 +1308,8 @@ async def test_refresh_304_records_chain_from_this_revalidation(
         INVENTORY_URL,
         date_fetched=now - timedelta(hours=2),
         date_requested=now - timedelta(days=1),
+        resolved_url=terminal,
+        resolved_redirect_permanent=False,
     )
     respx_mock.get(INVENTORY_URL).mock(
         return_value=Response(301, headers={"Location": terminal})
@@ -1368,6 +1372,70 @@ async def test_refresh_updates_resolved_url_when_chain_changes(
     assert stored.resolved_url == new_terminal
     # The new chain is temporary, so the stored permanence flips too.
     assert stored.resolved_redirect_permanent is False
+
+
+@pytest.mark.asyncio
+async def test_refresh_304_from_a_moved_terminal_forces_a_refetch(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A 304 from a re-pointed chain refetches instead of keeping content.
+
+    The stored validators were minted by the *previous* chain's terminal, so
+    a 304 answered by a different terminal validated a different resource
+    than the one the cache holds. Keeping the stored bytes would mark the
+    wrong content fresh while ``resolved_url`` named the new terminal, and
+    the unchanged validators would draw the same false 304 on every
+    subsequent run, so it would never self-heal.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    old_terminal = "https://docs.example.com/en/21/objects.inv"
+    new_terminal = "https://docs.example.com/en/20/objects.inv"
+    new_body = b"# Sphinx inventory version 2\nv20 payload"
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+        resolved_url=old_terminal,
+        resolved_redirect_permanent=False,
+    )
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": new_terminal})
+    )
+
+    conditional_requests: list[bool] = []
+
+    def respond(request: httpx.Request) -> Response:
+        # The re-pointed terminal answers a false 304 to any conditional
+        # request, which is the trap this guard exists to break.
+        is_conditional = "if-none-match" in request.headers
+        conditional_requests.append(is_conditional)
+        if is_conditional:
+            return Response(304)
+        return Response(200, content=new_body, headers={"ETag": '"v20-etag"'})
+
+    terminal_route = respx_mock.get(new_terminal).mock(side_effect=respond)
+
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
+
+    # The false 304 is discarded and the new terminal is re-fetched
+    # unconditionally, so the second request carries no validators.
+    assert terminal_route.call_count == 2
+    assert conditional_requests == [True, False]
+    assert summary.refreshed == 1
+    assert summary.revalidated == 0
+    assert summary.failed == 0
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert stored.content == new_body
+    assert stored.etag == '"v20-etag"'
+    assert stored.resolved_url == new_terminal
+    assert stored.date_fetched == now
 
 
 @pytest.mark.asyncio
@@ -1793,15 +1861,20 @@ async def test_refresh_commits_each_inventory_independently(
 
 
 @pytest.mark.asyncio
-async def test_refresh_follows_redirect_with_conditional_headers(
+async def test_refresh_drops_if_modified_since_across_a_redirect(
     factory: Factory,
     respx_mock: respx.Router,
 ) -> None:
-    """A refresh follows a chain with its conditional headers intact.
+    """A refresh keeps ``If-None-Match`` across a chain but drops the date.
 
-    Every hop re-sends ``If-None-Match`` / ``If-Modified-Since``, so a
-    ``304`` at the end of the chain still revalidates the stored copy in
-    place rather than re-downloading it.
+    A strong validator stays trustworthy wherever the chain lands (RFC 9110
+    §13.1.3 puts ``If-None-Match`` ahead of ``If-Modified-Since`` anyway),
+    but a stored modification date compared against a terminal the chain has
+    since been re-pointed at is what lets an *older* resource answer a false
+    304. So the date is sent only while the request is still aimed at the
+    URL it was minted for, and a ``304`` at the end of an unmoved chain
+    still revalidates the stored copy in place rather than re-downloading
+    it.
     """
     now = datetime.now(tz=UTC).replace(microsecond=0)
     terminal = "https://docs.example.com/en/21/objects.inv"
@@ -1810,6 +1883,8 @@ async def test_refresh_follows_redirect_with_conditional_headers(
         INVENTORY_URL,
         date_fetched=now - timedelta(hours=2),
         date_requested=now - timedelta(days=1),
+        resolved_url=terminal,
+        resolved_redirect_permanent=True,
     )
 
     seen: list[dict[str, str]] = []
@@ -1829,14 +1904,14 @@ async def test_refresh_follows_redirect_with_conditional_headers(
     assert terminal_route.call_count == 1
     assert summary.revalidated == 1
     assert summary.failed == 0
-    # Both the redirecting hop and the terminal request carry the stored
-    # validators, so the 304 is a genuine revalidation of the stored copy.
     assert len(seen) == 2
-    for headers in seen:
-        assert headers.get("if-none-match") == '"stored-etag"'
-        assert (
-            headers.get("if-modified-since") == "Wed, 01 Jan 2025 00:00:00 GMT"
-        )
+    # The requested URL is what the stored validators were minted for, so
+    # the first hop carries both of them.
+    assert seen[0].get("if-none-match") == '"stored-etag"'
+    assert seen[0].get("if-modified-since") == "Wed, 01 Jan 2025 00:00:00 GMT"
+    # Past the redirect, only the strong validator survives.
+    assert seen[1].get("if-none-match") == '"stored-etag"'
+    assert "if-modified-since" not in seen[1]
 
     async with factory.db_session.begin():
         store = factory.create_intersphinx_inventory_store()
@@ -1886,6 +1961,8 @@ async def test_refresh_logs_terminal_url_and_hop_count(
         INVENTORY_URL,
         date_fetched=now - timedelta(hours=2),
         date_requested=now - timedelta(days=1),
+        resolved_url=terminal,
+        resolved_redirect_permanent=True,
     )
     respx_mock.get(INVENTORY_URL).mock(
         return_value=Response(301, headers={"Location": terminal})
