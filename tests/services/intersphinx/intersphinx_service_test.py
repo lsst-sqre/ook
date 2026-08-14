@@ -1630,6 +1630,20 @@ async def _seed_stale_inventory(
         )
 
 
+def _assert_stamped_at_write_time(
+    value: datetime | None, *, not_before: datetime
+) -> None:
+    """Assert a refresh outcome timestamp was taken when it was written.
+
+    The refresh job dates each row's outcome from the clock at write time
+    rather than from the reference time the run was called with, so the
+    assertion is a window: at or after the reference the test took before the
+    run, and no later than the moment it is checked.
+    """
+    assert value is not None
+    assert not_before <= value <= datetime.now(tz=UTC)
+
+
 @pytest.mark.asyncio
 async def test_refresh_304_keeps_content_and_bumps_fetch(
     factory: Factory,
@@ -1676,7 +1690,7 @@ async def test_refresh_304_keeps_content_and_bumps_fetch(
         stored = await store.get_inventory(INVENTORY_URL)
     assert stored is not None
     assert stored.content == INVENTORY_BODY
-    assert stored.date_fetched == now
+    _assert_stamped_at_write_time(stored.date_fetched, not_before=now)
     assert stored.last_fetch_status is InventoryFetchStatus.success
 
 
@@ -1827,7 +1841,7 @@ async def test_refresh_304_from_a_moved_terminal_forces_a_refetch(
     assert stored.content == new_body
     assert stored.etag == '"v20-etag"'
     assert stored.resolved_url == new_terminal
-    assert stored.date_fetched == now
+    _assert_stamped_at_write_time(stored.date_fetched, not_before=now)
 
 
 @pytest.mark.asyncio
@@ -1971,7 +1985,7 @@ async def test_refresh_200_replaces_content_and_validators(
     assert stored.content == new_body
     assert stored.etag == '"new-etag"'
     assert stored.last_modified == "Fri, 10 Jul 2026 00:00:00 GMT"
-    assert stored.date_fetched == now
+    _assert_stamped_at_write_time(stored.date_fetched, not_before=now)
 
 
 @pytest.mark.asyncio
@@ -2106,11 +2120,129 @@ async def test_refresh_failure_backs_off_until_the_next_interval(
         stored.last_fetch_error
         == "Upstream returned HTTP 500 for the inventory"
     )
-    assert stored.date_refresh_failed == now
+    _assert_stamped_at_write_time(stored.date_refresh_failed, not_before=now)
     # The stored copy is intact behind the failure, down to the freshness
     # anchor that dates its content.
     assert stored.content == b"kept payload"
     assert stored.date_fetched == fetched_at
+
+
+@pytest.mark.asyncio
+async def test_refresh_failure_marker_dates_the_attempt_not_the_batch(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """The backoff marker is stamped when the failure is written.
+
+    A refresh batch is serial and each failing inventory can spend the whole
+    fetch budget, so a run can be minutes long. Stamping every failure with
+    the time the batch *started* would shorten each one's backoff by however
+    long the batch had already been running — under the hourly refresh
+    CronJob, enough to put a mid-batch failure back in the very next run's
+    due list, which is the retry storm the backoff exists to prevent.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    elapsed = timedelta(seconds=0.3)
+
+    async def slow_failure(request: httpx.Request) -> Response:
+        # Stand in for a batch that has been running a while by the time this
+        # inventory's fetch gives up.
+        await asyncio.sleep(elapsed.total_seconds())
+        return Response(500)
+
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    respx_mock.get(INVENTORY_URL).mock(side_effect=slow_failure)
+
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
+
+    assert summary.failed == 1
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert stored.date_refresh_failed is not None
+    assert stored.date_refresh_failed >= now + elapsed
+
+
+@pytest.mark.asyncio
+async def test_refresh_failure_leaves_a_concurrently_refreshed_row_alone(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A failure write is dropped when the row changed under the batch.
+
+    A negative-cache row that ages into the due list is servable again by a
+    client cold miss, and that miss can succeed while the refresh job's own
+    fetch is still failing. The failure write lands last, so without a guard
+    it would stamp a ``failure`` status and a backoff marker onto the fresh
+    content the client just stored.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    fresh_content = b"# Sphinx inventory version 2\nconcurrent payload"
+
+    async def concurrent_success(request: httpx.Request) -> Response:
+        # Stand in for the client cold miss that wins the race: commit good
+        # content on an independent session while the refresh fetch is still
+        # in flight.
+        engine = create_database_engine(
+            config.database_url, config.database_password
+        )
+        session = await create_async_session(engine)
+        store = IntersphinxInventoryStore(
+            session=session, logger=structlog.get_logger("test")
+        )
+        async with session.begin():
+            await store.upsert_inventory(
+                IntersphinxInventory(
+                    url=INVENTORY_URL,
+                    content=fresh_content,
+                    content_type="application/octet-stream",
+                    etag='"fresh-etag"',
+                    last_modified=None,
+                    date_fetched=now,
+                    date_requested=now,
+                    last_fetch_status=InventoryFetchStatus.success,
+                    last_fetch_error=None,
+                    date_refresh_failed=None,
+                )
+            )
+        await session.close()
+        await engine.dispose()
+        return Response(500)
+
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        content=None,
+        etag=None,
+        last_modified=None,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+        last_fetch_status=InventoryFetchStatus.failure,
+    )
+    respx_mock.get(INVENTORY_URL).mock(side_effect=concurrent_success)
+
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
+
+    assert summary.failed == 1
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    # The winning cold miss's row stands, cross-column invariants intact.
+    assert stored.content == fresh_content
+    assert stored.last_fetch_status is InventoryFetchStatus.success
+    assert stored.last_fetch_error is None
+    assert stored.date_refresh_failed is None
 
 
 @pytest.mark.asyncio
@@ -2134,7 +2266,9 @@ async def test_refresh_success_after_failure_restores_the_cadence(
 
     service = factory.create_intersphinx_cache_service()
     failed_run = await service.refresh_inventories(now=now)
-    # Once the backoff interval has elapsed the inventory is due again.
+    # Once the backoff interval has elapsed the inventory is due again. Only
+    # the run's cutoffs move forward; the row's own timestamps are still
+    # stamped from the real clock at write time.
     recovered_at = now + timedelta(hours=2)
     recovered_run = await service.refresh_inventories(now=recovered_at)
 
@@ -2147,7 +2281,7 @@ async def test_refresh_success_after_failure_restores_the_cadence(
         stored = await store.get_inventory(INVENTORY_URL)
     assert stored is not None
     assert stored.content == new_body
-    assert stored.date_fetched == recovered_at
+    _assert_stamped_at_write_time(stored.date_fetched, not_before=now)
     assert stored.last_fetch_status is InventoryFetchStatus.success
     assert stored.last_fetch_error is None
     assert stored.date_refresh_failed is None
@@ -2489,7 +2623,7 @@ async def test_refresh_commits_each_inventory_independently(
     assert stored_a is not None
     assert stored_a.content == new_a
     assert stored_b is not None
-    assert stored_b.date_fetched == now
+    _assert_stamped_at_write_time(stored_b.date_fetched, not_before=now)
 
 
 @pytest.mark.asyncio
@@ -2550,7 +2684,7 @@ async def test_refresh_drops_if_modified_since_across_a_redirect(
         stored = await store.get_inventory(INVENTORY_URL)
     assert stored is not None
     assert stored.content == INVENTORY_BODY
-    assert stored.date_fetched == now
+    _assert_stamped_at_write_time(stored.date_fetched, not_before=now)
 
 
 @pytest.mark.asyncio

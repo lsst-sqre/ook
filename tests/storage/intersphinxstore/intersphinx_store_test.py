@@ -457,8 +457,14 @@ async def test_update_refresh_failure_keeps_the_stored_copy(
         await store.upsert_inventory(seeded)
 
         detail = "Upstream returned HTTP 500 for the inventory"
-        await store.update_refresh_failure(url, now=now, error=detail)
+        recorded = await store.update_refresh_failure(
+            url,
+            now=now,
+            error=detail,
+            expected_date_fetched=seeded.date_fetched,
+        )
 
+        assert recorded is True
         stored = await store.get_inventory(url)
         assert stored == replace(
             seeded,
@@ -466,6 +472,103 @@ async def test_update_refresh_failure_keeps_the_stored_copy(
             last_fetch_error=detail,
             date_refresh_failed=now,
         )
+
+
+@pytest.mark.asyncio
+async def test_update_refresh_failure_skips_a_concurrently_updated_row(
+    factory: Factory,
+) -> None:
+    """A refresh failure does not write a row that changed since it was read.
+
+    A negative-cache row in the due list is by construction past its negative
+    TTL, so a client cold miss can fetch it successfully while the refresh
+    job's own fetch is still failing. Landing the failure write last would
+    leave fresh content behind a ``failure`` status, a stale error, and a
+    backoff marker — the cross-column shape the domain model rules out. The
+    optimistic guard on ``date_fetched`` makes the late write a no-op instead.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://docs.example.com/en/latest/objects.inv"
+
+        # The row as the due-list read saw it.
+        due_list_read = _make_inventory(
+            url,
+            content=None,
+            etag=None,
+            last_modified=None,
+            date_fetched=now - timedelta(hours=2),
+            date_requested=now - timedelta(days=1),
+            last_fetch_status=InventoryFetchStatus.failure,
+            last_fetch_error="Upstream request for the inventory timed out",
+        )
+        await store.upsert_inventory(due_list_read)
+
+        # A concurrent cold miss stores good content while the refresh job's
+        # fetch is still failing.
+        concurrent = replace(
+            due_list_read,
+            content=b"fresh payload",
+            etag='"fresh-etag"',
+            date_fetched=now,
+            date_requested=now,
+            last_fetch_status=InventoryFetchStatus.success,
+            last_fetch_error=None,
+        )
+        await store.upsert_inventory(concurrent)
+
+        recorded = await store.update_refresh_failure(
+            url,
+            now=now,
+            error="Upstream returned HTTP 500 for the inventory",
+            expected_date_fetched=due_list_read.date_fetched,
+        )
+
+        assert recorded is False
+        stored = await store.get_inventory(url)
+        assert stored == concurrent
+
+
+@pytest.mark.asyncio
+async def test_update_refresh_failure_matches_a_never_fetched_row(
+    factory: Factory,
+) -> None:
+    """The guard matches a row whose ``date_fetched`` is null.
+
+    ``date_fetched = NULL`` is a real state — a row a client requested but no
+    fetch has ever populated — so the guard has to compare it as a value
+    rather than through SQL's three-valued equality, which would never match
+    and would silently drop every such row's backoff.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://docs.example.com/en/latest/objects.inv"
+
+        await store.upsert_inventory(
+            _make_inventory(
+                url,
+                content=None,
+                etag=None,
+                last_modified=None,
+                date_fetched=None,
+                date_requested=now - timedelta(days=1),
+                last_fetch_status=None,
+            )
+        )
+
+        recorded = await store.update_refresh_failure(
+            url,
+            now=now,
+            error="Upstream returned HTTP 500 for the inventory",
+            expected_date_fetched=None,
+        )
+
+        assert recorded is True
+        stored = await store.get_inventory(url)
+        assert stored is not None
+        assert stored.date_refresh_failed == now
 
 
 @pytest.mark.asyncio

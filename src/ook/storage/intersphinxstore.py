@@ -132,8 +132,13 @@ class IntersphinxInventoryStore:
         await self._session.flush()
 
     async def update_refresh_failure(
-        self, url: str, *, now: datetime, error: str
-    ) -> None:
+        self,
+        url: str,
+        *,
+        now: datetime,
+        error: str,
+        expected_date_fetched: datetime | None,
+    ) -> bool:
         """Record a failed proactive refresh without touching the stored copy.
 
         This is the refresh path's failure write, the counterpart to
@@ -143,9 +148,21 @@ class IntersphinxInventoryStore:
         construction* rather than by guard: content, its validators, its
         resolved-redirect columns, and the ``date_fetched`` freshness anchor
         are all left as the last successful fetch wrote them. That is what
-        keeps the stored copy serving stale at its true reported age, and it
-        is also why a failure cannot clobber content a concurrent cold-miss
-        request stored between the due-list read and this write.
+        keeps the stored copy serving stale at its true reported age.
+
+        Leaving the other columns alone is not on its own enough under
+        concurrency, though, which is what ``expected_date_fetched`` is for.
+        A failing fetch can run for the whole request budget, and a row in
+        the due list is by construction stale — a negative-cache row there is
+        past its negative TTL too — so a client cold miss can fetch and
+        commit good content inside that window. Writing the failure columns
+        unconditionally afterwards would leave fresh content behind a
+        ``failure`` status, a stale error, and a backoff marker: exactly the
+        cross-column shape `IntersphinxInventory` rules out. Guarding on the
+        freshness anchor the refresh job read makes the late write a no-op
+        instead, the same spirit as `upsert_fetch_failure`'s
+        ``content IS NULL`` guard, and the row needs no backoff anyway
+        because the concurrent success already took it out of the due list.
 
         The marker is what backs the row off: `get_stale_active_inventories`
         holds a row out of the due list for a TTL after its last failure, so
@@ -158,13 +175,34 @@ class IntersphinxInventoryStore:
         url
             The URL of the inventory whose refresh failed.
         now
-            The time of the failed attempt.
+            The time of the failed attempt. This is the time the failure is
+            written, not the time the batch started: the marker's whole job
+            is to hold the row back for a TTL from *this* attempt, so a row
+            that fails deep into a long batch must not be backed off from the
+            batch's start.
         error
             A description of the failure, stored as ``last_fetch_error``.
+        expected_date_fetched
+            The row's ``date_fetched`` as the due-list read saw it. The write
+            is skipped when the row's current value differs, including when
+            either side is null — ``IS NOT DISTINCT FROM`` compares nulls as
+            values, since a never-fetched row is a real state the guard has
+            to be able to match.
+
+        Returns
+        -------
+        bool
+            True if the failure was recorded, False if the guard skipped the
+            write because the row changed since the due-list read.
         """
-        await self._session.execute(
+        result = await self._session.execute(
             update(SqlIntersphinxInventory)
-            .where(SqlIntersphinxInventory.url == url)
+            .where(
+                SqlIntersphinxInventory.url == url,
+                SqlIntersphinxInventory.date_fetched.is_not_distinct_from(
+                    expected_date_fetched
+                ),
+            )
             .values(
                 last_fetch_status=InventoryFetchStatus.failure.value,
                 last_fetch_error=error,
@@ -172,6 +210,7 @@ class IntersphinxInventoryStore:
             )
         )
         await self._session.flush()
+        return cast("CursorResult", result).rowcount > 0
 
     @staticmethod
     def _row_values(inventory: IntersphinxInventory) -> dict[str, object]:

@@ -440,6 +440,17 @@ class IntersphinxCacheService:
         counterpart to the request path: the request path never blocks on
         upstream because this job keeps the cache warm.
 
+        Every row's outcome is timestamped when it is written, not when the
+        batch started. The batch is serial and each inventory can spend the
+        whole fetch budget, so a run's own duration is unbounded by anything
+        but its inventory count; dating outcomes from the batch's start would
+        shave that duration off each row's next interval, and a failure deep
+        in a long run would be back in the very next run's due list. The
+        failure write is also guarded on the ``date_fetched`` the due-list
+        read saw, so it is dropped outright if a client cold miss refreshed
+        the row while this batch's fetch was failing — see
+        `IntersphinxInventoryStore.update_refresh_failure`.
+
         Unlike the rest of this service, which leaves transaction boundaries
         to its caller (the request handler commits `get_inventory` itself),
         this batch-job entry point owns its own commits and must be called
@@ -482,7 +493,7 @@ class IntersphinxCacheService:
         failed = 0
         for inventory in due:
             try:
-                was_revalidated = await self._refresh_one(inventory, now=now)
+                was_revalidated = await self._refresh_one(inventory)
             except (httpx.HTTPError, InvalidInventoryUrlError) as exc:
                 # Discard this inventory's pending write and leave the stored
                 # copy untouched so it keeps serving stale.
@@ -491,9 +502,15 @@ class IntersphinxCacheService:
                 detail = self._describe_refresh_error(exc, url=inventory.url)
                 # Record the failed attempt in its own transaction, so the
                 # inventory backs off instead of heading the due list again
-                # on the very next run.
-                await self._inventory_store.update_refresh_failure(
-                    inventory.url, now=now, error=detail
+                # on the very next run. Stamped now rather than at batch
+                # start, and guarded on the freshness anchor the due-list read
+                # saw, so the backoff runs from this attempt and a row a
+                # client refreshed under us is left alone.
+                recorded = await self._inventory_store.update_refresh_failure(
+                    inventory.url,
+                    now=datetime.now(tz=UTC),
+                    error=detail,
+                    expected_date_fetched=inventory.date_fetched,
                 )
                 await self._session.commit()
                 self._logger.warning(
@@ -501,6 +518,7 @@ class IntersphinxCacheService:
                     url=inventory.url,
                     cache_status="refresh-failure",
                     error=detail,
+                    backoff_recorded=recorded,
                 )
                 continue
             # Commit this inventory's outcome immediately so a later crash in
@@ -561,9 +579,7 @@ class IntersphinxCacheService:
         )
         return _UNSAFE_REFRESH_URL_DETAIL
 
-    async def _refresh_one(
-        self, inventory: IntersphinxInventory, *, now: datetime
-    ) -> bool:
+    async def _refresh_one(self, inventory: IntersphinxInventory) -> bool:
         """Revalidate one cached inventory against its origin.
 
         Returns True when a ``304`` revalidated the stored copy in place and
@@ -579,6 +595,12 @@ class IntersphinxCacheService:
         rather than stalling the serial batch behind it. The database writes
         below deliberately sit outside the budget: they are this inventory's
         recorded outcome and must not be cancelled by it.
+
+        ``date_fetched`` is read after the fetch rather than taken from the
+        batch's reference time: the batch is serial and each inventory can
+        spend the whole fetch budget, so a run is as long as its slowest
+        origins make it, and dating a copy from the batch's start would
+        report it older than it is by however long the batch had run.
         """
         async with self._fetch_budget() as deadline:
             # Re-guard the stored URL before fetching: it passed the guard
@@ -594,7 +616,7 @@ class IntersphinxCacheService:
         # changed content on top of this.
         outcome = replace(
             inventory,
-            date_fetched=now,
+            date_fetched=datetime.now(tz=UTC),
             last_fetch_status=InventoryFetchStatus.success,
             last_fetch_error=None,
             # A 304 says the content is unchanged, which says nothing about
