@@ -552,17 +552,20 @@ async def test_no_permanent_redirect_header_for_temporary_chain(
     client: AsyncClient,
     respx_mock: respx.Router,
 ) -> None:
-    """A chain with a temporary hop gets no header, on a 200 or a 304.
+    """An all-temporary chain gets no header, on a 200 or a 304.
 
     This is the SQLAlchemy shape: an all-302 chain whose ``latest`` alias
     legitimately moves, so the requested URL is still the right one to ask
-    for and there is nothing for a doc author to fix.
+    for and there is nothing for a doc author to fix. The mixed
+    permanent-then-temporary shape is covered by ``is_permanent_chain``'s
+    own tests.
     """
+    temporary_hop = "https://docs.example.com/en/rolling/objects.inv"
     temporary_terminal = "https://docs.example.com/en/21/objects.inv"
     respx_mock.get(INVENTORY_URL).mock(
-        return_value=Response(301, headers={"Location": PERMANENT_HOP})
+        return_value=Response(302, headers={"Location": temporary_hop})
     )
-    respx_mock.get(PERMANENT_HOP).mock(
+    respx_mock.get(temporary_hop).mock(
         return_value=Response(302, headers={"Location": temporary_terminal})
     )
     respx_mock.get(temporary_terminal).mock(

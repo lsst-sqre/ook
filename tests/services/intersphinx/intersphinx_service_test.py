@@ -205,8 +205,6 @@ async def test_expired_inventory_served_stale_without_upstream(
                 date_requested=stale_fetched,
                 last_fetch_status=InventoryFetchStatus.success,
                 last_fetch_error=None,
-                resolved_url=None,
-                resolved_redirect_permanent=None,
                 date_refresh_failed=None,
             )
         )
@@ -492,8 +490,6 @@ async def test_negative_cache_expiry_refetches(
                 date_requested=expired_fetched,
                 last_fetch_status=InventoryFetchStatus.failure,
                 last_fetch_error="Upstream returned HTTP 500",
-                resolved_url=None,
-                resolved_redirect_permanent=None,
                 date_refresh_failed=None,
             )
         )

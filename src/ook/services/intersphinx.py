@@ -488,28 +488,28 @@ class IntersphinxCacheService:
         await self._guard_url(inventory.url)
         fetch = await self._revalidate(inventory)
         response = fetch.response
+        # Every field a successful refresh writes regardless of whether the
+        # content changed, applied once so the next one added cannot land on
+        # only one of the two branches below. The 200 branch layers the
+        # changed content on top of this.
+        outcome = replace(
+            inventory,
+            date_fetched=now,
+            last_fetch_status=InventoryFetchStatus.success,
+            last_fetch_error=None,
+            # A 304 says the content is unchanged, which says nothing about
+            # the chain: record the one this revalidation walked rather than
+            # carrying the stored one forward.
+            resolved_url=fetch.resolved_url,
+            resolved_redirect_permanent=fetch.resolved_redirect_permanent,
+            # A revalidated inventory is healthy again: drop any backoff an
+            # earlier failure left on it.
+            date_refresh_failed=None,
+        )
         if response.status_code == 304:
             # Write only the refresh-outcome columns so a client request that
             # bumped date_requested since the due-list read is not reverted.
-            await self._inventory_store.update_refresh_outcome(
-                replace(
-                    inventory,
-                    date_fetched=now,
-                    last_fetch_status=InventoryFetchStatus.success,
-                    last_fetch_error=None,
-                    # A 304 says the content is unchanged, which says
-                    # nothing about the chain: record the one this
-                    # revalidation walked rather than carrying the stored
-                    # one forward.
-                    resolved_url=fetch.resolved_url,
-                    resolved_redirect_permanent=(
-                        fetch.resolved_redirect_permanent
-                    ),
-                    # A revalidated inventory is healthy again: drop any
-                    # backoff an earlier failure left on it.
-                    date_refresh_failed=None,
-                )
-            )
+            await self._inventory_store.update_refresh_outcome(outcome)
             self._logger.info(
                 "Revalidated intersphinx inventory (304 Not Modified)",
                 url=inventory.url,
@@ -521,21 +521,11 @@ class IntersphinxCacheService:
         response.raise_for_status()
         await self._inventory_store.update_refresh_outcome(
             replace(
-                inventory,
+                outcome,
                 content=fetch.content,
                 content_type=response.headers.get("Content-Type"),
                 etag=response.headers.get("ETag"),
                 last_modified=response.headers.get("Last-Modified"),
-                date_fetched=now,
-                last_fetch_status=InventoryFetchStatus.success,
-                last_fetch_error=None,
-                resolved_url=fetch.resolved_url,
-                resolved_redirect_permanent=(
-                    fetch.resolved_redirect_permanent
-                ),
-                # A refreshed inventory is healthy again: drop any backoff an
-                # earlier failure left on it.
-                date_refresh_failed=None,
             )
         )
         self._logger.info(
@@ -923,9 +913,8 @@ class IntersphinxCacheService:
                 date_requested=now,
                 last_fetch_status=InventoryFetchStatus.failure,
                 last_fetch_error=detail,
-                # A negative-cache row has no content and no resolved chain.
-                resolved_url=None,
-                resolved_redirect_permanent=None,
+                # A negative-cache row has no content and no resolved chain,
+                # so the resolved-redirect fields keep their None defaults.
                 # This row's own date_fetched dates the failed attempt, so
                 # the refresh job's backoff marker — which exists only
                 # because a refresh failure must not touch date_fetched —

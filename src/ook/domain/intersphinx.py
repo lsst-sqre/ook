@@ -78,22 +78,6 @@ class IntersphinxInventory:
     succeeded.
     """
 
-    resolved_url: str | None
-    """The terminal URL the last fetch's redirect chain ended at, or None
-    when the chain did not redirect.
-
-    Recorded so a redirected inventory's resolved location can be surfaced
-    without re-contacting the origin.
-    """
-
-    resolved_redirect_permanent: bool | None
-    """Whether the last fetch's redirect chain was entirely permanent.
-
-    True when every hop was a 301 or 308, False when any hop was temporary,
-    and None when the chain did not redirect. Only an all-permanent chain
-    means the requested URL itself should be updated at its source.
-    """
-
     date_refresh_failed: datetime | None
     """The time of the most recent failed proactive refresh, or None when
     the last completed fetch succeeded.
@@ -105,4 +89,25 @@ class IntersphinxInventory:
     list holds a row back for the same TTL after a failure, so a broken
     inventory is retried on the normal refresh cadence instead of on every
     run. A successful fetch clears it.
+    """
+
+    # The redirect-resolution fields sort last and default to None, which is
+    # the genuine "this chain did not redirect" value: the common case does
+    # not have to spell them, while every field above stays required so a
+    # construction site cannot silently drop one.
+
+    resolved_url: str | None = None
+    """The terminal URL the last fetch's redirect chain ended at, or None
+    when the chain did not redirect.
+
+    Recorded so a redirected inventory's resolved location can be surfaced
+    without re-contacting the origin.
+    """
+
+    resolved_redirect_permanent: bool | None = None
+    """Whether the last fetch's redirect chain was entirely permanent.
+
+    True when every hop was a 301 or 308, False when any hop was temporary,
+    and None when the chain did not redirect. Only an all-permanent chain
+    means the requested URL itself should be updated at its source.
     """
