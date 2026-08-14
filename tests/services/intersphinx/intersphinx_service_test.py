@@ -743,6 +743,40 @@ async def test_cold_miss_without_redirect_leaves_resolved_columns_null(
 
 
 @pytest.mark.asyncio
+async def test_location_fragment_stripped_from_resolved_url(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A fragment on the final ``Location`` never reaches ``resolved_url``.
+
+    A fragment is display metadata for a document, never part of the
+    inventory resource's identity, and the stored value is served verbatim
+    as the permanent-redirect header — a doc author told to paste
+    ``objects.inv#moved`` into ``intersphinx_mapping`` would be told to
+    configure a URL that names nothing.
+    """
+    terminal = "https://www.example.com/docs/validation/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(301, headers={"Location": f"{terminal}#moved"})
+    )
+    respx_mock.get(terminal).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_cache_service()
+        inventory = await service.get_inventory(INVENTORY_URL)
+
+    assert inventory.resolved_url == terminal
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert stored.resolved_url == terminal
+
+
+@pytest.mark.asyncio
 async def test_relative_location_joins_against_current_hop(
     factory: Factory,
     respx_mock: respx.Router,

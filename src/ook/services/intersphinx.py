@@ -1357,6 +1357,15 @@ class IntersphinxCacheService:
 def _join_redirect_url(current_url: str, location: str) -> str:
     """Resolve a redirect's ``Location`` against the hop that sent it.
 
+    Any fragment on the joined target is dropped. A fragment identifies a
+    place to look inside a document, never part of an inventory's identity
+    as a resource, and it is not sent on the wire in any case — so it
+    changes nothing about the hop that gets fetched, while the joined URL
+    *is* what the chain records as its terminal and serves back as the
+    ``X-Ook-Inventory-Permanent-Redirect`` header. Stripping it here, at the
+    one place a hop target is minted, keeps a doc author from being told to
+    paste ``objects.inv#moved`` into ``intersphinx_mapping``.
+
     httpx builds a redirect request for every 3xx carrying a ``Location``,
     even with ``follow_redirects=False``, and reports a ``Location`` it
     cannot parse as an ``httpx.RemoteProtocolError`` before the response is
@@ -1374,7 +1383,9 @@ def _join_redirect_url(current_url: str, location: str) -> str:
         Raised when the ``Location`` cannot be resolved to a valid URL.
     """
     try:
-        return str(httpx.URL(current_url).join(location))
+        return str(
+            httpx.URL(current_url).join(location).copy_with(fragment=None)
+        )
     except (httpx.InvalidURL, UnicodeError) as exc:
         raise _InvalidRedirectError(
             f"Upstream redirected the inventory to a malformed URL: {exc}"

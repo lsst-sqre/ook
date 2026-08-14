@@ -88,6 +88,14 @@ def _permanent_redirect_headers(
     entirely rather than truncated: a truncated URL is worse than no
     URL, since it names a location that does not exist and cannot be
     distinguished from a real one by the client.
+
+    The stored columns date from the row's last *successful* fetch:
+    `IntersphinxInventoryStore.update_refresh_failure` retains them, so a
+    row whose refreshes keep failing goes on advertising a target that may
+    since have died. That is the intended trade — suppressing the header
+    on a failed refresh would hide a real permanent move for a whole cache
+    lifetime over one transient failure — and the endpoint's description
+    tells clients to read ``Age`` to judge the observation's age.
     """
     if not (inventory.resolved_redirect_permanent and inventory.resolved_url):
         return {}
@@ -122,6 +130,16 @@ def _permanent_redirect_headers(
         " implausibly long (over"
         f" {MAX_PERMANENT_REDIRECT_URL_LENGTH} characters), since a"
         " truncated URL names a location that does not exist."
+        "\n\n"
+        "The header reports the chain observed at the **last successful"
+        " fetch** of this inventory, not the chain as it stands now. A"
+        " row whose background refreshes keep failing keeps serving its"
+        " last-known-good bytes and, with them, this header — the signal"
+        " is deliberately not withdrawn on a failed refresh, since one"
+        " transient failure would otherwise hide a real permanent move"
+        " for a whole cache lifetime. Read the ``Age`` header — carried"
+        " by the ``200`` — alongside it to judge how old that"
+        " observation is."
         "\n\n"
         "Read this header from each response rather than from an HTTP"
         " caching layer. Withdrawal of the signal is expressed as the"

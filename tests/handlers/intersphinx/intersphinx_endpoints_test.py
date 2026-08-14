@@ -580,6 +580,42 @@ async def test_permanent_redirect_header_on_304(
 
 
 @pytest.mark.asyncio
+async def test_permanent_redirect_header_omits_location_fragment(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A fragment on the final ``Location`` is not served in the header.
+
+    The header value is pasted into ``intersphinx_mapping`` by a doc
+    author, so it has to name the inventory itself; a fragment is display
+    metadata for a document and names nothing there.
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            301, headers={"Location": f"{PERMANENT_TERMINAL}#moved"}
+        )
+    )
+    respx_mock.get(PERMANENT_TERMINAL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+
+    assert response.status_code == 200
+    assert (
+        response.headers["x-ook-inventory-permanent-redirect"]
+        == PERMANENT_TERMINAL
+    )
+
+
+@pytest.mark.asyncio
 async def test_no_permanent_redirect_header_for_temporary_chain(
     client: AsyncClient,
     respx_mock: respx.Router,
@@ -778,6 +814,28 @@ async def test_openapi_documents_304_cache_retention_caveat(
     ]["get"]["description"]
 
     assert "RFC 9111" in description
+
+
+@pytest.mark.asyncio
+async def test_openapi_documents_header_last_successful_fetch_semantics(
+    client: AsyncClient,
+) -> None:
+    """The description dates the header to the last successful fetch.
+
+    A row whose refreshes keep failing keeps its resolved-redirect columns
+    — deliberately, so one transient failure does not withdraw the signal
+    for a whole TTL — which means the header can outlive the chain it was
+    observed on. That staleness is documented rather than suppressed, and
+    ``Age`` is what tells a client how old the observation is.
+    """
+    response = await client.get(f"{config.path_prefix}/openapi.json")
+    assert response.status_code == 200
+    description = response.json()["paths"][
+        f"{config.path_prefix}/intersphinx/inventory"
+    ]["get"]["description"]
+
+    assert "last successful fetch" in description
+    assert "``Age``" in description
 
 
 @pytest.mark.asyncio
