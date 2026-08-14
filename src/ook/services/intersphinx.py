@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -86,6 +87,19 @@ class _TooManyRedirectsError(httpx.HTTPError):
     An ``httpx.HTTPError`` for the same reason as `_InventoryTooLargeError`:
     the client's URL was fine and upstream misbehaved, so this reuses the
     existing upstream-failure plumbing and surfaces as a 502.
+    """
+
+
+class _FetchDeadlineExceededError(httpx.HTTPError):
+    """An origin inventory fetch outlasted its whole-chain time budget.
+
+    The per-request timeout bounds one hop, not the chain: an origin that
+    answers each redirect just inside that timeout could otherwise hold the
+    fetch — and, on the cold-miss path, the request's open DB session — for
+    the hop cap times the per-request timeout. An ``httpx.HTTPError`` for
+    the same reason as `_TooManyRedirectsError`, so an exhausted budget
+    lands in the existing upstream-failure plumbing: a negatively cached
+    502 on the request path, a skipped inventory on the refresh path.
     """
 
 
@@ -177,15 +191,16 @@ class IntersphinxCacheService:
     Every upstream fetch is hardened against a hostile or misbehaving
     origin: redirects are followed by hand, one guarded hop at a time and
     bounded by a hop cap (so the SSRF guard cannot be bypassed via an
-    upstream ``Location`` and a redirect loop terminates), each request
-    carries an explicit timeout, and the terminal response body is streamed
-    under a size cap so an oversized inventory is abandoned rather than
-    buffered into memory. An oversized response, an over-long chain, an
-    unusable ``Location``, and a hop the guard rejects — including one whose
-    host will not resolve — are all treated as upstream fetch failures, so
-    every way a chain can fail lands in the same negative-cache-and-502
-    treatment on the request path and the same skip-one-inventory treatment
-    on the refresh path.
+    upstream ``Location`` and a redirect loop terminates), the whole chain
+    runs against a single time budget so a slow origin cannot multiply the
+    per-request timeout by the hop cap, and the terminal response body is
+    streamed under a size cap so an oversized inventory is abandoned rather
+    than buffered into memory. An oversized response, an over-long chain, an
+    exhausted time budget, an unusable ``Location``, and a hop the guard
+    rejects — including one whose host will not resolve — are all treated as
+    upstream fetch failures, so every way a chain can fail lands in the same
+    negative-cache-and-502 treatment on the request path and the same
+    skip-one-inventory treatment on the refresh path.
 
     When a fetch does redirect, its terminal URL and whether every hop was
     permanent are stored on the row, so a permanently-moved inventory URL
@@ -229,8 +244,11 @@ class IntersphinxCacheService:
     logger
         The logger.
     request_timeout
-        Per-request timeout applied to each upstream inventory fetch, on
-        both the cold-miss and refresh paths.
+        Time budget for one upstream inventory fetch, on both the cold-miss
+        and refresh paths. It bounds the fetch as a whole — every redirect
+        hop, every hop target's guard resolution, and the terminal body read
+        share it — so a redirect chain costs no more wall-clock time than a
+        single non-redirecting fetch.
     max_content_size
         Maximum accepted size, in bytes, of an origin inventory response.
         A response whose ``Content-Length`` or streamed body exceeds this
@@ -586,8 +604,20 @@ class IntersphinxCacheService:
         The conditional-request headers, if any, are re-sent on every hop so
         a chain ending in a ``304 Not Modified`` still revalidates.
 
+        The whole chain runs against a single time budget of
+        ``request_timeout``, taken from the monotonic clock when the fetch
+        starts: each hop's request, each hop target's guard resolution, and
+        the terminal body read get only the time left in that budget, and
+        the budget is re-checked before each of them. The per-request
+        timeout alone would bound one hop rather than the chain, letting an
+        origin that dribbles each redirect just inside it stretch a fetch to
+        the hop cap times that timeout — on the cold-miss path, with the
+        request's DB session held open the whole time.
+
         Raises
         ------
+        _FetchDeadlineExceededError
+            Raised when the chain outlasts the whole-fetch time budget.
         _InventoryTooLargeError
             Raised when the terminal response body, by its
             ``Content-Length`` or by its streamed size, exceeds the
@@ -602,6 +632,7 @@ class IntersphinxCacheService:
         httpx.HTTPError
             Propagated from the transport on a timeout or connection error.
         """
+        deadline = time.monotonic() + self._request_timeout
         current_url = url
         hops: list[int] = []
         while True:
@@ -610,7 +641,7 @@ class IntersphinxCacheService:
                 current_url,
                 headers=headers or {},
                 follow_redirects=False,
-                timeout=self._request_timeout,
+                timeout=self._remaining_budget(deadline),
             ) as response:
                 location = response.headers.get("Location")
                 if response.status_code not in _REDIRECT_CODES or not location:
@@ -619,7 +650,9 @@ class IntersphinxCacheService:
                             response, None, current_url, hops
                         )
                     self._check_content_length(response)
-                    content = await self._read_capped_body(response)
+                    content = await self._read_capped_body(
+                        response, deadline=deadline
+                    )
                     return _InventoryFetch(
                         response, content, current_url, hops
                     )
@@ -636,8 +669,30 @@ class IntersphinxCacheService:
             # Guard outside the stream context so the hop's connection is
             # released — and its body left unread — before the guard's DNS
             # lookup and the next hop's request.
-            await self._guard_redirect_url(next_url)
+            await self._guard_redirect_url(next_url, deadline=deadline)
             current_url = next_url
+
+    def _remaining_budget(self, deadline: float) -> float:
+        """Return the seconds left in the whole-fetch budget.
+
+        Raises
+        ------
+        _FetchDeadlineExceededError
+            Raised when the budget is already spent, so every caller both
+            bounds the operation it is about to start and refuses to start
+            it at all once there is no time left.
+        """
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise self._deadline_error()
+        return remaining
+
+    def _deadline_error(self) -> _FetchDeadlineExceededError:
+        """Build the spent-budget error carrying the configured budget."""
+        return _FetchDeadlineExceededError(
+            "Upstream inventory fetch exceeded its time budget of "
+            f"{self._request_timeout:g} s"
+        )
 
     def _check_content_length(self, response: httpx.Response) -> None:
         """Abort before reading the body if ``Content-Length`` is over cap."""
@@ -651,11 +706,20 @@ class IntersphinxCacheService:
         if declared > self._max_content_size:
             raise self._too_large_error()
 
-    async def _read_capped_body(self, response: httpx.Response) -> bytes:
-        """Stream the response body, aborting once the cap is exceeded."""
+    async def _read_capped_body(
+        self, response: httpx.Response, *, deadline: float
+    ) -> bytes:
+        """Stream the body, aborting on the size cap or the time budget.
+
+        The request's read timeout bounds the wait for one chunk, not the
+        whole body, so a body dribbled out a byte at a time would otherwise
+        outlast the budget however small each gap is. Checking the budget
+        per chunk keeps the terminal read inside it.
+        """
         chunks: list[bytes] = []
         total = 0
         async for chunk in response.aiter_bytes():
+            self._remaining_budget(deadline)
             total += len(chunk)
             if total > self._max_content_size:
                 raise self._too_large_error()
@@ -781,8 +845,8 @@ class IntersphinxCacheService:
                     f" {address}",
                 )
 
-    async def _guard_redirect_url(self, url: str) -> None:
-        """Run the SSRF guard on a redirect hop's target.
+    async def _guard_redirect_url(self, url: str, *, deadline: float) -> None:
+        """Run the SSRF guard on a redirect hop's target, inside the budget.
 
         Same check as `_guard_url`, but a rejection is re-raised as an
         `_UnsafeRedirectError` rather than an `InvalidInventoryUrlError`:
@@ -790,15 +854,26 @@ class IntersphinxCacheService:
         an upstream failure (502, negatively cached) rather than a bad
         client request (400).
 
+        The guard's own resolver has no timeout, so the lookup is bounded by
+        whatever is left of the fetch's time budget: a chain can point at as
+        many hosts as the hop cap allows, and a hop whose resolution hangs
+        would otherwise stall the fetch outside the budget entirely.
+
         Raises
         ------
+        _FetchDeadlineExceededError
+            Raised when the budget is spent before, or during, the guard's
+            host resolution.
         _UnsafeRedirectError
             Raised if the hop target uses a non-``https`` scheme, its host
             cannot be resolved, or its host resolves to a non-public
             address.
         """
         try:
-            await self._guard_url(url)
+            async with asyncio.timeout(self._remaining_budget(deadline)):
+                await self._guard_url(url)
+        except TimeoutError as exc:
+            raise self._deadline_error() from exc
         except InvalidInventoryUrlError as exc:
             raise _UnsafeRedirectError(
                 f"Upstream redirected the inventory to a rejected URL: {exc}"
@@ -868,7 +943,8 @@ def _describe_upstream_error(error: httpx.HTTPError) -> str:
     """
     if isinstance(
         error,
-        _InventoryTooLargeError
+        _FetchDeadlineExceededError
+        | _InventoryTooLargeError
         | _TooManyRedirectsError
         | _UnsafeRedirectError
         | _InvalidRedirectError,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -44,6 +45,27 @@ def _make_capped_service(
         active_window=timedelta(days=30),
         logger=structlog.get_logger("ook"),
         max_content_size=max_content_size,
+    )
+
+
+def _make_budgeted_service(
+    factory: Factory, *, request_timeout: timedelta
+) -> intersphinx_service.IntersphinxCacheService:
+    """Build a service with a tiny whole-fetch budget for the deadline tests.
+
+    Constructed directly (rather than through the factory) so the budget can
+    be shrunk to a fraction of a second, instead of the tests waiting out the
+    30-second production default.
+    """
+    return intersphinx_service.IntersphinxCacheService(
+        http_client=factory.http_client,
+        inventory_store=factory.create_intersphinx_inventory_store(),
+        session=factory.db_session,
+        ttl=timedelta(hours=1),
+        negative_ttl=timedelta(hours=1),
+        active_window=timedelta(days=30),
+        logger=structlog.get_logger("ook"),
+        request_timeout=request_timeout,
     )
 
 
@@ -1017,6 +1039,167 @@ async def test_redirect_hop_bodies_not_counted_against_size_cap(
 
     assert inventory.content == b"small"
     assert inventory.last_fetch_status is InventoryFetchStatus.success
+
+
+@pytest.mark.asyncio
+async def test_slow_redirect_chain_stops_at_the_time_budget(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A chain dribbled out past the fetch budget gives up on the budget.
+
+    Every hop answers well inside its own per-hop timeout, so only a
+    whole-chain deadline can stop the chain: without one, an origin that
+    replies just under the timeout on each of the allowed hops holds the
+    cold-miss path — and the request's open DB session — for the hop cap
+    times the per-request timeout.
+    """
+
+    async def slow_redirect(request: httpx.Request) -> Response:
+        await asyncio.sleep(0.05)
+        return Response(302, headers={"Location": INVENTORY_URL})
+
+    route = respx_mock.get(INVENTORY_URL).mock(side_effect=slow_redirect)
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible,
+    # mirroring how the handler commits the failure path.
+    service = _make_budgeted_service(
+        factory, request_timeout=timedelta(seconds=0.2)
+    )
+    with pytest.raises(UpstreamInventoryError, match="time budget"):
+        await service.get_inventory(INVENTORY_URL)
+
+    # The budget ended the chain well before the hop cap would have.
+    assert route.call_count < intersphinx_service._MAX_REDIRECTS
+
+    stored = await factory.create_intersphinx_inventory_store().get_inventory(
+        INVENTORY_URL
+    )
+    assert stored is not None
+    assert stored.content is None
+    assert stored.last_fetch_status is InventoryFetchStatus.failure
+    assert stored.last_fetch_error is not None
+    assert "time budget" in stored.last_fetch_error
+
+
+@pytest.mark.asyncio
+async def test_terminal_body_read_bounded_by_the_time_budget(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A terminal body dribbled out past the fetch budget is abandoned.
+
+    The read timeout bounds the wait for one chunk, not the whole body, so
+    an origin trickling bytes indefinitely is only stopped by the budget
+    covering the terminal read as well as the hops.
+    """
+
+    async def dribbled_body() -> AsyncIterator[bytes]:
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            yield b"x"
+
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=dribbled_body())
+    )
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible,
+    # mirroring how the handler commits the failure path.
+    service = _make_budgeted_service(
+        factory, request_timeout=timedelta(seconds=0.2)
+    )
+    with pytest.raises(UpstreamInventoryError, match="time budget"):
+        await service.get_inventory(INVENTORY_URL)
+
+    stored = await factory.create_intersphinx_inventory_store().get_inventory(
+        INVENTORY_URL
+    )
+    assert stored is not None
+    assert stored.content is None
+    assert stored.last_fetch_status is InventoryFetchStatus.failure
+    assert stored.last_fetch_error is not None
+    assert "time budget" in stored.last_fetch_error
+
+
+@pytest.mark.asyncio
+async def test_redirect_guard_resolution_bounded_by_the_time_budget(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hop whose host resolution hangs is cut off by the fetch budget.
+
+    The SSRF guard's resolver carries no timeout of its own, so a hop
+    pointing at a host whose DNS lookup never answers would stall the fetch
+    — and the request's open DB session — outside every other bound the
+    chain has.
+    """
+    hop = "https://slow-dns.example.com/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": hop})
+    )
+    hop_route = respx_mock.get(hop).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    async def resolve(host: str) -> list[str]:
+        if host == "slow-dns.example.com":
+            await asyncio.sleep(30)
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible,
+    # mirroring how the handler commits the failure path.
+    service = _make_budgeted_service(
+        factory, request_timeout=timedelta(seconds=0.2)
+    )
+    with pytest.raises(UpstreamInventoryError, match="time budget"):
+        await service.get_inventory(INVENTORY_URL)
+
+    # The hop whose guard never finished is never fetched.
+    assert hop_route.call_count == 0
+
+    stored = await factory.create_intersphinx_inventory_store().get_inventory(
+        INVENTORY_URL
+    )
+    assert stored is not None
+    assert stored.content is None
+    assert stored.last_fetch_status is InventoryFetchStatus.failure
+
+
+@pytest.mark.asyncio
+async def test_fast_redirect_chain_resolves_within_the_time_budget(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A prompt multi-hop chain still resolves under a finite budget.
+
+    Each hop gets only the time left in the budget rather than a fresh
+    per-request timeout, so the shrinking allowance must not trip a chain
+    that answers quickly.
+    """
+    hop_1 = "https://www.example.com/docs/latest/objects.inv"
+    terminal = "https://docs.example.com/en/21/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": hop_1})
+    )
+    respx_mock.get(hop_1).mock(
+        return_value=Response(302, headers={"Location": terminal})
+    )
+    respx_mock.get(terminal).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    service = _make_budgeted_service(
+        factory, request_timeout=timedelta(seconds=5)
+    )
+    async with factory.db_session.begin():
+        inventory = await service.get_inventory(INVENTORY_URL)
+
+    assert inventory.content == INVENTORY_BODY
+    assert inventory.last_fetch_status is InventoryFetchStatus.success
+    assert inventory.resolved_url == terminal
 
 
 async def _seed_stale_inventory(
