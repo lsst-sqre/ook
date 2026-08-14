@@ -145,6 +145,25 @@ instead, where operators can read it and clients cannot.
 """
 
 
+_UNSAFE_REFRESH_URL_DETAIL = (
+    "The cached inventory URL is no longer allowed to be fetched"
+)
+"""Client-facing detail for a stored URL the SSRF guard refused on refresh.
+
+Generic for the same reason as `_UNSAFE_REDIRECT_DETAIL`, and about the same
+string class: the refresh path's re-guard exists for the DNS-rebinding case,
+so its rejection names the host and the address it now resolves to *from
+inside the cluster*. The refresh path writes that detail to
+``last_fetch_error``, which `get_inventory` replays verbatim in the 502 body
+of every request that finds the row a live negative-cache entry. The specific
+reason is logged at the failure boundary instead.
+
+The request path's own rejection of a *client-supplied* URL is deliberately
+not scrubbed: that detail is a 400 served once to the client that chose the
+URL, naming a host it already knows, and it is never stored.
+"""
+
+
 _UNCONDITIONAL_304_DETAIL = (
     "Upstream answered 304 Not Modified to an unconditional inventory request"
 )
@@ -469,11 +488,7 @@ class IntersphinxCacheService:
                 # copy untouched so it keeps serving stale.
                 await self._session.rollback()
                 failed += 1
-                detail = (
-                    _describe_upstream_error(exc)
-                    if isinstance(exc, httpx.HTTPError)
-                    else str(exc)
-                )
+                detail = self._describe_refresh_error(exc, url=inventory.url)
                 # Record the failed attempt in its own transaction, so the
                 # inventory backs off instead of heading the due list again
                 # on the very next run.
@@ -509,6 +524,42 @@ class IntersphinxCacheService:
             failed=summary.failed,
         )
         return summary
+
+    def _describe_refresh_error(
+        self, error: httpx.HTTPError | InvalidInventoryUrlError, *, url: str
+    ) -> str:
+        """Describe a refresh failure for storage in ``last_fetch_error``.
+
+        This is the refresh path's error boundary, and the scrub of the
+        guard's rejection reason lives here rather than at the raise site:
+        `_guard_url` is shared with the request path, whose 400 for a
+        client-supplied URL keeps the specific, actionable reason. Only the
+        stored detail — replayed to every client for a negative-cache row's
+        whole TTL — has to be generic, so only this side scrubs, and the
+        reason is logged here in the same record shape
+        `_guard_redirect_url` uses for a refused hop.
+
+        Parameters
+        ----------
+        error
+            The failure raised by `_refresh_one`.
+        url
+            The inventory URL that failed, for the rejection log.
+
+        Returns
+        -------
+        str
+            The detail to store on the row and serve to clients.
+        """
+        if isinstance(error, httpx.HTTPError):
+            return _describe_upstream_error(error)
+        self._logger.warning(
+            "Rejected a stored intersphinx inventory URL by SSRF guard",
+            url=url,
+            cache_status="refresh-failure",
+            reason=str(error),
+        )
+        return _UNSAFE_REFRESH_URL_DETAIL
 
     async def _refresh_one(
         self, inventory: IntersphinxInventory, *, now: datetime

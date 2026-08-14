@@ -2213,6 +2213,99 @@ async def test_refresh_redirect_hop_dns_failure_skips_one_inventory(
 
 
 @pytest.mark.asyncio
+async def test_refresh_rebound_stored_url_detail_omits_resolution(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored URL the guard now refuses stores a scrubbed detail.
+
+    The pre-fetch re-guard exists for the DNS-rebinding case, so its
+    rejection names the host and what it resolves to *from inside the
+    cluster*. That reason is written to ``last_fetch_error``, and a row
+    whose content is a negative-cache entry replays that column verbatim in
+    the 502 body of every later request — so the row must carry the generic
+    detail, not Ook's own DNS view.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        content=b"kept payload",
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    route = respx_mock.get(INVENTORY_URL).mock(return_value=Response(304))
+
+    async def resolve(host: str) -> list[str]:
+        return ["10.0.0.5"]
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
+
+    assert summary.failed == 1
+    # A URL the guard refuses is never fetched.
+    assert route.call_count == 0
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert (
+        stored.last_fetch_error
+        == "The cached inventory URL is no longer allowed to be fetched"
+    )
+    assert "10.0.0.5" not in stored.last_fetch_error
+    assert "docs.example.com" not in stored.last_fetch_error
+
+
+@pytest.mark.asyncio
+async def test_refresh_rebound_stored_url_logs_the_specific_reason(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reason scrubbed off the row is logged for operators instead.
+
+    One record at the failure boundary has to name both halves: the URL that
+    failed and the guard's specific reason, which is all that is left of it
+    once the stored detail is generic.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        content=b"kept payload",
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    respx_mock.get(INVENTORY_URL).mock(return_value=Response(304))
+
+    async def resolve(host: str) -> list[str]:
+        return ["10.0.0.5"]
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    with capture_logs() as logs:
+        service = factory.create_intersphinx_cache_service()
+        await service.refresh_inventories(now=now)
+
+    rejections = [
+        record
+        for record in logs
+        if record.get("cache_status") == "refresh-failure"
+        and record.get("reason")
+    ]
+    assert len(rejections) == 1
+    record = rejections[0]
+    assert record["url"] == INVENTORY_URL
+    assert "10.0.0.5" in record["reason"]
+    assert record["log_level"] == "warning"
+
+
+@pytest.mark.asyncio
 async def test_refresh_guard_resolution_bounded_by_the_time_budget(
     factory: Factory,
     respx_mock: respx.Router,
