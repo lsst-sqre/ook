@@ -59,6 +59,21 @@ _DEFAULT_MAX_CONTENT_SIZE = 50 * 1024 * 1024
 """Default cap, in bytes, on an origin inventory response body (50 MB)."""
 
 
+_HOP_DRAIN_LIMIT = 8 * 1024
+"""Cap, in bytes, on how much of a redirect hop's body is read and discarded.
+
+A redirect response's body is boilerplate — a couple of hundred bytes of
+"moved here" HTML, if anything — but an HTTP/1.1 connection whose body is
+left unread cannot be returned to the pool, so leaving it costs a fresh
+TCP+TLS handshake on the next hop even when the chain stays on one host.
+Draining under this cap buys the connection back; a hop that answers with
+more than this is abandoned instead, since reading an unbounded body to
+save one handshake is the worse trade. Deliberately unrelated to
+``max_content_size``, which governs the terminal inventory body: hop bodies
+are discarded and never counted against it.
+"""
+
+
 class _InventoryTooLargeError(httpx.HTTPError):
     """An origin inventory response exceeded the configured size cap.
 
@@ -680,14 +695,20 @@ class IntersphinxCacheService:
         fetched and cannot be bypassed by an upstream ``Location``. A
         relative ``Location`` is resolved against the hop that sent it, not
         against the originally requested URL. The chain is bounded by
-        `MAX_REDIRECTS` hops so a redirect loop terminates.
+        `MAX_REDIRECTS` hops so a redirect loop terminates. Every *new* host
+        in the chain is guarded; a host the guard already accepted within
+        this same fetch is not resolved again, which is what keeps a chain
+        that leaves a host and returns from paying for that host twice.
 
-        Only the terminal response's body is read: a redirect hop's body is
-        discarded unread and never counted against the size cap, and both
-        the ``Content-Length`` pre-check and the streamed-size cap apply to
-        the terminal response alone. The terminal body is streamed so an
+        Only the terminal response's body is kept: a redirect hop's body is
+        discarded and never counted against the size cap, and both the
+        ``Content-Length`` pre-check and the streamed-size cap apply to the
+        terminal response alone. The terminal body is streamed so an
         oversized response is abandoned as soon as the cap is exceeded
-        rather than fully buffered.
+        rather than fully buffered. A hop's body is discarded by *reading*
+        it, under `_HOP_DRAIN_LIMIT` — see `_drain_hop_body`, which explains
+        why the read is what keeps a chain from opening a connection per
+        hop.
 
         The conditional-request headers, if any, are re-sent on every hop so
         a chain ending in a ``304 Not Modified`` still revalidates — except
@@ -731,6 +752,11 @@ class IntersphinxCacheService:
         current_url = url
         request_headers = headers or {}
         hops: list[int] = []
+        # Seeded with the requested URL's host, which both callers guard
+        # immediately before this fetch, so a chain that comes back to it
+        # does not resolve it a second time. Local to this fetch: a host is
+        # skipped only within the chain that just validated it.
+        validated_hosts = {host} if (host := urlsplit(url).hostname) else set()
         while True:
             async with self._http_client.stream(
                 "GET",
@@ -762,16 +788,55 @@ class IntersphinxCacheService:
                     )
                 hops.append(response.status_code)
                 next_url = _join_redirect_url(current_url, location)
+                await self._drain_hop_body(response, deadline=deadline)
             # Past a redirect the request is no longer aimed at the URL the
             # stored modification date was minted for, so stop sending it.
             request_headers = _without_if_modified_since(request_headers)
             # Guard outside the stream context so the hop's connection is
-            # released — and its body left unread — before the guard's DNS
-            # lookup and the next hop's request.
+            # released — back to the pool, its body already drained — before
+            # the guard's DNS lookup and the next hop's request.
             await self._guard_redirect_url(
-                next_url, requested_url=url, deadline=deadline
+                next_url,
+                requested_url=url,
+                deadline=deadline,
+                validated_hosts=validated_hosts,
             )
             current_url = next_url
+
+    async def _drain_hop_body(
+        self, response: httpx.Response, *, deadline: float
+    ) -> None:
+        """Read and discard a redirect hop's body so its connection is reused.
+
+        Exiting a streamed response with its body unread leaves the HTTP/1.1
+        connection unusable, so the pool drops it and the next hop pays a
+        fresh TCP+TLS handshake — three of them, on the motivating
+        ``www`` → ``docs`` → ``docs`` chain, to one host, on every cold miss
+        and every refresh. Reading the (tiny) body to the end lets the
+        connection go back in the pool for the next hop instead.
+
+        Bounded by `_HOP_DRAIN_LIMIT`: a hop answering with more than that is
+        left unread from that point on, so the fetch abandons the connection
+        rather than reading an unbounded body to save one handshake. The
+        drained bytes are discarded and never counted against
+        ``max_content_size``, which governs the terminal body alone.
+
+        The whole-fetch budget is re-checked per chunk for the same reason as
+        in `_read_capped_body`: the read timeout bounds the wait for one
+        chunk, not for the whole body, so a hop dribbling its body out could
+        otherwise outlast the budget within the drain.
+
+        Raises
+        ------
+        _FetchDeadlineExceededError
+            Raised when the fetch's time budget is spent mid-drain.
+        """
+        drained = 0
+        async for chunk in response.aiter_bytes():
+            self._remaining_budget(deadline)
+            drained += len(chunk)
+            if drained > _HOP_DRAIN_LIMIT:
+                return
 
     def _remaining_budget(self, deadline: float) -> float:
         """Return the seconds left in the whole-fetch budget.
@@ -876,7 +941,9 @@ class IntersphinxCacheService:
         )
         raise UpstreamInventoryError(detail)
 
-    async def _guard_url(self, url: str) -> None:
+    async def _guard_url(
+        self, url: str, *, validated_hosts: set[str] | None = None
+    ) -> None:
         """Reject a URL that must not be fetched from upstream.
 
         This SSRF guard runs before any upstream fetch: the URL must use
@@ -896,6 +963,22 @@ class IntersphinxCacheService:
         the https-only fetch is what backstops rebinding, so IP pinning is
         unnecessary here.
 
+        Parameters
+        ----------
+        url
+            The URL to validate.
+        validated_hosts
+            Hosts this guard already accepted earlier in the same fetch, if
+            any. A host in the set skips *resolution* only — the scheme
+            check still runs on every URL, since https-only is what
+            backstops rebinding here — and an accepted host is added to the
+            set. Passing one is what makes a chain that revisits a host cost
+            a single resolution rather than one per hop, which matters
+            because the cluster has no caching resolver and ``ndots`` search
+            expansion multiplies every external-name lookup. Deliberately
+            per-fetch and never service-wide: "public a moment ago, in this
+            chain" is a far narrower claim than "public once".
+
         Raises
         ------
         InvalidInventoryUrlError
@@ -911,6 +994,10 @@ class IntersphinxCacheService:
         host = parts.hostname
         if not host:
             self._reject_url(url, "URL has no host to validate")
+        if validated_hosts is not None and host in validated_hosts:
+            # Already resolved and accepted earlier in this same fetch;
+            # re-resolving it would answer the same question again.
+            return
 
         try:
             addresses = [ipaddress.ip_address(host)]
@@ -950,9 +1037,16 @@ class IntersphinxCacheService:
                     f"Host {host!r} resolves to the non-public address"
                     f" {address}",
                 )
+        if validated_hosts is not None:
+            validated_hosts.add(host)
 
     async def _guard_redirect_url(
-        self, url: str, *, requested_url: str, deadline: float
+        self,
+        url: str,
+        *,
+        requested_url: str,
+        deadline: float,
+        validated_hosts: set[str],
     ) -> None:
         """Run the SSRF guard on a redirect hop's target, inside the budget.
 
@@ -973,6 +1067,19 @@ class IntersphinxCacheService:
         many hosts as the hop cap allows, and a hop whose resolution hangs
         would otherwise stall the fetch outside the budget entirely.
 
+        Parameters
+        ----------
+        url
+            The redirect hop's target URL.
+        requested_url
+            The originally requested inventory URL, for the rejection log.
+        deadline
+            The fetch's whole-chain monotonic deadline.
+        validated_hosts
+            The fetch's set of already-accepted hosts, passed through to
+            `_guard_url` so a hop back to a host this chain already resolved
+            skips the repeat lookup.
+
         Raises
         ------
         _FetchDeadlineExceededError
@@ -985,7 +1092,7 @@ class IntersphinxCacheService:
         """
         try:
             async with asyncio.timeout(self._remaining_budget(deadline)):
-                await self._guard_url(url)
+                await self._guard_url(url, validated_hosts=validated_hosts)
         except TimeoutError as exc:
             raise self._deadline_error() from exc
         except InvalidInventoryUrlError as exc:

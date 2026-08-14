@@ -1130,6 +1130,205 @@ async def test_redirect_hop_bodies_not_counted_against_size_cap(
 
 
 @pytest.mark.asyncio
+async def test_small_redirect_hop_body_is_drained(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A small redirect-hop body is read to the end and discarded.
+
+    An HTTP/1.1 connection whose response body is left unread cannot go back
+    in the pool, so a chain that returns to a host it already visited would
+    open a fresh TCP+TLS connection for each hop. Reading the hop's body —
+    a couple of hundred bytes of boilerplate in practice — is what keeps the
+    connection reusable.
+    """
+    terminal = "https://docs.example.com/en/21/objects.inv"
+    drained = False
+
+    async def hop_body() -> AsyncIterator[bytes]:
+        nonlocal drained
+        yield b"<html>moved</html>"
+        drained = True
+
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            302, headers={"Location": terminal}, content=hop_body()
+        )
+    )
+    respx_mock.get(terminal).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_cache_service()
+        inventory = await service.get_inventory(INVENTORY_URL)
+
+    assert drained is True
+    assert inventory.content == INVENTORY_BODY
+
+
+@pytest.mark.asyncio
+async def test_oversized_redirect_hop_body_is_abandoned(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A redirect hop dumping a huge body is abandoned, not drained.
+
+    Draining a hop buys back one pooled connection, which is only worth a
+    bounded read: a hop whose body runs past the drain cap is dropped
+    (closing its connection) rather than read to the end. The abandoned
+    bytes are still not measured against ``max_content_size``, which
+    applies to the terminal response alone.
+    """
+    terminal = "https://docs.example.com/en/21/objects.inv"
+    chunk_size = 1024
+    drain_limit = intersphinx_service._HOP_DRAIN_LIMIT
+    total_chunks = 4 * drain_limit // chunk_size
+    yielded = 0
+
+    async def hop_body() -> AsyncIterator[bytes]:
+        nonlocal yielded
+        for _ in range(total_chunks):
+            yielded += 1
+            yield b"x" * chunk_size
+
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            302, headers={"Location": terminal}, content=hop_body()
+        )
+    )
+    respx_mock.get(terminal).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    service = _make_capped_service(
+        factory, max_content_size=len(INVENTORY_BODY)
+    )
+    async with factory.db_session.begin():
+        inventory = await service.get_inventory(INVENTORY_URL)
+
+    assert yielded < total_chunks
+    assert inventory.content == INVENTORY_BODY
+
+
+@pytest.mark.asyncio
+async def test_repeated_host_in_a_chain_is_resolved_once(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host revisited within one chain is guard-resolved only once.
+
+    The guard's resolution is the expensive half of a hop: the cluster has
+    no caching resolver and ``ndots`` search expansion multiplies each
+    external-name lookup. A chain that leaves a host and comes back — the
+    motivating SQLAlchemy shape — pays for that host once, while the new
+    host in the chain is still guarded.
+    """
+    hop = "https://www.example.com/docs/latest/objects.inv"
+    terminal = "https://docs.example.com/en/21/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": hop})
+    )
+    respx_mock.get(hop).mock(
+        return_value=Response(302, headers={"Location": terminal})
+    )
+    respx_mock.get(terminal).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+    resolutions: list[str] = []
+
+    async def resolve(host: str) -> list[str]:
+        resolutions.append(host)
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_cache_service()
+        inventory = await service.get_inventory(INVENTORY_URL)
+
+    assert inventory.content == INVENTORY_BODY
+    # The requested host is resolved by the pre-fetch guard and not again
+    # when the chain returns to it.
+    assert resolutions == ["docs.example.com", "www.example.com"]
+
+
+@pytest.mark.asyncio
+async def test_validated_hosts_are_not_remembered_across_fetches(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guard-validated hosts are forgotten when the fetch ends.
+
+    Skipping a repeat resolution is safe within one chain, seconds after
+    the host was validated; remembering it for the life of the service
+    would instead be an unbounded cache of "this host was public once",
+    which is exactly the check DNS rebinding is meant to defeat.
+    """
+    other_url = "https://docs.example.com/en/v1/objects.inv"
+    hop = "https://cdn.example.com/latest/objects.inv"
+    other_hop = "https://cdn.example.com/v1/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": hop})
+    )
+    respx_mock.get(other_url).mock(
+        return_value=Response(302, headers={"Location": other_hop})
+    )
+    respx_mock.get(hop).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+    respx_mock.get(other_hop).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+    resolutions: list[str] = []
+
+    async def resolve(host: str) -> list[str]:
+        resolutions.append(host)
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_cache_service()
+        await service.get_inventory(INVENTORY_URL)
+        await service.get_inventory(other_url)
+
+    # The second fetch re-resolves the hop host its own chain reaches.
+    assert resolutions.count("cdn.example.com") == 2
+
+
+@pytest.mark.asyncio
+async def test_repeated_host_hop_is_still_scheme_checked(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A hop back to a validated host over ``http`` is still rejected.
+
+    The dedup skips the *resolution*, not the guard. TLS hostname
+    verification on the https-only fetch is what backstops rebinding here
+    in place of pinning the validated address, so the scheme check has to
+    run on every hop however familiar its host.
+    """
+    hop = "http://docs.example.com/en/21/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": hop})
+    )
+    hop_route = respx_mock.get(hop).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible,
+    # mirroring how the handler commits the failure path.
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError, match="disallowed target"):
+        await service.get_inventory(INVENTORY_URL)
+
+    assert hop_route.call_count == 0
+
+
+@pytest.mark.asyncio
 async def test_slow_redirect_chain_stops_at_the_time_budget(
     factory: Factory,
     respx_mock: respx.Router,
