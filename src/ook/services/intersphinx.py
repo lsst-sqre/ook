@@ -341,11 +341,17 @@ class IntersphinxCacheService:
         them via ``date_requested``.
 
         A per-inventory failure (SSRF guard rejection, upstream 4xx/5xx,
-        timeout, connection error) is logged and skipped; the stored copy is
-        left untouched so it keeps serving stale, and the rest of the batch
-        continues. This is the background counterpart to the request path:
-        the request path never blocks on upstream because this job keeps the
-        cache warm.
+        timeout, connection error) is logged and skipped, and the rest of the
+        batch continues. The stored copy — content, validators, and the
+        ``date_fetched`` freshness anchor alike — is left untouched so it
+        keeps serving stale at its true age; only the failure columns and the
+        backoff marker are written, which holds the inventory out of the due
+        list for one TTL. Without that backoff a broken origin would be
+        retried on every run, sorting ahead of every healthy inventory and
+        (since each attempt can walk a whole redirect chain) delaying them
+        behind it, for the entire active window. This is the background
+        counterpart to the request path: the request path never blocks on
+        upstream because this job keeps the cache warm.
 
         Unlike the rest of this service, which leaves transaction boundaries
         to its caller (the request handler commits `get_inventory` itself),
@@ -395,15 +401,23 @@ class IntersphinxCacheService:
                 # copy untouched so it keeps serving stale.
                 await self._session.rollback()
                 failed += 1
+                detail = (
+                    _describe_upstream_error(exc)
+                    if isinstance(exc, httpx.HTTPError)
+                    else str(exc)
+                )
+                # Record the failed attempt in its own transaction, so the
+                # inventory backs off instead of heading the due list again
+                # on the very next run.
+                await self._inventory_store.update_refresh_failure(
+                    inventory.url, now=now, error=detail
+                )
+                await self._session.commit()
                 self._logger.warning(
                     "Failed to refresh intersphinx inventory",
                     url=inventory.url,
                     cache_status="refresh-failure",
-                    error=(
-                        _describe_upstream_error(exc)
-                        if isinstance(exc, httpx.HTTPError)
-                        else str(exc)
-                    ),
+                    error=detail,
                 )
                 continue
             # Commit this inventory's outcome immediately so a later crash in
@@ -436,7 +450,8 @@ class IntersphinxCacheService:
         Returns True when a ``304`` revalidated the stored copy in place and
         False when a ``200`` replaced its content. Raises on a guard
         rejection, an upstream failure, or an oversized response so the
-        caller can log and skip it, leaving the stored copy untouched.
+        caller can log the failure, record its backoff, and skip to the next
+        inventory, leaving the stored copy untouched.
         """
         # Re-guard the stored URL before fetching: it passed the guard when
         # first cached, but DNS can rebind a once-public host to a private
@@ -466,6 +481,9 @@ class IntersphinxCacheService:
                     resolved_redirect_permanent=(
                         fetch.resolved_redirect_permanent
                     ),
+                    # A revalidated inventory is healthy again: drop any
+                    # backoff an earlier failure left on it.
+                    date_refresh_failed=None,
                 )
             )
             self._logger.info(
@@ -491,6 +509,9 @@ class IntersphinxCacheService:
                 resolved_redirect_permanent=(
                     fetch.resolved_redirect_permanent
                 ),
+                # A refreshed inventory is healthy again: drop any backoff an
+                # earlier failure left on it.
+                date_refresh_failed=None,
             )
         )
         self._logger.info(
@@ -578,6 +599,8 @@ class IntersphinxCacheService:
             last_fetch_error=None,
             resolved_url=fetch.resolved_url,
             resolved_redirect_permanent=fetch.resolved_redirect_permanent,
+            # A fetch that succeeded owes the refresh job no backoff.
+            date_refresh_failed=None,
         )
         await self._inventory_store.upsert_inventory(inventory)
         return inventory
@@ -760,6 +783,11 @@ class IntersphinxCacheService:
                 # A negative-cache row has no content and no resolved chain.
                 resolved_url=None,
                 resolved_redirect_permanent=None,
+                # This row's own date_fetched dates the failed attempt, so
+                # the refresh job's backoff marker — which exists only
+                # because a refresh failure must not touch date_fetched —
+                # has nothing to add here.
+                date_refresh_failed=None,
             )
         )
         self._logger.warning(

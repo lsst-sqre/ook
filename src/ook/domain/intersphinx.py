@@ -93,3 +93,16 @@ class IntersphinxInventory:
     and None when the chain did not redirect. Only an all-permanent chain
     means the requested URL itself should be updated at its source.
     """
+
+    date_refresh_failed: datetime | None
+    """The time of the most recent failed proactive refresh, or None when
+    the last completed fetch succeeded.
+
+    This is the refresh job's backoff marker, and the only failure record
+    that does not ride on ``date_fetched``: a refresh failure must leave the
+    stored copy — content, validators, and freshness anchor alike —
+    untouched, so it has nowhere else to record when it happened. The due
+    list holds a row back for the same TTL after a failure, so a broken
+    inventory is retried on the normal refresh cadence instead of on every
+    run. A successful fetch clears it.
+    """

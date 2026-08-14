@@ -131,6 +131,48 @@ class IntersphinxInventoryStore:
         )
         await self._session.flush()
 
+    async def update_refresh_failure(
+        self, url: str, *, now: datetime, error: str
+    ) -> None:
+        """Record a failed proactive refresh without touching the stored copy.
+
+        This is the refresh path's failure write, the counterpart to
+        `update_refresh_outcome`. It writes only the failure columns and the
+        backoff marker — ``last_fetch_status``, ``last_fetch_error``, and
+        ``date_refresh_failed`` — and touches no other column *by
+        construction* rather than by guard: content, its validators, its
+        resolved-redirect columns, and the ``date_fetched`` freshness anchor
+        are all left as the last successful fetch wrote them. That is what
+        keeps the stored copy serving stale at its true reported age, and it
+        is also why a failure cannot clobber content a concurrent cold-miss
+        request stored between the due-list read and this write.
+
+        The marker is what backs the row off: `get_stale_active_inventories`
+        holds a row out of the due list for a TTL after its last failure, so
+        a broken inventory is retried on the normal refresh cadence rather
+        than on every run. Like `update_refresh_outcome`, this never inserts;
+        the refresh path only ever writes rows that already exist.
+
+        Parameters
+        ----------
+        url
+            The URL of the inventory whose refresh failed.
+        now
+            The time of the failed attempt.
+        error
+            A description of the failure, stored as ``last_fetch_error``.
+        """
+        await self._session.execute(
+            update(SqlIntersphinxInventory)
+            .where(SqlIntersphinxInventory.url == url)
+            .values(
+                last_fetch_status=InventoryFetchStatus.failure.value,
+                last_fetch_error=error,
+                date_refresh_failed=now,
+            )
+        )
+        await self._session.flush()
+
     @staticmethod
     def _row_values(inventory: IntersphinxInventory) -> dict[str, object]:
         """Build the column values for an insert or upsert of an inventory."""
@@ -152,6 +194,7 @@ class IntersphinxInventoryStore:
             "resolved_redirect_permanent": (
                 inventory.resolved_redirect_permanent
             ),
+            "date_refresh_failed": inventory.date_refresh_failed,
         }
 
     async def get_inventory(self, url: str) -> IntersphinxInventory | None:
@@ -216,10 +259,15 @@ class IntersphinxInventoryStore:
         """Enumerate cached inventories that are due for a refresh.
 
         An inventory is due when its last fetch is older than the freshness
-        TTL (or it has never been fetched) and it was requested by a client
-        within the active window. Inventories requested longer ago than the
+        TTL (or it has never been fetched), it was requested by a client
+        within the active window, and its last refresh failure — if any — is
+        itself older than the TTL. Inventories requested longer ago than the
         active window are skipped so the refresh job doesn't revalidate
-        inventories no client is using.
+        inventories no client is using, and a recently-failed inventory backs
+        off so a broken origin is retried on the normal refresh cadence
+        instead of on every run. Both cutoffs use the same TTL: a failed
+        attempt costs an inventory exactly the interval a successful one
+        would have bought it.
 
         Parameters
         ----------
@@ -227,7 +275,8 @@ class IntersphinxInventoryStore:
             The current time.
         ttl
             The freshness TTL; inventories fetched earlier than
-            ``now - ttl`` are stale.
+            ``now - ttl`` are stale, and a refresh failure earlier than
+            ``now - ttl`` no longer holds its inventory back.
         active_window
             The active window; only inventories requested at or after
             ``now - active_window`` are eligible.
@@ -248,6 +297,8 @@ class IntersphinxInventoryStore:
                 SqlIntersphinxInventory.date_requested >= active_cutoff,
                 (SqlIntersphinxInventory.date_fetched.is_(None))
                 | (SqlIntersphinxInventory.date_fetched < stale_cutoff),
+                (SqlIntersphinxInventory.date_refresh_failed.is_(None))
+                | (SqlIntersphinxInventory.date_refresh_failed < stale_cutoff),
             )
             .order_by(SqlIntersphinxInventory.date_fetched.asc().nullsfirst())
         )
@@ -277,4 +328,5 @@ class IntersphinxInventoryStore:
             last_fetch_error=row.last_fetch_error,
             resolved_url=row.resolved_url,
             resolved_redirect_permanent=row.resolved_redirect_permanent,
+            date_refresh_failed=row.date_refresh_failed,
         )

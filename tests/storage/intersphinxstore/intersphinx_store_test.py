@@ -28,6 +28,7 @@ def _make_inventory(
     last_fetch_error: str | None = None,
     resolved_url: str | None = None,
     resolved_redirect_permanent: bool | None = None,
+    date_refresh_failed: datetime | None = None,
 ) -> IntersphinxInventory:
     return IntersphinxInventory(
         url=url,
@@ -41,6 +42,7 @@ def _make_inventory(
         last_fetch_error=last_fetch_error,
         resolved_url=resolved_url,
         resolved_redirect_permanent=resolved_redirect_permanent,
+        date_refresh_failed=date_refresh_failed,
     )
 
 
@@ -426,6 +428,88 @@ async def test_update_refresh_outcome_rewrites_resolved_redirect(
             stored.resolved_url == "https://docs.example.com/en/21/objects.inv"
         )
         assert stored.resolved_redirect_permanent is False
+
+
+@pytest.mark.asyncio
+async def test_update_refresh_failure_keeps_the_stored_copy(
+    factory: Factory,
+) -> None:
+    """A refresh-failure write records the attempt and changes nothing else.
+
+    The failure must not clear the content, its validators, its
+    resolved-redirect columns, or the ``date_fetched`` freshness anchor: the
+    stored copy keeps serving stale and keeps reporting its true age. Only
+    the failure columns and the backoff marker move.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://docs.example.com/en/latest/objects.inv"
+
+        seeded = _make_inventory(
+            url,
+            content=b"kept payload",
+            date_fetched=now - timedelta(hours=2),
+            date_requested=now - timedelta(days=1),
+            resolved_url="https://docs.example.com/en/21/objects.inv",
+            resolved_redirect_permanent=True,
+        )
+        await store.upsert_inventory(seeded)
+
+        detail = "Upstream returned HTTP 500 for the inventory"
+        await store.update_refresh_failure(url, now=now, error=detail)
+
+        stored = await store.get_inventory(url)
+        assert stored == replace(
+            seeded,
+            last_fetch_status=InventoryFetchStatus.failure,
+            last_fetch_error=detail,
+            date_refresh_failed=now,
+        )
+
+
+@pytest.mark.asyncio
+async def test_recently_failed_inventory_is_not_due(factory: Factory) -> None:
+    """A recently-failed inventory is held out of the due list for the TTL.
+
+    Both rows below are stale and active, so only the recorded failure time
+    separates them. Without the backoff a broken inventory would be selected
+    on every run and — sorting stalest-fetch-first — ahead of every healthy
+    one.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        ttl = timedelta(hours=1)
+        active_window = timedelta(days=30)
+
+        await store.upsert_inventory(
+            _make_inventory(
+                "https://backing-off.example.com/objects.inv",
+                date_fetched=now - timedelta(days=1),
+                date_requested=now - timedelta(hours=1),
+                last_fetch_status=InventoryFetchStatus.failure,
+                last_fetch_error="Upstream request timed out",
+                date_refresh_failed=now - timedelta(minutes=10),
+            )
+        )
+        await store.upsert_inventory(
+            _make_inventory(
+                "https://retryable.example.com/objects.inv",
+                date_fetched=now - timedelta(days=1),
+                date_requested=now - timedelta(hours=1),
+                last_fetch_status=InventoryFetchStatus.failure,
+                last_fetch_error="Upstream request timed out",
+                date_refresh_failed=now - timedelta(hours=2),
+            )
+        )
+
+        due = await store.get_stale_active_inventories(
+            now=now, ttl=ttl, active_window=active_window
+        )
+        assert [inv.url for inv in due] == [
+            "https://retryable.example.com/objects.inv"
+        ]
 
 
 @pytest.mark.asyncio

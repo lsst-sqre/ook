@@ -44,6 +44,7 @@ async def test_run_refresh_intersphinx(
                 last_fetch_error=None,
                 resolved_url=None,
                 resolved_redirect_permanent=None,
+                date_refresh_failed=None,
             )
         )
     route = respx_mock.get(INVENTORY_URL).mock(return_value=Response(304))

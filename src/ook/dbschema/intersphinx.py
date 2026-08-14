@@ -107,3 +107,18 @@ class SqlIntersphinxInventory(Base):
     True when every hop was a 301 or 308, false when any hop was temporary,
     and null when the chain did not redirect.
     """
+
+    date_refresh_failed: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    """The time of the most recent failed proactive refresh (the refresh
+    job's backoff marker), or null when the last completed fetch succeeded.
+
+    Unindexed, unlike the other timestamps: it is a residual filter on the
+    due-list query rather than a driver of it, over a table of at most a few
+    thousand rows.
+
+    Nullable with no backfill: null is the meaningful "the last fetch
+    succeeded" value, so rows cached before this column existed are simply
+    eligible for their next refresh.
+    """

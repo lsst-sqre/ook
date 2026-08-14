@@ -205,6 +205,7 @@ async def test_expired_inventory_served_stale_without_upstream(
                 last_fetch_error=None,
                 resolved_url=None,
                 resolved_redirect_permanent=None,
+                date_refresh_failed=None,
             )
         )
 
@@ -491,6 +492,7 @@ async def test_negative_cache_expiry_refetches(
                 last_fetch_error="Upstream returned HTTP 500",
                 resolved_url=None,
                 resolved_redirect_permanent=None,
+                date_refresh_failed=None,
             )
         )
 
@@ -1231,6 +1233,7 @@ async def _seed_stale_inventory(
                 last_fetch_error=None,
                 resolved_url=resolved_url,
                 resolved_redirect_permanent=resolved_redirect_permanent,
+                date_refresh_failed=None,
             )
         )
 
@@ -1492,6 +1495,105 @@ async def test_refresh_per_inventory_failure_does_not_abort_batch(
         kept = await store.get_inventory(failing_url)
     assert kept is not None
     assert kept.content == b"kept payload"
+
+
+@pytest.mark.asyncio
+async def test_refresh_failure_backs_off_until_the_next_interval(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A failed refresh leaves the front of the due list until the next
+    interval.
+
+    Recording nothing would leave the row's stale ``date_fetched`` in place,
+    so it would be selected again on the very next run — and, sorting
+    stalest-first, ahead of every healthy inventory — for the whole 30-day
+    active window, each futile attempt now costing a full redirect chain.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    fetched_at = now - timedelta(hours=2)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        content=b"kept payload",
+        date_fetched=fetched_at,
+        date_requested=now - timedelta(days=1),
+    )
+    route = respx_mock.get(INVENTORY_URL).mock(return_value=Response(500))
+
+    service = factory.create_intersphinx_cache_service()
+    first = await service.refresh_inventories(now=now)
+    second = await service.refresh_inventories(now=now + timedelta(minutes=5))
+
+    assert first.considered == 1
+    assert first.failed == 1
+    # The next run does not even consider it, so upstream is not re-tried.
+    assert second.considered == 0
+    assert route.call_count == 1
+
+    # A fresh, independent session sees the committed failure: it survived
+    # the rollback that discards the failed inventory's pending write.
+    logger = structlog.get_logger("test")
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    session = await create_async_session(engine)
+    store = IntersphinxInventoryStore(session=session, logger=logger)
+    stored = await store.get_inventory(INVENTORY_URL)
+    await session.close()
+    await engine.dispose()
+
+    assert stored is not None
+    assert stored.last_fetch_status is InventoryFetchStatus.failure
+    assert (
+        stored.last_fetch_error
+        == "Upstream returned HTTP 500 for the inventory"
+    )
+    assert stored.date_refresh_failed == now
+    # The stored copy is intact behind the failure, down to the freshness
+    # anchor that dates its content.
+    assert stored.content == b"kept payload"
+    assert stored.date_fetched == fetched_at
+
+
+@pytest.mark.asyncio
+async def test_refresh_success_after_failure_restores_the_cadence(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A successful refresh clears the backoff a failure left behind."""
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        content=b"kept payload",
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    new_body = b"# Sphinx inventory version 2\nrecovered payload"
+    respx_mock.get(INVENTORY_URL).mock(
+        side_effect=[Response(500), Response(200, content=new_body)]
+    )
+
+    service = factory.create_intersphinx_cache_service()
+    failed_run = await service.refresh_inventories(now=now)
+    # Once the backoff interval has elapsed the inventory is due again.
+    recovered_at = now + timedelta(hours=2)
+    recovered_run = await service.refresh_inventories(now=recovered_at)
+
+    assert failed_run.failed == 1
+    assert recovered_run.refreshed == 1
+    assert recovered_run.failed == 0
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert stored.content == new_body
+    assert stored.date_fetched == recovered_at
+    assert stored.last_fetch_status is InventoryFetchStatus.success
+    assert stored.last_fetch_error is None
+    assert stored.date_refresh_failed is None
 
 
 @pytest.mark.asyncio
