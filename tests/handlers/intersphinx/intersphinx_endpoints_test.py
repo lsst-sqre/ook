@@ -133,6 +133,38 @@ async def test_http_url_rejected_with_400(
     assert route.call_count == 0
 
 
+@pytest.mark.parametrize(
+    "malformed_url",
+    [
+        # A port ``urlsplit`` never validates, so the guard's own parse
+        # accepts it and only httpx refuses it.
+        "https://docs.example.com:notaport/objects.inv",
+        # An unterminated IPv6 literal, which ``urlsplit`` itself refuses.
+        "https://[::1/objects.inv",
+    ],
+)
+@pytest.mark.asyncio
+async def test_unparseable_url_rejected_with_400(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+    malformed_url: str,
+) -> None:
+    """A URL no parser accepts is a 400, not an unhandled 500.
+
+    Both shapes name a plausible public host, so nothing but the parse
+    check stands between them and an upstream fetch.
+    """
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": malformed_url},
+    )
+
+    assert response.status_code == 400
+    assert "could not be parsed" in response.json()["detail"][0]["msg"]
+    # Nothing is fetched from upstream for a URL that never parsed.
+    assert respx_mock.calls.call_count == 0
+
+
 @pytest.mark.asyncio
 async def test_cold_miss_upstream_failure_returns_502(
     client: AsyncClient,

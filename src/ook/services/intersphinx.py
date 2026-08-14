@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import NoReturn
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 import httpx
 from httpx import AsyncClient
@@ -1064,15 +1064,60 @@ class IntersphinxCacheService:
         )
         raise UpstreamInventoryError(detail)
 
+    def _parse_url(self, url: str) -> SplitResult:
+        """Split a URL for the guard, rejecting one no parser accepts.
+
+        The two parsers this service relies on disagree about what a URL is,
+        and the gap between them is an escape hatch. ``urlsplit`` never
+        validates a port, so ``https://example.com:notaport/objects.inv``
+        passes the guard, is resolved, and only then makes httpx raise
+        ``httpx.InvalidURL`` — which is not an ``httpx.HTTPError``, so it
+        escapes every fetch path's handler as an unhandled 500 that is never
+        negatively cached and re-pays the lookup on every repeat.
+        ``urlsplit`` for its part raises ``ValueError`` outright on an
+        unterminated IPv6 literal, escaping from the guard itself. Running
+        both parsers up front, before anything is resolved, turns each of
+        those into the 400 the error taxonomy already assigns a bad
+        requested URL: the URL is the client's own choice, so the failure is
+        the client's to fix and is not cached.
+
+        This is the requested URL's counterpart to `_join_redirect_url`,
+        which closes the same escape for a hop's ``Location``.
+
+        Returns
+        -------
+        SplitResult
+            The ``urlsplit`` parse, which is what the guard's own checks and
+            the rest of the service read. httpx's parse is run for its
+            stricter reading and then discarded.
+
+        Raises
+        ------
+        InvalidInventoryUrlError
+            Raised when either parser refuses the URL.
+        """
+        try:
+            parts = urlsplit(url)
+            httpx.URL(url)
+        except (ValueError, httpx.InvalidURL) as exc:
+            # Both are named because neither implies the other:
+            # httpx.InvalidURL is not a ValueError, and urlsplit's failure
+            # is not an httpx error.
+            self._reject_url(url, f"URL could not be parsed: {exc}")
+        return parts
+
     async def _guard_url(
         self, url: str, *, validated_hosts: set[str] | None = None
     ) -> None:
         """Reject a URL that must not be fetched from upstream.
 
-        This SSRF guard runs before any upstream fetch: the URL must use
-        ``https`` and its host must not resolve to a private, link-local,
-        or loopback address. A rejected URL is never fetched and never
-        stored.
+        This SSRF guard runs before any upstream fetch: the URL must parse,
+        it must use ``https``, and its host must not resolve to a private,
+        link-local, or loopback address. A rejected URL is never fetched and
+        never stored.
+
+        Parsing comes first, and rejects before anything is resolved — see
+        `_parse_url`.
 
         The guard resolves the host itself, but httpx re-resolves at connect
         time, so a DNS-rebinding answer could point the socket at a private
@@ -1105,11 +1150,11 @@ class IntersphinxCacheService:
         Raises
         ------
         InvalidInventoryUrlError
-            Raised if the URL uses a non-``https`` scheme, its host cannot
-            be resolved at all, or its host resolves to a non-public
-            address.
+            Raised if the URL cannot be parsed, uses a non-``https`` scheme,
+            its host cannot be resolved at all, or its host resolves to a
+            non-public address.
         """
-        parts = urlsplit(url)
+        parts = self._parse_url(url)
         if parts.scheme != "https":
             self._reject_url(
                 url, f"URL scheme must be 'https', not {parts.scheme!r}"

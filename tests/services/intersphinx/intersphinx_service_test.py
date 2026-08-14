@@ -342,6 +342,35 @@ async def test_ipv4_mapped_ipv6_literal_rejected_before_fetch(
     assert stored is None
 
 
+@pytest.mark.asyncio
+async def test_unparseable_url_rejected_before_resolution(
+    factory: Factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A URL that does not parse is refused without a DNS lookup.
+
+    ``urlsplit`` accepts this URL's bogus port, so before the guard parsed
+    the URL with httpx as well the host was resolved — every repeat paying
+    for the lookup again — only for httpx to then refuse the URL.
+    """
+    resolved: list[str] = []
+
+    async def resolve(host: str) -> list[str]:
+        resolved.append(host)
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    with pytest.raises(InvalidInventoryUrlError, match="could not be parsed"):
+        async with factory.db_session.begin():
+            service = factory.create_intersphinx_cache_service()
+            await service.get_inventory(
+                "https://docs.example.com:notaport/objects.inv"
+            )
+
+    assert resolved == []
+
+
 @pytest.mark.parametrize(
     "failure",
     [
