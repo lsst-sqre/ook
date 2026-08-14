@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
@@ -1485,6 +1486,87 @@ async def test_fast_redirect_chain_resolves_within_the_time_budget(
     assert inventory.resolved_url == terminal
 
 
+@pytest.mark.asyncio
+async def test_stalled_response_headers_stop_at_the_time_budget(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """An origin that stalls mid-response cannot outlast the fetch budget.
+
+    The budget checks between hops and between body chunks only run when a
+    hop completes, and the per-call httpx read timeout is re-armed on every
+    socket read while the response headers arrive. Only cancelling the fetch
+    at the deadline bounds an origin that stalls inside a single hop — the
+    request's DB session is held open for as long as it does.
+    """
+
+    async def stalled(request: httpx.Request) -> Response:
+        await asyncio.sleep(3)
+        return Response(200, content=INVENTORY_BODY)
+
+    respx_mock.get(INVENTORY_URL).mock(side_effect=stalled)
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible,
+    # mirroring how the handler commits the failure path.
+    service = _make_budgeted_service(
+        factory, request_timeout=timedelta(seconds=0.2)
+    )
+    start = time.monotonic()
+    with pytest.raises(UpstreamInventoryError, match="time budget"):
+        await service.get_inventory(INVENTORY_URL)
+    assert time.monotonic() - start < 1.5
+
+    stored = await factory.create_intersphinx_inventory_store().get_inventory(
+        INVENTORY_URL
+    )
+    assert stored is not None
+    assert stored.content is None
+    assert stored.last_fetch_status is InventoryFetchStatus.failure
+
+
+@pytest.mark.asyncio
+async def test_requested_url_guard_bounded_by_the_time_budget(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung resolver on the requested URL is cut off by the fetch budget.
+
+    The requested URL's guard runs before the first hop, so unless the
+    budget covers it too a hung resolver ladder stalls the request — and its
+    open DB session — outside every bound the fetch has.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    async def resolve(host: str) -> list[str]:
+        await asyncio.sleep(3)
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible,
+    # mirroring how the handler commits the failure path.
+    service = _make_budgeted_service(
+        factory, request_timeout=timedelta(seconds=0.2)
+    )
+    start = time.monotonic()
+    with pytest.raises(UpstreamInventoryError, match="time budget"):
+        await service.get_inventory(INVENTORY_URL)
+    assert time.monotonic() - start < 1.5
+
+    # The URL whose guard never finished is never fetched.
+    assert route.call_count == 0
+
+    stored = await factory.create_intersphinx_inventory_store().get_inventory(
+        INVENTORY_URL
+    )
+    assert stored is not None
+    assert stored.content is None
+    assert stored.last_fetch_status is InventoryFetchStatus.failure
+
+
 async def _seed_stale_inventory(
     factory: Factory,
     url: str,
@@ -2099,6 +2181,56 @@ async def test_refresh_redirect_hop_dns_failure_skips_one_inventory(
         kept = await store.get_inventory(failing_url)
     assert kept is not None
     assert kept.content == b"kept payload"
+
+
+@pytest.mark.asyncio
+async def test_refresh_guard_resolution_bounded_by_the_time_budget(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung resolver on the stored URL skips one inventory, not the batch.
+
+    The refresh path re-guards the stored URL before fetching it, and that
+    lookup runs serially ahead of every other inventory in the run: without
+    the budget covering it, one host whose DNS ladder hangs stalls the whole
+    batch rather than costing its own inventory a skip.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    route = respx_mock.get(INVENTORY_URL).mock(return_value=Response(304))
+
+    async def resolve(host: str) -> list[str]:
+        await asyncio.sleep(3)
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    service = _make_budgeted_service(
+        factory, request_timeout=timedelta(seconds=0.2)
+    )
+    start = time.monotonic()
+    summary = await service.refresh_inventories(now=now)
+    assert time.monotonic() - start < 1.5
+
+    assert summary.failed == 1
+    assert summary.revalidated == 0
+    # The URL whose guard never finished is never fetched.
+    assert route.call_count == 0
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    # The stored copy keeps serving stale; only the failure columns move.
+    assert stored.content == INVENTORY_BODY
+    assert stored.last_fetch_error is not None
+    assert "time budget" in stored.last_fetch_error
 
 
 @pytest.mark.asyncio

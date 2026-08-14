@@ -6,7 +6,14 @@ import asyncio
 import ipaddress
 import socket
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Mapping,
+    Sequence,
+)
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import NoReturn
@@ -242,9 +249,10 @@ class IntersphinxCacheService:
     Every upstream fetch is hardened against a hostile or misbehaving
     origin: redirects are followed by hand, one guarded hop at a time and
     bounded by a hop cap (so the SSRF guard cannot be bypassed via an
-    upstream ``Location`` and a redirect loop terminates), the whole chain
-    runs against a single time budget so a slow origin cannot multiply the
-    per-request timeout by the hop cap, and the terminal response body is
+    upstream ``Location`` and a redirect loop terminates), the whole fetch —
+    the guard on the requested URL included — is cancelled at a single time
+    budget so neither a long chain nor one stalled hop can outlast it, and
+    the terminal response body is
     streamed under a size cap so an oversized inventory is abandoned rather
     than buffered into memory. An oversized response, an over-long chain, an
     exhausted time budget, an unusable ``Location``, a ``304`` answering a
@@ -300,10 +308,12 @@ class IntersphinxCacheService:
         The logger.
     request_timeout
         Time budget for one upstream inventory fetch, on both the cold-miss
-        and refresh paths. It bounds the fetch as a whole — every redirect
-        hop, every hop target's guard resolution, and the terminal body read
-        share it — so a redirect chain costs no more wall-clock time than a
-        single non-redirecting fetch.
+        and refresh paths. It bounds the fetch as a whole — the requested
+        URL's guard resolution, every redirect hop, every hop target's guard
+        resolution, and the terminal body read all share it, and the fetch is
+        cancelled when it expires — so a redirect chain costs no more
+        wall-clock time than a single non-redirecting fetch, and no single
+        stalled step can cost more than the budget. See `_fetch_budget`.
     max_content_size
         Maximum accepted size, in bytes, of an origin inventory response.
         A response whose ``Content-Length`` or streamed body exceeds this
@@ -507,15 +517,25 @@ class IntersphinxCacheService:
 
         Returns True when a ``304`` revalidated the stored copy in place and
         False when a ``200`` replaced its content. Raises on a guard
-        rejection, an upstream failure, or an oversized response so the
-        caller can log the failure, record its backoff, and skip to the next
-        inventory, leaving the stored copy untouched.
+        rejection, an upstream failure, an exhausted time budget, or an
+        oversized response so the caller can log the failure, record its
+        backoff, and skip to the next inventory, leaving the stored copy
+        untouched.
+
+        Everything that talks to the network — the stored URL's re-guard and
+        the revalidation chain alike — runs inside one `_fetch_budget`, so
+        one origin (or one hung resolver) costs its own inventory a skip
+        rather than stalling the serial batch behind it. The database writes
+        below deliberately sit outside the budget: they are this inventory's
+        recorded outcome and must not be cancelled by it.
         """
-        # Re-guard the stored URL before fetching: it passed the guard when
-        # first cached, but DNS can rebind a once-public host to a private
-        # address, so the cheap re-check preserves the SSRF invariant.
-        await self._guard_url(inventory.url)
-        fetch = await self._revalidate(inventory)
+        async with self._fetch_budget() as deadline:
+            # Re-guard the stored URL before fetching: it passed the guard
+            # when first cached, but DNS can rebind a once-public host to a
+            # private address, so the cheap re-check preserves the SSRF
+            # invariant.
+            await self._guard_url(inventory.url)
+            fetch = await self._revalidate(inventory, deadline=deadline)
         response = fetch.response
         # Every field a successful refresh writes regardless of whether the
         # content changed, applied once so the next one added cannot land on
@@ -567,7 +587,7 @@ class IntersphinxCacheService:
         return False
 
     async def _revalidate(
-        self, inventory: IntersphinxInventory
+        self, inventory: IntersphinxInventory, *, deadline: float
     ) -> _InventoryFetch:
         """Fetch one cached inventory conditionally, but only where it holds.
 
@@ -597,6 +617,10 @@ class IntersphinxCacheService:
         and the conditional fetch of a row that had no validators to send in
         the first place — a negative-cache row that aged into the due list.
 
+        Both fetches share the caller's single `_fetch_budget` deadline
+        rather than each starting a fresh one, so revalidating one inventory
+        costs the batch one budget however many chains it takes.
+
         Raises
         ------
         _UnconditionalNotModifiedError
@@ -608,7 +632,9 @@ class IntersphinxCacheService:
             headers["If-None-Match"] = inventory.etag
         if inventory.last_modified is not None:
             headers["If-Modified-Since"] = inventory.last_modified
-        fetch = await self._fetch_inventory(inventory.url, headers=headers)
+        fetch = await self._fetch_inventory(
+            inventory.url, headers=headers, deadline=deadline
+        )
         # A row cached from a chain that did not redirect has no stored
         # terminal, so the requested URL is the terminal its content came
         # from.
@@ -625,7 +651,7 @@ class IntersphinxCacheService:
             stored_url=stored_terminal,
             final_url=fetch.final_url,
         )
-        return await self._fetch_inventory(inventory.url)
+        return await self._fetch_inventory(inventory.url, deadline=deadline)
 
     def _is_negative_cache_fresh(self, cached: IntersphinxInventory) -> bool:
         """Return whether a cached row is a live negative-cache entry.
@@ -673,13 +699,14 @@ class IntersphinxCacheService:
         failure is negatively cached and re-raised as an
         `UpstreamInventoryError`.
         """
-        await self._guard_url(url)
-        self._logger.info(
-            "Fetching intersphinx inventory on cache miss", url=url
-        )
         try:
-            fetch = await self._fetch_inventory(url)
-            fetch.response.raise_for_status()
+            async with self._fetch_budget() as deadline:
+                await self._guard_url(url)
+                self._logger.info(
+                    "Fetching intersphinx inventory on cache miss", url=url
+                )
+                fetch = await self._fetch_inventory(url, deadline=deadline)
+                fetch.response.raise_for_status()
         except httpx.HTTPError as exc:
             await self._store_failure(url, error=exc)
         response = fetch.response
@@ -710,7 +737,11 @@ class IntersphinxCacheService:
         return inventory
 
     async def _fetch_inventory(
-        self, url: str, *, headers: dict[str, str] | None = None
+        self,
+        url: str,
+        *,
+        deadline: float,
+        headers: dict[str, str] | None = None,
     ) -> _InventoryFetch:
         """Fetch an origin inventory, following redirects under the guard.
 
@@ -753,15 +784,22 @@ class IntersphinxCacheService:
         caller the invariant that a returned ``304`` is a real revalidation
         of the copy whose validators were sent.
 
-        The whole chain runs against a single time budget of
-        ``request_timeout``, taken from the monotonic clock when the fetch
-        starts: each hop's request, each hop target's guard resolution, and
-        the terminal body read get only the time left in that budget, and
-        the budget is re-checked before each of them. The per-request
-        timeout alone would bound one hop rather than the chain, letting an
-        origin that dribbles each redirect just inside it stretch a fetch to
-        the hop cap times that timeout — on the cold-miss path, with the
-        request's DB session held open the whole time.
+        The chain runs inside the caller's `_fetch_budget`, which cancels it
+        outright at the deadline; that cancellation, not any check here, is
+        what bounds the fetch. ``deadline`` is the same budget's monotonic
+        expiry, used here only to size each hop's per-call httpx timeout and
+        to refuse to start work the budget can no longer pay for — belt and
+        braces behind the cancellation, and the reason a slow chain usually
+        reports a spent budget rather than being cut mid-syscall.
+
+        Parameters
+        ----------
+        url
+            The origin inventory URL to fetch.
+        deadline
+            The enclosing `_fetch_budget`'s monotonic expiry.
+        headers
+            Conditional-request headers to send, if any.
 
         Raises
         ------
@@ -784,7 +822,6 @@ class IntersphinxCacheService:
         httpx.HTTPError
             Propagated from the transport on a timeout or connection error.
         """
-        deadline = time.monotonic() + self._request_timeout
         current_url = url
         request_headers = headers or {}
         hops: list[int] = []
@@ -877,6 +914,53 @@ class IntersphinxCacheService:
             drained += len(chunk)
             if drained > _HOP_DRAIN_LIMIT:
                 return
+
+    @asynccontextmanager
+    async def _fetch_budget(self) -> AsyncIterator[float]:
+        """Run one inventory fetch under a single cancelling time budget.
+
+        Yields the budget's monotonic expiry, which the body passes down to
+        size each per-call httpx timeout. The budget itself is enforced by
+        `asyncio.timeout`, which cancels the whole body at the deadline —
+        the only enforcement that actually holds. Checking the clock between
+        operations cannot bound one that never returns, and the per-call
+        httpx timeouts cannot either: httpcore re-arms the read timeout on
+        every socket read, so an origin trickling response-header bytes
+        keeps a single hop alive indefinitely, and connect, write, and read
+        each get the full remaining budget in turn. On the cold-miss path
+        that hop holds the request's DB session open the whole time, which
+        is the exhaustion hazard the budget exists to close.
+
+        The budget covers the SSRF guard on the requested URL as well as the
+        chain: that resolution runs before the first hop, and the cluster
+        has no caching resolver, so an ``ndots``-expanded lookup of a host
+        whose DNS never answers is exactly the kind of stall that must not
+        sit outside every bound.
+
+        Callers put their database writes *outside* this block. A write is
+        the recorded outcome of the fetch — a negative-cache row, a refresh
+        result — and cancelling it would lose the very record the spent
+        budget is supposed to produce.
+
+        Yields
+        ------
+        float
+            The budget's monotonic deadline.
+
+        Raises
+        ------
+        _FetchDeadlineExceededError
+            Raised when the budget expires, so an exhausted budget reaches
+            both fetch paths as the same upstream failure however it was
+            spent: negatively cached and served as a 502 on the request
+            path, a per-inventory skip on the refresh path.
+        """
+        deadline = time.monotonic() + self._request_timeout
+        try:
+            async with asyncio.timeout(self._request_timeout):
+                yield deadline
+        except TimeoutError as exc:
+            raise self._deadline_error() from exc
 
     def _remaining_budget(self, deadline: float) -> float:
         """Return the seconds left in the whole-fetch budget.
@@ -1102,9 +1186,9 @@ class IntersphinxCacheService:
         guard's own rejection log names only the hop.
 
         The guard's own resolver has no timeout, so the lookup is bounded by
-        whatever is left of the fetch's time budget: a chain can point at as
+        the enclosing `_fetch_budget`'s cancellation: a chain can point at as
         many hosts as the hop cap allows, and a hop whose resolution hangs
-        would otherwise stall the fetch outside the budget entirely.
+        would otherwise stall the fetch outside every bound it has.
 
         Parameters
         ----------
@@ -1113,7 +1197,8 @@ class IntersphinxCacheService:
         requested_url
             The originally requested inventory URL, for the rejection log.
         deadline
-            The fetch's whole-chain monotonic deadline.
+            The fetch's whole-chain monotonic deadline, checked so a hop
+            whose guard the budget can no longer pay for is not started.
         validated_hosts
             The fetch's set of already-accepted hosts, passed through to
             `_guard_url` so a hop back to a host this chain already resolved
@@ -1122,18 +1207,16 @@ class IntersphinxCacheService:
         Raises
         ------
         _FetchDeadlineExceededError
-            Raised when the budget is spent before, or during, the guard's
-            host resolution.
+            Raised when the budget is already spent when the guard is
+            reached.
         _UnsafeRedirectError
             Raised if the hop target uses a non-``https`` scheme, its host
             cannot be resolved, or its host resolves to a non-public
             address.
         """
+        self._remaining_budget(deadline)
         try:
-            async with asyncio.timeout(self._remaining_budget(deadline)):
-                await self._guard_url(url, validated_hosts=validated_hosts)
-        except TimeoutError as exc:
-            raise self._deadline_error() from exc
+            await self._guard_url(url, validated_hosts=validated_hosts)
         except InvalidInventoryUrlError as exc:
             self._logger.warning(
                 "Rejected an intersphinx inventory redirect hop",
