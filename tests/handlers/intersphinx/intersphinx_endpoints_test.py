@@ -14,6 +14,11 @@ from safir.database import create_async_session, create_database_engine
 
 from ook.config import config
 from ook.domain.intersphinx import InventoryFetchStatus
+from ook.handlers.intersphinx.endpoints import (
+    MAX_PERMANENT_REDIRECT_URL_LENGTH,
+    PERMANENT_REDIRECT_HEADER,
+    PERMANENT_REDIRECT_HEADER_SPEC,
+)
 from ook.storage.intersphinxstore import IntersphinxInventoryStore
 
 INVENTORY_URL = "https://docs.example.com/en/latest/objects.inv"
@@ -616,6 +621,128 @@ async def test_no_permanent_redirect_header_without_redirect(
     )
     assert not_modified.status_code == 304
     assert "x-ook-inventory-permanent-redirect" not in not_modified.headers
+
+
+def _overlong_terminal(length: int) -> str:
+    """Return a permanent-chain terminal URL of exactly ``length`` chars."""
+    prefix = "https://example.com/"
+    suffix = "/objects.inv"
+    filler = length - len(prefix) - len(suffix)
+    assert filler > 0
+    return f"{prefix}{'a' * filler}{suffix}"
+
+
+@pytest.mark.asyncio
+async def test_no_permanent_redirect_header_for_overlong_url(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """An over-long resolved URL is omitted rather than sent or truncated.
+
+    The value is upstream-controlled and stored unbounded, but ingress
+    header buffers are only a few kilobytes; emitting a multi-kilobyte
+    header would turn every cache hit for the row into an ingress-level
+    502 that Ook itself logs as a successful serve.
+    """
+    terminal = _overlong_terminal(MAX_PERMANENT_REDIRECT_URL_LENGTH + 1)
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(301, headers={"Location": terminal})
+    )
+    respx_mock.get(terminal).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    etag = await _prime_cache(client)
+
+    ok = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert ok.status_code == 200
+    assert ok.content == INVENTORY_BODY
+    assert "x-ook-inventory-permanent-redirect" not in ok.headers
+
+    not_modified = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+        headers={"If-None-Match": etag},
+    )
+    assert not_modified.status_code == 304
+    assert "x-ook-inventory-permanent-redirect" not in not_modified.headers
+
+
+@pytest.mark.asyncio
+async def test_permanent_redirect_header_at_length_bound(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A resolved URL exactly at the bound is still emitted."""
+    terminal = _overlong_terminal(MAX_PERMANENT_REDIRECT_URL_LENGTH)
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(301, headers={"Location": terminal})
+    )
+    respx_mock.get(terminal).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-ook-inventory-permanent-redirect"] == terminal
+
+
+@pytest.mark.asyncio
+async def test_permanent_redirect_header_documented_on_both_responses(
+    client: AsyncClient,
+) -> None:
+    """The 200 and 304 responses document the header from one spec.
+
+    The header block is defined once, keyed by the header-name constant,
+    and shared by both responses, so the two can never drift apart.
+    """
+    response = await client.get(f"{config.path_prefix}/openapi.json")
+    assert response.status_code == 200
+    operation = response.json()["paths"][
+        f"{config.path_prefix}/intersphinx/inventory"
+    ]["get"]
+
+    assert PERMANENT_REDIRECT_HEADER in PERMANENT_REDIRECT_HEADER_SPEC
+    for status in ("200", "304"):
+        assert (
+            operation["responses"][status]["headers"]
+            == PERMANENT_REDIRECT_HEADER_SPEC
+        )
+
+
+@pytest.mark.asyncio
+async def test_openapi_documents_304_cache_retention_caveat(
+    client: AsyncClient,
+) -> None:
+    """The endpoint description warns that a 304 cannot withdraw the header.
+
+    RFC 9111 §4.3.4 cache-update rules let a 304 update the headers it
+    carries but never delete the ones it omits, so a client behind a
+    spec-compliant HTTP cache could otherwise learn the flag and never
+    unlearn it.
+    """
+    response = await client.get(f"{config.path_prefix}/openapi.json")
+    assert response.status_code == 200
+    description = response.json()["paths"][
+        f"{config.path_prefix}/intersphinx/inventory"
+    ]["get"]["description"]
+
+    assert "RFC 9111" in description
 
 
 @pytest.mark.asyncio

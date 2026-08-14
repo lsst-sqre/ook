@@ -19,6 +19,33 @@ router = APIRouter(
 PERMANENT_REDIRECT_HEADER = "X-Ook-Inventory-Permanent-Redirect"
 """Header naming the URL a permanently-moved inventory now lives at."""
 
+PERMANENT_REDIRECT_HEADER_SPEC = {
+    PERMANENT_REDIRECT_HEADER: {
+        "description": (
+            "The URL this inventory's origin URL permanently redirects"
+            " to. Present only when every hop of the redirect chain was"
+            " permanent."
+        ),
+        "schema": {"type": "string", "format": "uri"},
+    }
+}
+"""OpenAPI ``headers`` block for the permanent-redirect header.
+
+Defined once and shared by every response that can carry the header, so
+the documented shape cannot drift between them.
+"""
+
+MAX_PERMANENT_REDIRECT_URL_LENGTH = 2048
+"""Longest resolved URL that may be echoed in the permanent-redirect header.
+
+The value is upstream-controlled and stored unbounded, while httpx only
+caps a URL at 65,535 characters — far beyond the header buffers of a
+typical ingress (ingress-nginx defaults to a 4k/8k ``proxy_buffer_size``).
+A multi-kilobyte header would turn every cache hit for that row into an
+ingress-level 502 that Ook itself logs as a successful serve, so anything
+past this sanity bound is dropped.
+"""
+
 
 def _strip_weak_prefix(etag: str) -> str:
     """Strip an optional ``W/`` weakness prefix from an entity-tag."""
@@ -56,10 +83,17 @@ def _permanent_redirect_headers(
     one to ask for (a ``latest`` alias legitimately moves), so there is
     nothing for a doc author to fix and no header. The values come from the
     stored row, so a cache hit answers without contacting the origin.
+
+    A resolved URL past `MAX_PERMANENT_REDIRECT_URL_LENGTH` is omitted
+    entirely rather than truncated: a truncated URL is worse than no
+    URL, since it names a location that does not exist and cannot be
+    distinguished from a real one by the client.
     """
-    if inventory.resolved_redirect_permanent and inventory.resolved_url:
-        return {PERMANENT_REDIRECT_HEADER: inventory.resolved_url}
-    return {}
+    if not (inventory.resolved_redirect_permanent and inventory.resolved_url):
+        return {}
+    if len(inventory.resolved_url) > MAX_PERMANENT_REDIRECT_URL_LENGTH:
+        return {}
+    return {PERMANENT_REDIRECT_HEADER: inventory.resolved_url}
 
 
 @router.get(
@@ -83,7 +117,19 @@ def _permanent_redirect_headers(
         " chain included any temporary redirect — a ``latest`` alias"
         " legitimately moves, so there is nothing to fix — and when the"
         " URL did not redirect at all. Its value is read from the cached"
-        " row, so it is served without re-contacting the origin."
+        " row, so it is served without re-contacting the origin, and is"
+        " omitted rather than truncated when the resolved URL is"
+        " implausibly long (over"
+        f" {MAX_PERMANENT_REDIRECT_URL_LENGTH} characters), since a"
+        " truncated URL names a location that does not exist."
+        "\n\n"
+        "Read this header from each response rather than from an HTTP"
+        " caching layer. Withdrawal of the signal is expressed as the"
+        " header's absence, and RFC 9111 §4.3.4 lets a ``304`` update"
+        " the headers it carries but never delete the ones it omits: a"
+        " client that stores responses in a spec-compliant cache can"
+        " therefore learn the flag but will not unlearn it until the"
+        " inventory bytes change and force a full ``200``."
         "\n\n"
         "This endpoint is protected by Gafaelfawr at the ingress."
     ),
@@ -92,32 +138,14 @@ def _permanent_redirect_headers(
         200: {
             "content": {"application/octet-stream": {}},
             "description": "The cached inventory bytes.",
-            "headers": {
-                "X-Ook-Inventory-Permanent-Redirect": {
-                    "description": (
-                        "The URL this inventory's origin URL permanently"
-                        " redirects to. Present only when every hop of"
-                        " the redirect chain was permanent."
-                    ),
-                    "schema": {"type": "string", "format": "uri"},
-                }
-            },
+            "headers": PERMANENT_REDIRECT_HEADER_SPEC,
         },
         304: {
             "description": (
                 "The client's ``If-None-Match`` validator matches the"
                 " currently-cached inventory; no body is returned."
             ),
-            "headers": {
-                "X-Ook-Inventory-Permanent-Redirect": {
-                    "description": (
-                        "The URL this inventory's origin URL permanently"
-                        " redirects to. Present only when every hop of"
-                        " the redirect chain was permanent."
-                    ),
-                    "schema": {"type": "string", "format": "uri"},
-                }
-            },
+            "headers": PERMANENT_REDIRECT_HEADER_SPEC,
         },
         502: {"description": "The origin inventory could not be fetched."},
     },
