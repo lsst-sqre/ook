@@ -19,9 +19,13 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Nullable with no backfill: null is the meaningful "the last fetch
-    # succeeded" value, so every existing row is simply eligible for its
-    # next refresh, exactly as before this column existed.
+    # The refresh job's backoff marker: set only when a proactive refresh
+    # fails, and null whenever no such failure is outstanding (which is not
+    # the same as "the last fetch succeeded" — a request-path failure dates
+    # itself with date_fetched and leaves this null). Nullable with no
+    # backfill, since null is that meaningful value: every existing row is
+    # simply eligible for its next refresh, exactly as before this column
+    # existed.
     op.add_column(
         "intersphinx_inventory",
         sa.Column(

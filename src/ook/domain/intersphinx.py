@@ -79,22 +79,34 @@ class IntersphinxInventory:
     """
 
     date_refresh_failed: datetime | None
-    """The time of the most recent failed proactive refresh, or None when
-    the last completed fetch succeeded.
+    """The time of the most recent failed *proactive refresh*, or None when
+    no refresh failure is outstanding.
 
-    This is the refresh job's backoff marker, and the only failure record
-    that does not ride on ``date_fetched``: a refresh failure must leave the
-    stored copy — content, validators, and freshness anchor alike —
-    untouched, so it has nowhere else to record when it happened. The due
-    list holds a row back for the same TTL after a failure, so a broken
-    inventory is retried on the normal refresh cadence instead of on every
-    run. A successful fetch clears it.
+    This is the refresh job's backoff marker, and it records failures on the
+    refresh path alone — it is not a general "the last fetch failed" flag,
+    and None does not mean the last fetch succeeded. A request-path failure
+    leaves it None even though it writes a ``failure`` status and a
+    ``last_fetch_error``: that write dates itself with ``date_fetched``,
+    which already holds the row out of the refresh due list for a TTL, so a
+    negative-cache row has nothing to add here. A refresh failure is the one
+    case with nowhere else to record when it happened, because it must leave
+    the stored copy — content, validators, and freshness anchor alike —
+    untouched. The due list holds a row back for the same TTL after a marked
+    failure, so a broken inventory is retried on the normal refresh cadence
+    instead of on every run. Any successful fetch, on either path, clears
+    it.
     """
 
-    # The redirect-resolution fields sort last and default to None, which is
-    # the genuine "this chain did not redirect" value: the common case does
-    # not have to spell them, while every field above stays required so a
-    # construction site cannot silently drop one.
+    # Defaulting convention for the fields below. A field defaults to None
+    # only when None is an *observation this record makes about its own
+    # fetch*: `resolved_url` and `resolved_redirect_permanent` are null
+    # exactly when the chain did not redirect, so a construction site with
+    # no chain to report is right to say nothing, and the common case does
+    # not have to spell them. Every field above stays required — including
+    # `date_refresh_failed`, whose None is not an observation but a decision
+    # to *clear* state this fetch did not produce (the refresh job's
+    # backoff), which each writer of a whole record has to make on purpose
+    # rather than inherit from a default.
 
     resolved_url: str | None = None
     """The terminal URL the last fetch's redirect chain ended at, or None

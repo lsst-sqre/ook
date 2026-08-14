@@ -112,13 +112,18 @@ class SqlIntersphinxInventory(Base):
         DateTime(timezone=True), nullable=True
     )
     """The time of the most recent failed proactive refresh (the refresh
-    job's backoff marker), or null when the last completed fetch succeeded.
+    job's backoff marker), or null when no refresh failure is outstanding.
+
+    Refresh-path failures only, so null does not mean the last fetch
+    succeeded: a request-path failure writes a ``failure`` status but leaves
+    this null, because ``date_fetched`` already dates it. See
+    `ook.domain.intersphinx.IntersphinxInventory.date_refresh_failed`.
 
     Unindexed, unlike the other timestamps: it is a residual filter on the
     due-list query rather than a driver of it, over a table of at most a few
     thousand rows.
 
-    Nullable with no backfill: null is the meaningful "the last fetch
-    succeeded" value, so rows cached before this column existed are simply
+    Nullable with no backfill: null is the meaningful "no refresh failure is
+    outstanding" value, so rows cached before this column existed are simply
     eligible for their next refresh.
     """

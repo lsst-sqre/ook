@@ -7,6 +7,7 @@ import socket
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 import pytest
@@ -31,14 +32,27 @@ INVENTORY_BODY = b"# Sphinx inventory version 2\nfake objects.inv payload"
 """A stand-in for the binary ``objects.inv`` payload."""
 
 
-def _make_capped_service(
-    factory: Factory, *, max_content_size: int
+def _make_service(
+    factory: Factory,
+    *,
+    max_content_size: int | None = None,
+    request_timeout: timedelta | None = None,
 ) -> intersphinx_service.IntersphinxCacheService:
-    """Build a service with a small size cap for the oversize-body tests.
+    """Build a cache service, overriding the limits a test needs to shrink.
 
-    Constructed directly (rather than through the factory) so the tiny
-    ``max_content_size`` can be injected without generating a 50 MB body.
+    Constructed directly (rather than through the factory) so a test can
+    inject a limit the factory has no business exposing: a tiny
+    ``max_content_size``, so an oversize-body test need not generate a 50 MB
+    body, or a fraction-of-a-second ``request_timeout``, so a deadline test
+    need not wait out the 30-second production budget. An override left None
+    is not passed at all, so it keeps the service's own default rather than
+    a copy of it restated here.
     """
+    overrides: dict[str, Any] = {}
+    if max_content_size is not None:
+        overrides["max_content_size"] = max_content_size
+    if request_timeout is not None:
+        overrides["request_timeout"] = request_timeout
     return intersphinx_service.IntersphinxCacheService(
         http_client=factory.http_client,
         inventory_store=factory.create_intersphinx_inventory_store(),
@@ -47,29 +61,35 @@ def _make_capped_service(
         negative_ttl=timedelta(hours=1),
         active_window=timedelta(days=30),
         logger=structlog.get_logger("ook"),
-        max_content_size=max_content_size,
+        **overrides,
     )
 
 
-def _make_budgeted_service(
-    factory: Factory, *, request_timeout: timedelta
-) -> intersphinx_service.IntersphinxCacheService:
-    """Build a service with a tiny whole-fetch budget for the deadline tests.
+async def _assert_negative_cached(
+    factory: Factory,
+    url: str = INVENTORY_URL,
+    *,
+    error_contains: str | None = None,
+) -> IntersphinxInventory:
+    """Assert ``url`` is stored as a negative-cache row and return that row.
 
-    Constructed directly (rather than through the factory) so the budget can
-    be shrunk to a fraction of a second, instead of the tests waiting out the
-    30-second production default.
+    The negative-cache shape is one invariant — no content, a ``failure``
+    status, and a stored error detail — so asserting it is all-or-nothing
+    here rather than each test spelling out whichever part of it that test
+    happened to think of. ``error_contains`` adds the detail the caller's
+    own failure mode is identified by; the row is returned for any further
+    assertion specific to the caller.
     """
-    return intersphinx_service.IntersphinxCacheService(
-        http_client=factory.http_client,
-        inventory_store=factory.create_intersphinx_inventory_store(),
-        session=factory.db_session,
-        ttl=timedelta(hours=1),
-        negative_ttl=timedelta(hours=1),
-        active_window=timedelta(days=30),
-        logger=structlog.get_logger("ook"),
-        request_timeout=request_timeout,
+    stored = await factory.create_intersphinx_inventory_store().get_inventory(
+        url
     )
+    assert stored is not None
+    assert stored.content is None
+    assert stored.last_fetch_status is InventoryFetchStatus.failure
+    assert stored.last_fetch_error is not None
+    if error_contains is not None:
+        assert error_contains in stored.last_fetch_error
+    return stored
 
 
 @pytest.mark.asyncio
@@ -409,13 +429,7 @@ async def test_cold_miss_upstream_failure_negatively_cached(
     # The second request is served from the negative cache, not upstream.
     assert route.call_count == 1
 
-    stored = await factory.create_intersphinx_inventory_store().get_inventory(
-        INVENTORY_URL
-    )
-    assert stored is not None
-    assert stored.content is None
-    assert stored.last_fetch_status is InventoryFetchStatus.failure
-    assert stored.last_fetch_error is not None
+    await _assert_negative_cached(factory)
 
 
 @pytest.mark.asyncio
@@ -441,7 +455,7 @@ async def test_cold_miss_oversized_body_negatively_cached(
 
     # No ``begin()`` wrapper so the negative-cache row stays visible to the
     # second request, mirroring how the handler commits the failure path.
-    service = _make_capped_service(factory, max_content_size=64)
+    service = _make_service(factory, max_content_size=64)
     with pytest.raises(UpstreamInventoryError):
         await service.get_inventory(INVENTORY_URL)
 
@@ -451,14 +465,7 @@ async def test_cold_miss_oversized_body_negatively_cached(
     # The second request is served from the negative cache, not upstream.
     assert route.call_count == 1
 
-    stored = await factory.create_intersphinx_inventory_store().get_inventory(
-        INVENTORY_URL
-    )
-    assert stored is not None
-    assert stored.content is None
-    assert stored.last_fetch_status is InventoryFetchStatus.failure
-    assert stored.last_fetch_error is not None
-    assert "cap" in stored.last_fetch_error
+    await _assert_negative_cached(factory, error_contains="cap")
 
 
 @pytest.mark.asyncio
@@ -480,20 +487,13 @@ async def test_cold_miss_content_length_over_cap_negatively_cached(
         )
     )
 
-    service = _make_capped_service(factory, max_content_size=64)
+    service = _make_service(factory, max_content_size=64)
     with pytest.raises(UpstreamInventoryError):
         await service.get_inventory(INVENTORY_URL)
 
     assert route.call_count == 1
 
-    stored = await factory.create_intersphinx_inventory_store().get_inventory(
-        INVENTORY_URL
-    )
-    assert stored is not None
-    assert stored.content is None
-    assert stored.last_fetch_status is InventoryFetchStatus.failure
-    assert stored.last_fetch_error is not None
-    assert "cap" in stored.last_fetch_error
+    await _assert_negative_cached(factory, error_contains="cap")
 
 
 @pytest.mark.asyncio
@@ -852,14 +852,7 @@ async def test_redirect_hop_to_private_address_rejected(
     # The rejected hop is never fetched.
     assert internal_route.call_count == 0
 
-    stored = await factory.create_intersphinx_inventory_store().get_inventory(
-        INVENTORY_URL
-    )
-    assert stored is not None
-    assert stored.content is None
-    assert stored.last_fetch_status is InventoryFetchStatus.failure
-    assert stored.last_fetch_error is not None
-    assert "redirected" in stored.last_fetch_error
+    await _assert_negative_cached(factory, error_contains="redirected")
 
 
 @pytest.mark.asyncio
@@ -901,10 +894,7 @@ async def test_rejected_redirect_hop_detail_omits_resolution(
     detail = "Upstream redirected the inventory to a disallowed target"
     assert str(raised.value) == detail
 
-    stored = await factory.create_intersphinx_inventory_store().get_inventory(
-        INVENTORY_URL
-    )
-    assert stored is not None
+    stored = await _assert_negative_cached(factory)
     assert stored.last_fetch_error == detail
 
 
@@ -990,14 +980,7 @@ async def test_redirect_hop_dns_failure_negatively_cached(
     # The unresolvable hop is never fetched.
     assert retired_route.call_count == 0
 
-    stored = await factory.create_intersphinx_inventory_store().get_inventory(
-        INVENTORY_URL
-    )
-    assert stored is not None
-    assert stored.content is None
-    assert stored.last_fetch_status is InventoryFetchStatus.failure
-    assert stored.last_fetch_error is not None
-    assert "redirected" in stored.last_fetch_error
+    await _assert_negative_cached(factory, error_contains="redirected")
 
 
 @pytest.mark.asyncio
@@ -1025,13 +1008,7 @@ async def test_malformed_redirect_location_negatively_cached(
     with pytest.raises(UpstreamInventoryError):
         await service.get_inventory(INVENTORY_URL)
 
-    stored = await factory.create_intersphinx_inventory_store().get_inventory(
-        INVENTORY_URL
-    )
-    assert stored is not None
-    assert stored.content is None
-    assert stored.last_fetch_status is InventoryFetchStatus.failure
-    assert stored.last_fetch_error is not None
+    await _assert_negative_cached(factory)
 
 
 def test_join_redirect_url_rejects_unparseable_location() -> None:
@@ -1095,11 +1072,7 @@ async def test_redirect_loop_stops_at_hop_cap(
     # One request per allowed hop, plus the one that trips the cap.
     assert route.call_count == 21
 
-    stored = await factory.create_intersphinx_inventory_store().get_inventory(
-        INVENTORY_URL
-    )
-    assert stored is not None
-    assert stored.content is None
+    stored = await _assert_negative_cached(factory)
     assert stored.last_fetch_error == "Exceeded 20 redirects"
 
 
@@ -1149,10 +1122,7 @@ async def test_hop_cap_reported_before_touching_the_next_target(
     # The ruled-out target is never joined, guarded, or resolved.
     assert "poison.example.com" not in resolved_hosts
 
-    stored = await factory.create_intersphinx_inventory_store().get_inventory(
-        INVENTORY_URL
-    )
-    assert stored is not None
+    stored = await _assert_negative_cached(factory)
     assert stored.last_fetch_error == "Exceeded 20 redirects"
 
 
@@ -1181,7 +1151,7 @@ async def test_redirect_hop_bodies_not_counted_against_size_cap(
     )
     respx_mock.get(terminal).mock(return_value=Response(200, content=b"small"))
 
-    service = _make_capped_service(factory, max_content_size=64)
+    service = _make_service(factory, max_content_size=64)
     async with factory.db_session.begin():
         inventory = await service.get_inventory(INVENTORY_URL)
 
@@ -1261,9 +1231,7 @@ async def test_oversized_redirect_hop_body_is_abandoned(
         return_value=Response(200, content=INVENTORY_BODY)
     )
 
-    service = _make_capped_service(
-        factory, max_content_size=len(INVENTORY_BODY)
-    )
+    service = _make_service(factory, max_content_size=len(INVENTORY_BODY))
     async with factory.db_session.begin():
         inventory = await service.get_inventory(INVENTORY_URL)
 
@@ -1410,23 +1378,14 @@ async def test_slow_redirect_chain_stops_at_the_time_budget(
 
     # No ``begin()`` wrapper so the negative-cache row stays visible,
     # mirroring how the handler commits the failure path.
-    service = _make_budgeted_service(
-        factory, request_timeout=timedelta(seconds=0.2)
-    )
+    service = _make_service(factory, request_timeout=timedelta(seconds=0.2))
     with pytest.raises(UpstreamInventoryError, match="time budget"):
         await service.get_inventory(INVENTORY_URL)
 
     # The budget ended the chain well before the hop cap would have.
     assert route.call_count < MAX_REDIRECTS
 
-    stored = await factory.create_intersphinx_inventory_store().get_inventory(
-        INVENTORY_URL
-    )
-    assert stored is not None
-    assert stored.content is None
-    assert stored.last_fetch_status is InventoryFetchStatus.failure
-    assert stored.last_fetch_error is not None
-    assert "time budget" in stored.last_fetch_error
+    await _assert_negative_cached(factory, error_contains="time budget")
 
 
 @pytest.mark.asyncio
@@ -1452,20 +1411,11 @@ async def test_terminal_body_read_bounded_by_the_time_budget(
 
     # No ``begin()`` wrapper so the negative-cache row stays visible,
     # mirroring how the handler commits the failure path.
-    service = _make_budgeted_service(
-        factory, request_timeout=timedelta(seconds=0.2)
-    )
+    service = _make_service(factory, request_timeout=timedelta(seconds=0.2))
     with pytest.raises(UpstreamInventoryError, match="time budget"):
         await service.get_inventory(INVENTORY_URL)
 
-    stored = await factory.create_intersphinx_inventory_store().get_inventory(
-        INVENTORY_URL
-    )
-    assert stored is not None
-    assert stored.content is None
-    assert stored.last_fetch_status is InventoryFetchStatus.failure
-    assert stored.last_fetch_error is not None
-    assert "time budget" in stored.last_fetch_error
+    await _assert_negative_cached(factory, error_contains="time budget")
 
 
 @pytest.mark.asyncio
@@ -1498,21 +1448,14 @@ async def test_redirect_guard_resolution_bounded_by_the_time_budget(
 
     # No ``begin()`` wrapper so the negative-cache row stays visible,
     # mirroring how the handler commits the failure path.
-    service = _make_budgeted_service(
-        factory, request_timeout=timedelta(seconds=0.2)
-    )
+    service = _make_service(factory, request_timeout=timedelta(seconds=0.2))
     with pytest.raises(UpstreamInventoryError, match="time budget"):
         await service.get_inventory(INVENTORY_URL)
 
     # The hop whose guard never finished is never fetched.
     assert hop_route.call_count == 0
 
-    stored = await factory.create_intersphinx_inventory_store().get_inventory(
-        INVENTORY_URL
-    )
-    assert stored is not None
-    assert stored.content is None
-    assert stored.last_fetch_status is InventoryFetchStatus.failure
+    await _assert_negative_cached(factory, error_contains="time budget")
 
 
 @pytest.mark.asyncio
@@ -1538,9 +1481,7 @@ async def test_fast_redirect_chain_resolves_within_the_time_budget(
         return_value=Response(200, content=INVENTORY_BODY)
     )
 
-    service = _make_budgeted_service(
-        factory, request_timeout=timedelta(seconds=5)
-    )
+    service = _make_service(factory, request_timeout=timedelta(seconds=5))
     async with factory.db_session.begin():
         inventory = await service.get_inventory(INVENTORY_URL)
 
@@ -1571,20 +1512,13 @@ async def test_stalled_response_headers_stop_at_the_time_budget(
 
     # No ``begin()`` wrapper so the negative-cache row stays visible,
     # mirroring how the handler commits the failure path.
-    service = _make_budgeted_service(
-        factory, request_timeout=timedelta(seconds=0.2)
-    )
+    service = _make_service(factory, request_timeout=timedelta(seconds=0.2))
     start = time.monotonic()
     with pytest.raises(UpstreamInventoryError, match="time budget"):
         await service.get_inventory(INVENTORY_URL)
     assert time.monotonic() - start < 1.5
 
-    stored = await factory.create_intersphinx_inventory_store().get_inventory(
-        INVENTORY_URL
-    )
-    assert stored is not None
-    assert stored.content is None
-    assert stored.last_fetch_status is InventoryFetchStatus.failure
+    await _assert_negative_cached(factory, error_contains="time budget")
 
 
 @pytest.mark.asyncio
@@ -1611,9 +1545,7 @@ async def test_requested_url_guard_bounded_by_the_time_budget(
 
     # No ``begin()`` wrapper so the negative-cache row stays visible,
     # mirroring how the handler commits the failure path.
-    service = _make_budgeted_service(
-        factory, request_timeout=timedelta(seconds=0.2)
-    )
+    service = _make_service(factory, request_timeout=timedelta(seconds=0.2))
     start = time.monotonic()
     with pytest.raises(UpstreamInventoryError, match="time budget"):
         await service.get_inventory(INVENTORY_URL)
@@ -1622,12 +1554,7 @@ async def test_requested_url_guard_bounded_by_the_time_budget(
     # The URL whose guard never finished is never fetched.
     assert route.call_count == 0
 
-    stored = await factory.create_intersphinx_inventory_store().get_inventory(
-        INVENTORY_URL
-    )
-    assert stored is not None
-    assert stored.content is None
-    assert stored.last_fetch_status is InventoryFetchStatus.failure
+    await _assert_negative_cached(factory, error_contains="time budget")
 
 
 async def _seed_stale_inventory(
@@ -1913,14 +1840,7 @@ async def test_refresh_304_without_a_validator_records_a_failure(
     assert summary.revalidated == 0
     assert summary.refreshed == 0
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
-    assert stored.content is None
-    assert stored.last_fetch_status is InventoryFetchStatus.failure
-    assert stored.last_fetch_error is not None
-    assert "unconditional" in stored.last_fetch_error
+    await _assert_negative_cached(factory, error_contains="unconditional")
 
 
 @pytest.mark.asyncio
@@ -2501,9 +2421,7 @@ async def test_refresh_guard_resolution_bounded_by_the_time_budget(
 
     monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
 
-    service = _make_budgeted_service(
-        factory, request_timeout=timedelta(seconds=0.2)
-    )
+    service = _make_service(factory, request_timeout=timedelta(seconds=0.2))
     start = time.monotonic()
     summary = await service.refresh_inventories(now=now)
     assert time.monotonic() - start < 1.5
@@ -2584,7 +2502,7 @@ async def test_refresh_oversized_response_counts_as_failure(
         return_value=Response(200, content=b"x" * 200)  # over the 64-byte cap
     )
 
-    service = _make_capped_service(factory, max_content_size=64)
+    service = _make_service(factory, max_content_size=64)
     summary = await service.refresh_inventories(now=now)
 
     assert summary.failed == 1
