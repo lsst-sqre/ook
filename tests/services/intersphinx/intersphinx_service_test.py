@@ -1720,6 +1720,103 @@ async def test_refresh_304_from_a_moved_terminal_forces_a_refetch(
 
 
 @pytest.mark.asyncio
+async def test_refresh_304_without_a_validator_records_a_failure(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A 304 answering a validator-less refresh is upstream misbehavior.
+
+    A negative-cache row carries no content and no validators, so once it
+    ages into the due list its refresh goes out unconditional — and a 304
+    answering a request that sent nothing to revalidate against is about no
+    copy at all. Trusting it would store a content-None/success row, which
+    is neither servable nor a live negative-cache entry, and would clobber
+    content a concurrent cold miss had just stored.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        content=None,
+        etag=None,
+        last_modified=None,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+        last_fetch_status=InventoryFetchStatus.failure,
+    )
+    route = respx_mock.get(INVENTORY_URL).mock(return_value=Response(304))
+
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
+
+    assert route.call_count == 1
+    assert summary.failed == 1
+    assert summary.revalidated == 0
+    assert summary.refreshed == 0
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert stored.content is None
+    assert stored.last_fetch_status is InventoryFetchStatus.failure
+    assert stored.last_fetch_error is not None
+    assert "unconditional" in stored.last_fetch_error
+
+
+@pytest.mark.asyncio
+async def test_refresh_304_to_the_unconditional_refetch_fails(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """An origin that 304s the moved-terminal refetch too counts as a failure.
+
+    The conditional 304 comes from a terminal the stored copy was not
+    fetched from, so it is discarded and the chain is re-walked
+    unconditionally; answering that with another 304 leaves nothing to
+    store. The refresh records a failure and the stored copy — content and
+    freshness anchor alike — is left intact for stale serving.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    fetched_at = now - timedelta(hours=2)
+    old_terminal = "https://docs.example.com/en/21/objects.inv"
+    new_terminal = "https://docs.example.com/en/20/objects.inv"
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=fetched_at,
+        date_requested=now - timedelta(days=1),
+        resolved_url=old_terminal,
+        resolved_redirect_permanent=False,
+    )
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": new_terminal})
+    )
+    # The moved terminal answers 304 to everything, conditional or not.
+    terminal_route = respx_mock.get(new_terminal).mock(
+        return_value=Response(304)
+    )
+
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
+
+    assert terminal_route.call_count == 2
+    assert summary.failed == 1
+    assert summary.revalidated == 0
+    assert summary.refreshed == 0
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    assert stored.content == INVENTORY_BODY
+    assert stored.date_fetched == fetched_at
+    assert stored.last_fetch_status is InventoryFetchStatus.failure
+    assert stored.last_fetch_error is not None
+    assert "unconditional" in stored.last_fetch_error
+
+
+@pytest.mark.asyncio
 async def test_refresh_200_replaces_content_and_validators(
     factory: Factory,
     respx_mock: respx.Router,

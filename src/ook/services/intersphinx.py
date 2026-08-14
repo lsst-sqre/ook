@@ -6,7 +6,7 @@ import asyncio
 import ipaddress
 import socket
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import NoReturn
@@ -138,6 +138,34 @@ instead, where operators can read it and clients cannot.
 """
 
 
+_UNCONDITIONAL_304_DETAIL = (
+    "Upstream answered 304 Not Modified to an unconditional inventory request"
+)
+"""Client-facing detail for a 304 answering a validator-less request."""
+
+
+class _UnconditionalNotModifiedError(httpx.HTTPError):
+    """An origin answered ``304`` to a request carrying no validator.
+
+    A ``304`` asserts that the validator the client sent still matches, so
+    one answering a request that sent none asserts nothing about any
+    particular copy and carries no body to store. Two requests this service
+    makes are unconditional by construction — a cold-miss fetch, and the
+    re-fetch `_revalidate` forces when a chain has moved — and a third,
+    the refresh of a row with no stored validators (a negative-cache row
+    that aged into the due list), is unconditional by accident. Trusting a
+    ``304`` on any of them would write a content-less success row: neither
+    servable nor a live negative-cache entry, and able to clobber content a
+    concurrent cold miss had just stored.
+
+    An ``httpx.HTTPError`` for the same reason as
+    `_UpstreamTooManyRedirectsError`: the request was well-formed and
+    upstream misbehaved, so this reuses the existing upstream-failure
+    plumbing — a negatively cached 502 on the request path, a recorded
+    per-inventory failure on the refresh path.
+    """
+
+
 class _UnsafeRedirectError(httpx.HTTPError):
     """A redirect hop's target failed the SSRF guard.
 
@@ -219,9 +247,10 @@ class IntersphinxCacheService:
     per-request timeout by the hop cap, and the terminal response body is
     streamed under a size cap so an oversized inventory is abandoned rather
     than buffered into memory. An oversized response, an over-long chain, an
-    exhausted time budget, an unusable ``Location``, and a hop the guard
-    rejects — including one whose host will not resolve — are all treated as
-    upstream fetch failures, so every way a chain can fail lands in the same
+    exhausted time budget, an unusable ``Location``, a ``304`` answering a
+    request that carried no validator, and a hop the guard rejects —
+    including one whose host will not resolve — are all treated as upstream
+    fetch failures, so every way a chain can fail lands in the same
     negative-cache-and-502 treatment on the request path and the same
     skip-one-inventory treatment on the refresh path. A guard-rejected hop's
     stored and served detail is deliberately generic; the guard's specific
@@ -561,6 +590,18 @@ class IntersphinxCacheService:
         common case; this check covers the rest, where a strong validator
         survives the chain (`If-None-Match` is kept per RFC 9110 §13.1.3)
         and the moved terminal happens to answer 304 to it.
+
+        Neither fetch here can come back as a 304 the caller must not trust:
+        `_fetch_inventory` rejects a 304 answering a request that carried no
+        validator, which covers both this method's unconditional re-fetch
+        and the conditional fetch of a row that had no validators to send in
+        the first place — a negative-cache row that aged into the due list.
+
+        Raises
+        ------
+        _UnconditionalNotModifiedError
+            Raised, from `_fetch_inventory`, when the origin answers 304 to
+            a request that carried no validator.
         """
         headers: dict[str, str] = {}
         if inventory.etag is not None:
@@ -584,14 +625,7 @@ class IntersphinxCacheService:
             stored_url=stored_terminal,
             final_url=fetch.final_url,
         )
-        fetch = await self._fetch_inventory(inventory.url)
-        if fetch.response.status_code == 304:
-            # An unconditional request carries nothing to revalidate
-            # against, so a 304 answering one is upstream misbehavior, not a
-            # revalidation. Report it as the upstream failure it is rather
-            # than accepting the very 304 this method just refused.
-            fetch.response.raise_for_status()
-        return fetch
+        return await self._fetch_inventory(inventory.url)
 
     def _is_negative_cache_fresh(self, cached: IntersphinxInventory) -> bool:
         """Return whether a cached row is a live negative-cache entry.
@@ -710,6 +744,15 @@ class IntersphinxCacheService:
         trustworthy wherever the chain lands, and RFC 9110 §13.1.3 gives it
         precedence regardless.
 
+        A ``304`` is returned to the caller only when the request that drew
+        it actually carried a validator; otherwise it is upstream
+        misbehavior and raises. Enforcing that here rather than in the
+        callers covers every way the terminal request can end up
+        unconditional — no validators were stored, or the only one was
+        ``If-Modified-Since`` and the chain dropped it — and gives every
+        caller the invariant that a returned ``304`` is a real revalidation
+        of the copy whose validators were sent.
+
         The whole chain runs against a single time budget of
         ``request_timeout``, taken from the monotonic clock when the fetch
         starts: each hop's request, each hop target's guard resolution, and
@@ -730,6 +773,9 @@ class IntersphinxCacheService:
             configured cap.
         _InvalidRedirectError
             Raised when a hop's ``Location`` cannot be resolved to a URL.
+        _UnconditionalNotModifiedError
+            Raised when the terminal answers ``304`` to a request that
+            carried no validator.
         _UpstreamTooManyRedirectsError
             Raised when the chain exceeds `MAX_REDIRECTS` hops.
         _UnsafeRedirectError
@@ -758,6 +804,10 @@ class IntersphinxCacheService:
                 location = response.headers.get("Location")
                 if response.status_code not in REDIRECT_CODES or not location:
                     if response.status_code == 304:
+                        if not _has_validator(request_headers):
+                            raise _UnconditionalNotModifiedError(
+                                _UNCONDITIONAL_304_DETAIL
+                            )
                         return _InventoryFetch(
                             response, None, current_url, hops
                         )
@@ -1130,6 +1180,18 @@ def _join_redirect_url(current_url: str, location: str) -> str:
         ) from exc
 
 
+_VALIDATOR_HEADERS = frozenset({"if-none-match", "if-modified-since"})
+"""Request headers that make a GET conditional, lowercased for matching."""
+
+
+def _has_validator(headers: Mapping[str, str]) -> bool:
+    """Return whether request headers make the request conditional.
+
+    The match is case-insensitive because HTTP field names are.
+    """
+    return any(name.lower() in _VALIDATOR_HEADERS for name in headers)
+
+
 def _without_if_modified_since(headers: dict[str, str]) -> dict[str, str]:
     """Return the headers with any ``If-Modified-Since`` removed.
 
@@ -1174,6 +1236,7 @@ def _describe_upstream_error(error: httpx.HTTPError) -> str:
         _FetchDeadlineExceededError
         | _InventoryTooLargeError
         | _UpstreamTooManyRedirectsError
+        | _UnconditionalNotModifiedError
         | _UnsafeRedirectError
         | _InvalidRedirectError,
     ):
