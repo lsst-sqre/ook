@@ -94,6 +94,9 @@ jobs:
                   || startsWith(github.head_ref, 't/')))
 
   build:
+    concurrency:
+      group: docker
+      queue: max
     needs: [test]
     secrets: inherit
     uses: lsst-sqre/multiplatform-build-and-push/.github/workflows/build.yaml@v4
