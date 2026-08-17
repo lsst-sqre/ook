@@ -6,6 +6,7 @@ import asyncio
 import ipaddress
 import socket
 import time
+from collections import Counter
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -16,6 +17,7 @@ from collections.abc import (
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from enum import Enum, auto
 from typing import NoReturn
 from urllib.parse import SplitResult, urlsplit
 
@@ -54,8 +56,35 @@ class IntersphinxRefreshSummary:
     revalidated: int
     """The number of inventories a 304 revalidated in place."""
 
+    superseded: int
+    """The number of outcomes dropped because the row changed under the run.
+
+    A client cold miss can commit good content while this run's fetch of the
+    same inventory is still in flight, and the refresh's outcome describes the
+    copy it started from, not the one the miss stored. The write is guarded on
+    the freshness anchor the due-list read saw and dropped when it moved, so
+    these are counted apart from the refreshes and revalidations that landed.
+    """
+
     failed: int
     """The number of inventories whose refresh failed (logged, skipped)."""
+
+
+class _RefreshResult(Enum):
+    """How one inventory's proactive refresh ended, once its write returned.
+
+    A failure never reaches here — it raises out of `_refresh_one` for
+    `refresh_inventories` to log, back off, and count on its own.
+    """
+
+    refreshed = auto()
+    """A ``200`` replaced the stored content."""
+
+    revalidated = auto()
+    """A ``304`` revalidated the stored copy in place."""
+
+    superseded = auto()
+    """The write was dropped: the row changed since the due-list read."""
 
 
 HostResolver = Callable[[str], Awaitable[Sequence[str]]]
@@ -445,11 +474,19 @@ class IntersphinxCacheService:
         whole fetch budget, so a run's own duration is unbounded by anything
         but its inventory count; dating outcomes from the batch's start would
         shave that duration off each row's next interval, and a failure deep
-        in a long run would be back in the very next run's due list. The
-        failure write is also guarded on the ``date_fetched`` the due-list
-        read saw, so it is dropped outright if a client cold miss refreshed
-        the row while this batch's fetch was failing — see
-        `IntersphinxInventoryStore.update_refresh_failure`.
+        in a long run would be back in the very next run's due list.
+
+        Every write here — the success, the revalidation, and the failure
+        alike — is guarded on the ``date_fetched`` the due-list read saw, and
+        dropped outright if a client cold miss refreshed the row while this
+        batch's fetch was in flight. A row in the due list is stale by
+        construction, so that miss is a real race, and each of this run's
+        outcomes describes the copy it started from rather than the one the
+        miss stored: applying it would revert good content, or leave fresh
+        content behind a stale status and a backoff marker. A dropped
+        success or revalidation is counted as ``superseded``, and a dropped
+        failure is reported as ``backoff_recorded=False``, so neither is
+        silent.
 
         Unlike the rest of this service, which leaves transaction boundaries
         to its caller (the request handler commits `get_inventory` itself),
@@ -475,7 +512,7 @@ class IntersphinxCacheService:
         -------
         IntersphinxRefreshSummary
             Counts of the inventories considered, refreshed, revalidated,
-            and failed.
+            superseded, and failed.
         """
         if now is None:
             now = datetime.now(tz=UTC)
@@ -488,12 +525,11 @@ class IntersphinxCacheService:
         # Commit the selection as its own short transaction so no read lock or
         # snapshot is held open across the per-inventory HTTP fetches below.
         await self._session.commit()
-        refreshed = 0
-        revalidated = 0
+        results: Counter[_RefreshResult] = Counter()
         failed = 0
         for inventory in due:
             try:
-                was_revalidated = await self._refresh_one(inventory)
+                result = await self._refresh_one(inventory)
             except (httpx.HTTPError, InvalidInventoryUrlError) as exc:
                 # Discard this inventory's pending write and leave the stored
                 # copy untouched so it keeps serving stale.
@@ -524,14 +560,12 @@ class IntersphinxCacheService:
             # Commit this inventory's outcome immediately so a later crash in
             # the batch cannot lose it and no transaction spans the next fetch.
             await self._session.commit()
-            if was_revalidated:
-                revalidated += 1
-            else:
-                refreshed += 1
+            results[result] += 1
         summary = IntersphinxRefreshSummary(
             considered=len(due),
-            refreshed=refreshed,
-            revalidated=revalidated,
+            refreshed=results[_RefreshResult.refreshed],
+            revalidated=results[_RefreshResult.revalidated],
+            superseded=results[_RefreshResult.superseded],
             failed=failed,
         )
         self._logger.info(
@@ -539,6 +573,7 @@ class IntersphinxCacheService:
             considered=summary.considered,
             refreshed=summary.refreshed,
             revalidated=summary.revalidated,
+            superseded=summary.superseded,
             failed=summary.failed,
         )
         return summary
@@ -579,15 +614,24 @@ class IntersphinxCacheService:
         )
         return _UNSAFE_REFRESH_URL_DETAIL
 
-    async def _refresh_one(self, inventory: IntersphinxInventory) -> bool:
+    async def _refresh_one(
+        self, inventory: IntersphinxInventory
+    ) -> _RefreshResult:
         """Revalidate one cached inventory against its origin.
 
-        Returns True when a ``304`` revalidated the stored copy in place and
-        False when a ``200`` replaced its content. Raises on a guard
+        Returns which way the refresh ended: a ``304`` revalidated the stored
+        copy in place, a ``200`` replaced its content, or the write was
+        dropped because the row changed under this fetch. Raises on a guard
         rejection, an upstream failure, an exhausted time budget, or an
         oversized response so the caller can log the failure, record its
         backoff, and skip to the next inventory, leaving the stored copy
         untouched.
+
+        Both writes are guarded on the ``date_fetched`` the due-list read saw
+        and report whether they landed: a row in the due list is stale by
+        construction, so a client cold miss can commit good content inside
+        this fetch's window, and this refresh's outcome describes the copy it
+        started from rather than the one that miss stored.
 
         Everything that talks to the network — the stored URL's re-guard and
         the revalidation chain alike — runs inside one `_fetch_budget`, so
@@ -629,35 +673,39 @@ class IntersphinxCacheService:
             date_refresh_failed=None,
         )
         if response.status_code == 304:
-            # Write only the refresh-outcome columns so a client request that
-            # bumped date_requested since the due-list read is not reverted.
-            await self._inventory_store.update_refresh_outcome(outcome)
-            self._logger.info(
-                "Revalidated intersphinx inventory (304 Not Modified)",
-                url=inventory.url,
-                cache_status="revalidated",
-                final_url=fetch.final_url,
-                redirect_hops=len(fetch.redirect_hops),
+            # Write only what a revalidation changes: date_requested belongs
+            # to the request path, and the content the 304 just said did not
+            # move stays as the last 200 wrote it.
+            landed = await self._inventory_store.update_revalidation_outcome(
+                outcome, expected_date_fetched=inventory.date_fetched
             )
-            return True
-        response.raise_for_status()
-        await self._inventory_store.update_refresh_outcome(
-            replace(
-                outcome,
-                content=fetch.content,
-                content_type=response.headers.get("Content-Type"),
-                etag=response.headers.get("ETag"),
-                last_modified=response.headers.get("Last-Modified"),
+            result = _RefreshResult.revalidated
+            message = "Revalidated intersphinx inventory (304 Not Modified)"
+        else:
+            response.raise_for_status()
+            landed = await self._inventory_store.update_refresh_outcome(
+                replace(
+                    outcome,
+                    content=fetch.content,
+                    content_type=response.headers.get("Content-Type"),
+                    etag=response.headers.get("ETag"),
+                    last_modified=response.headers.get("Last-Modified"),
+                ),
+                expected_date_fetched=inventory.date_fetched,
             )
-        )
+            result = _RefreshResult.refreshed
+            message = "Refreshed intersphinx inventory (200 OK)"
+        if not landed:
+            result = _RefreshResult.superseded
+            message = "Dropped a superseded intersphinx refresh outcome"
         self._logger.info(
-            "Refreshed intersphinx inventory (200 OK)",
+            message,
             url=inventory.url,
-            cache_status="refreshed",
+            cache_status=result.name,
             final_url=fetch.final_url,
             redirect_hops=len(fetch.redirect_hops),
         )
-        return False
+        return result
 
     async def _revalidate(
         self, inventory: IntersphinxInventory, *, deadline: float

@@ -16,6 +16,39 @@ from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
 __all__ = ["IntersphinxInventoryStore"]
 
 
+_REFRESH_OUTCOME_COLUMNS = (
+    "date_fetched",
+    "last_fetch_status",
+    "last_fetch_error",
+    "resolved_url",
+    "resolved_redirect_permanent",
+    "date_refresh_failed",
+)
+"""Columns every successful refresh writes, whether or not the content moved.
+
+A revalidation changes all of these — it re-dates the copy, clears any
+failure state and backoff marker, and records the chain *this* fetch walked,
+which a ``304`` says nothing about. Notably absent: ``url``, the row key, and
+``date_requested``, which the request path owns.
+"""
+
+
+_CONTENT_COLUMNS = (
+    "content",
+    "content_type",
+    "etag",
+    "last_modified",
+)
+"""Columns only a ``200`` writes: the body and the validators minted with it.
+
+A ``304`` leaves these alone rather than rewriting the values it read at
+due-list time. Rewriting an unchanged 100 to 500 KB blob forces a TOAST and WAL
+rewrite per revalidated inventory per run — for a conditional request whose
+whole purpose is not to move the bytes — and makes the write a revert vector
+for any content committed since that read.
+"""
+
+
 class IntersphinxInventoryStore:
     """Interface for storing cached intersphinx inventories in a database.
 
@@ -97,39 +130,146 @@ class IntersphinxInventoryStore:
         await self._session.flush()
 
     async def update_refresh_outcome(
-        self, inventory: IntersphinxInventory
-    ) -> None:
-        """Persist a proactive-refresh outcome without touching
+        self,
+        inventory: IntersphinxInventory,
+        *,
+        expected_date_fetched: datetime | None,
+    ) -> bool:
+        """Persist a proactive refresh's ``200`` outcome without touching
         ``date_requested``.
 
-        This is the refresh path's write. Unlike `upsert_inventory`, which
-        rewrites every non-key column, this updates only the fetch-outcome
-        columns — content, content type, validators, fetch time, fetch
-        status, and the resolved-redirect columns — and deliberately leaves
-        ``date_requested`` alone. The refresh
-        job reads a row at due-list selection time and writes it back after an
-        HTTP round-trip; a client request may bump ``date_requested`` in that
+        This is the refresh path's content-replacing write. Unlike
+        `upsert_inventory`, which rewrites every non-key column, this updates
+        only the fetch-outcome columns — content, content type, validators,
+        fetch time, fetch status, and the resolved-redirect columns — and
+        deliberately leaves ``date_requested`` alone. The refresh job reads a
+        row at due-list selection time and writes it back after an HTTP
+        round-trip; a client request may bump ``date_requested`` in that
         window, so rewriting the stale value would silently shorten the
-        inventory's active window. This method never inserts: the refresh path
-        only ever writes rows that already exist.
+        inventory's active window. Use `update_revalidation_outcome` for the
+        ``304`` path, which must not rewrite the content it did not move.
+        This method never inserts: the refresh path only ever writes rows
+        that already exist.
 
         Parameters
         ----------
         inventory
             The refreshed inventory whose outcome columns to persist. Its
             ``date_requested`` value is ignored.
+        expected_date_fetched
+            The row's ``date_fetched`` as the due-list read saw it. The write
+            is skipped when the row's current value differs — see
+            `_write_refresh_columns`.
+
+        Returns
+        -------
+        bool
+            True if the outcome was recorded, False if the guard skipped the
+            write because the row changed since the due-list read.
+        """
+        return await self._write_refresh_columns(
+            inventory,
+            columns=_REFRESH_OUTCOME_COLUMNS + _CONTENT_COLUMNS,
+            expected_date_fetched=expected_date_fetched,
+        )
+
+    async def update_revalidation_outcome(
+        self,
+        inventory: IntersphinxInventory,
+        *,
+        expected_date_fetched: datetime | None,
+    ) -> bool:
+        """Persist a proactive refresh's ``304`` outcome, content untouched.
+
+        The counterpart to `update_refresh_outcome` for a revalidation. It
+        writes only `_REFRESH_OUTCOME_COLUMNS` — the fetch time, the fetch
+        status and error, the resolved-redirect columns, and the backoff
+        marker — and leaves the body and its validators exactly as the last
+        ``200`` wrote them, because a ``304`` is the origin saying those bytes
+        did not move. Rewriting them from the due-list snapshot would pay a
+        TOAST and WAL rewrite of the whole unchanged inventory per revalidated
+        row per run, and would revert anything committed against those columns
+        since that read. Like `update_refresh_outcome`, this never inserts and
+        never touches ``date_requested``.
+
+        Parameters
+        ----------
+        inventory
+            The revalidated inventory whose outcome columns to persist. Its
+            content, validators, and ``date_requested`` values are ignored.
+        expected_date_fetched
+            The row's ``date_fetched`` as the due-list read saw it. The write
+            is skipped when the row's current value differs — see
+            `_write_refresh_columns`.
+
+        Returns
+        -------
+        bool
+            True if the outcome was recorded, False if the guard skipped the
+            write because the row changed since the due-list read.
+        """
+        return await self._write_refresh_columns(
+            inventory,
+            columns=_REFRESH_OUTCOME_COLUMNS,
+            expected_date_fetched=expected_date_fetched,
+        )
+
+    async def _write_refresh_columns(
+        self,
+        inventory: IntersphinxInventory,
+        *,
+        columns: tuple[str, ...],
+        expected_date_fetched: datetime | None,
+    ) -> bool:
+        """Write one refresh outcome's columns under the freshness guard.
+
+        Shared by `update_refresh_outcome` and `update_revalidation_outcome`,
+        which differ only in which columns they write. The guard is what they
+        have in common and is the reason neither is an unconditional UPDATE
+        keyed on the URL alone: the values come from the snapshot the due-list
+        read returned, and a row in the due list is stale by construction, so
+        a client cold miss can fetch and commit good content while this
+        refresh's own fetch is still in flight — up to the whole fetch budget.
+        Writing the snapshot back afterwards would revert that content and
+        stamp the reverted bytes fresh, hiding the regression for a whole TTL.
+        Guarding on the freshness anchor the due-list read saw makes the late
+        write a no-op instead, the same spirit as `upsert_fetch_failure`'s
+        ``content IS NULL`` guard and `update_refresh_failure`'s guard on this
+        same column, and the row needs no refresh anyway because the
+        concurrent success already took it out of the due list.
+
+        Parameters
+        ----------
+        inventory
+            The refreshed inventory whose columns to persist.
+        columns
+            The column names to write. An allowlist rather than a subtraction
+            from `_row_values`, so a column added to the row later has to be
+            classified deliberately instead of joining both writes silently.
+        expected_date_fetched
+            The row's ``date_fetched`` as the due-list read saw it. Compared
+            with ``IS NOT DISTINCT FROM`` rather than ``=``, so a
+            never-fetched row — a real state, and one that reaches the due
+            list — can still be matched instead of failing every guard.
+
+        Returns
+        -------
+        bool
+            True if a row was updated, False if the guard skipped the write.
         """
         values = self._row_values(inventory)
-        # The URL is the row key and date_requested is owned by the request
-        # path, so neither is written here.
-        del values["url"]
-        del values["date_requested"]
-        await self._session.execute(
+        result = await self._session.execute(
             update(SqlIntersphinxInventory)
-            .where(SqlIntersphinxInventory.url == inventory.url)
-            .values(**values)
+            .where(
+                SqlIntersphinxInventory.url == inventory.url,
+                SqlIntersphinxInventory.date_fetched.is_not_distinct_from(
+                    expected_date_fetched
+                ),
+            )
+            .values(**{column: values[column] for column in columns})
         )
         await self._session.flush()
+        return cast("CursorResult", result).rowcount > 0
 
     async def update_refresh_failure(
         self,

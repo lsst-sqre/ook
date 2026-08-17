@@ -373,8 +373,8 @@ async def run_refresh_intersphinx(
     Returns
     -------
     IntersphinxRefreshSummary
-        Counts of the inventories considered, refreshed, revalidated, and
-        failed.
+        Counts of the inventories considered, refreshed, revalidated,
+        superseded, and failed.
     """
     service = factory.create_intersphinx_cache_service()
     return await service.refresh_inventories(limit=limit)
@@ -411,7 +411,7 @@ async def refresh_intersphinx(*, limit: int | None) -> None:
     click.echo(
         f"Refreshed intersphinx inventories: {summary.considered} considered, "
         f"{summary.refreshed} refreshed, {summary.revalidated} revalidated, "
-        f"{summary.failed} failed."
+        f"{summary.superseded} superseded, {summary.failed} failed."
     )
 
 

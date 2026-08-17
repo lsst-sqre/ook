@@ -1598,11 +1598,32 @@ def _assert_stamped_at_write_time(
 
     The refresh job dates each row's outcome from the clock at write time
     rather than from the reference time the run was called with, so the
-    assertion is a window: at or after the reference the test took before the
-    run, and no later than the moment it is checked.
+    assertion is a window: strictly after the reference the test took before
+    the run, and no later than the moment it is checked.
+
+    The lower bound is strict on purpose. Stamping from the batch reference
+    is exactly the regression this helper stands in for, and the reference a
+    test passes to `refresh_inventories` is the same value it passes here, so
+    an inclusive bound would admit the regression verbatim and every test
+    routed through this helper would keep passing. Strictness costs nothing:
+    ``not_before`` is read before the run and the write happens a database
+    round-trip later, and the tests truncate it to whole seconds besides,
+    which only widens the gap.
     """
     assert value is not None
-    assert not_before <= value <= datetime.now(tz=UTC)
+    assert not_before < value <= datetime.now(tz=UTC)
+
+
+def test_write_time_assertion_rejects_the_batch_reference() -> None:
+    """`_assert_stamped_at_write_time` rejects the run's reference time.
+
+    The helper is the only thing standing between the refresh path and a
+    silent return to stamping outcomes at batch start, so its own lower bound
+    is worth pinning: a timestamp equal to the reference must fail.
+    """
+    reference = datetime.now(tz=UTC).replace(microsecond=0)
+    with pytest.raises(AssertionError):
+        _assert_stamped_at_write_time(reference, not_before=reference)
 
 
 @pytest.mark.asyncio
@@ -2094,8 +2115,15 @@ async def test_refresh_failure_marker_dates_the_attempt_not_the_batch(
     long the batch had already been running — under the hourly refresh
     CronJob, enough to put a mid-batch failure back in the very next run's
     due list, which is the retry storm the backoff exists to prevent.
+
+    Unlike its neighbours, this test does not truncate ``now`` to whole
+    seconds. The whole detection margin here is the ``elapsed`` the fetch
+    spends before failing, and truncation would put ``now`` up to a second
+    behind the real clock — more slack than that margin, so a batch-start
+    regression would clear ``now + elapsed`` on most runs and the test would
+    only sometimes fail.
     """
-    now = datetime.now(tz=UTC).replace(microsecond=0)
+    now = datetime.now(tz=UTC)
     elapsed = timedelta(seconds=0.3)
 
     async def slow_failure(request: httpx.Request) -> Response:
@@ -2123,6 +2151,85 @@ async def test_refresh_failure_marker_dates_the_attempt_not_the_batch(
     assert stored is not None
     assert stored.date_refresh_failed is not None
     assert stored.date_refresh_failed >= now + elapsed
+
+
+@pytest.mark.asyncio
+async def test_refresh_304_leaves_a_concurrently_refreshed_row_alone(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A ``304`` write is dropped when the row changed under the batch.
+
+    A row in the due list is stale by construction, so a client cold miss can
+    fetch and commit good content while this refresh's own conditional fetch
+    is still in flight — up to the whole 30-second budget. The refresh's
+    ``304`` validates the copy *it* sent validators for, not the one the cold
+    miss stored, so without a guard the write would re-date the newer copy
+    from a fetch that never saw it, and (before the write narrowed to the
+    columns a revalidation changes) revert its bytes to the due-list snapshot
+    and stamp the reverted content fresh for a whole TTL.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    fresh_content = b"# Sphinx inventory version 2\nconcurrent payload"
+
+    async def concurrent_success(request: httpx.Request) -> Response:
+        # Stand in for the client cold miss that wins the race: commit good
+        # content on an independent session while the refresh fetch is still
+        # in flight.
+        engine = create_database_engine(
+            config.database_url, config.database_password
+        )
+        session = await create_async_session(engine)
+        store = IntersphinxInventoryStore(
+            session=session, logger=structlog.get_logger("test")
+        )
+        async with session.begin():
+            await store.upsert_inventory(
+                IntersphinxInventory(
+                    url=INVENTORY_URL,
+                    content=fresh_content,
+                    content_type="application/octet-stream",
+                    etag='"fresh-etag"',
+                    last_modified=None,
+                    date_fetched=now,
+                    date_requested=now,
+                    last_fetch_status=InventoryFetchStatus.success,
+                    last_fetch_error=None,
+                    date_refresh_failed=None,
+                )
+            )
+        await session.close()
+        await engine.dispose()
+        return Response(304)
+
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        content=b"stale payload",
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    respx_mock.get(INVENTORY_URL).mock(side_effect=concurrent_success)
+
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
+
+    # The dropped write is reported rather than counted as a revalidation.
+    assert summary.considered == 1
+    assert summary.superseded == 1
+    assert summary.revalidated == 0
+    assert summary.refreshed == 0
+    assert summary.failed == 0
+
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    # The winning cold miss's row stands, down to the freshness anchor that
+    # dates its content.
+    assert stored.content == fresh_content
+    assert stored.etag == '"fresh-etag"'
+    assert stored.date_fetched == now
 
 
 @pytest.mark.asyncio
