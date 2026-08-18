@@ -26,7 +26,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
 
-from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
+from ook.domain.intersphinx import (
+    IntersphinxInventory,
+    InventoryCacheStatus,
+    InventoryFetchStatus,
+    ServedInventory,
+)
 from ook.domain.redirects import (
     MAX_REDIRECTS,
     REDIRECT_CODES,
@@ -434,7 +439,7 @@ class IntersphinxCacheService:
         self._max_content_size = max_content_size
         self._resolve_host = resolve_host or _default_resolve_host
 
-    async def get_inventory(self, url: str) -> IntersphinxInventory:
+    async def get_inventory(self, url: str) -> ServedInventory:
         """Resolve an origin inventory URL to its cached record.
 
         On a cold miss the origin is fetched synchronously, stored, and
@@ -450,8 +455,12 @@ class IntersphinxCacheService:
 
         Returns
         -------
-        IntersphinxInventory
-            The cached inventory record for the URL.
+        ServedInventory
+            The cached inventory record for the URL, and the cache status
+            this serve was decided under. The status is reported rather than
+            left for the caller to infer, because the record does not carry
+            it: a cold miss stamps the same just-now ``date_fetched`` a fast
+            hit has, and telling either from a stale serve needs the TTL.
 
         Raises
         ------
@@ -463,8 +472,11 @@ class IntersphinxCacheService:
         if cached is not None and cached.content is not None:
             now = datetime.now(tz=UTC)
             await self._inventory_store.touch_date_requested(url, now=now)
-            self._log_cache_serve(cached, now=now)
-            return replace(cached, date_requested=now)
+            cache_status = self._log_cache_serve(cached, now=now)
+            return ServedInventory(
+                inventory=replace(cached, date_requested=now),
+                cache_status=cache_status,
+            )
         if cached is not None and self._is_negative_cache_fresh(cached):
             self._logger.info(
                 "Serving negatively-cached intersphinx inventory failure",
@@ -909,30 +921,33 @@ class IntersphinxCacheService:
 
     def _log_cache_serve(
         self, inventory: IntersphinxInventory, *, now: datetime
-    ) -> None:
-        """Emit a structured cache-hit or stale-serve log for a served copy.
+    ) -> InventoryCacheStatus:
+        """Log a served cached copy and report which serve it was.
 
         A copy fetched within the TTL is a fresh hit; a copy with no fetch
-        time or a fetch older than the TTL is served stale.
+        time or a fetch older than the TTL is served stale. This freshness
+        comparison is made here and nowhere else — the returned status is
+        what reaches the response header — so the header and this log record
+        cannot disagree about the same serve.
         """
         is_fresh = (
             inventory.date_fetched is not None
             and now - inventory.date_fetched <= self._ttl
         )
         if is_fresh:
-            self._logger.info(
-                "Serving fresh intersphinx inventory from cache",
-                url=inventory.url,
-                cache_status="hit",
-            )
+            cache_status = InventoryCacheStatus.hit
+            message = "Serving fresh intersphinx inventory from cache"
         else:
-            self._logger.info(
-                "Serving stale intersphinx inventory from cache",
-                url=inventory.url,
-                cache_status="stale",
-            )
+            cache_status = InventoryCacheStatus.stale
+            message = "Serving stale intersphinx inventory from cache"
+        self._logger.info(
+            message,
+            url=inventory.url,
+            cache_status=cache_status,
+        )
+        return cache_status
 
-    async def _fetch_and_store(self, url: str) -> IntersphinxInventory:
+    async def _fetch_and_store(self, url: str) -> ServedInventory:
         """Fetch an origin inventory and store it (the cold-miss path).
 
         On an upstream failure with no cached content to fall back on, the
@@ -953,7 +968,7 @@ class IntersphinxCacheService:
         self._logger.info(
             "Fetched intersphinx inventory from origin",
             url=url,
-            cache_status="miss",
+            cache_status=InventoryCacheStatus.miss,
             final_url=fetch.final_url,
             redirect_hops=len(fetch.redirect_hops),
         )
@@ -974,7 +989,9 @@ class IntersphinxCacheService:
             date_refresh_failed=None,
         )
         await self._inventory_store.upsert_inventory(inventory)
-        return inventory
+        return ServedInventory(
+            inventory=inventory, cache_status=InventoryCacheStatus.miss
+        )
 
     async def _fetch_inventory(
         self,
@@ -1370,7 +1387,7 @@ class IntersphinxCacheService:
         self._logger.warning(
             "Intersphinx inventory upstream fetch failed on cache miss",
             url=url,
-            cache_status="miss",
+            cache_status=InventoryCacheStatus.miss,
             error=detail,
         )
         raise UpstreamInventoryError(detail)

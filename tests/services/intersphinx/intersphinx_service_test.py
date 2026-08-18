@@ -166,7 +166,7 @@ async def test_cold_miss_fetches_and_stores(
     )
     async with factory.db_session.begin():
         service = factory.create_intersphinx_cache_service()
-        inventory = await service.get_inventory(INVENTORY_URL)
+        inventory = (await service.get_inventory(INVENTORY_URL)).inventory
 
     assert inventory.url == INVENTORY_URL
     assert inventory.content == INVENTORY_BODY
@@ -211,10 +211,10 @@ async def test_cache_hit_serves_without_refetch(
     )
     async with factory.db_session.begin():
         service = factory.create_intersphinx_cache_service()
-        first = await service.get_inventory(INVENTORY_URL)
+        first = (await service.get_inventory(INVENTORY_URL)).inventory
     async with factory.db_session.begin():
         service = factory.create_intersphinx_cache_service()
-        second = await service.get_inventory(INVENTORY_URL)
+        second = (await service.get_inventory(INVENTORY_URL)).inventory
 
     assert route.call_count == 1
     assert second.content == INVENTORY_BODY
@@ -238,7 +238,7 @@ async def test_cache_hit_within_ttl_logs_hit(
     with structlog.testing.capture_logs() as captured:
         async with factory.db_session.begin():
             service = factory.create_intersphinx_cache_service()
-            served = await service.get_inventory(INVENTORY_URL)
+            served = (await service.get_inventory(INVENTORY_URL)).inventory
 
     # The just-fetched inventory is within the TTL, so no second upstream
     # request is made.
@@ -285,7 +285,7 @@ async def test_expired_inventory_served_stale_without_upstream(
     with structlog.testing.capture_logs() as captured:
         async with factory.db_session.begin():
             service = factory.create_intersphinx_cache_service()
-            served = await service.get_inventory(INVENTORY_URL)
+            served = (await service.get_inventory(INVENTORY_URL)).inventory
 
     # The request path never touches upstream, so the down origin is
     # irrelevant and the stale copy is served without error.
@@ -651,7 +651,7 @@ async def test_negative_cache_expiry_refetches(
 
     async with factory.db_session.begin():
         service = factory.create_intersphinx_cache_service()
-        served = await service.get_inventory(INVENTORY_URL)
+        served = (await service.get_inventory(INVENTORY_URL)).inventory
 
     # The expired negative-cache row is replaced by a fresh upstream fetch.
     assert route.call_count == 1
@@ -755,7 +755,7 @@ async def test_cold_miss_follows_cross_host_redirect_chain(
 
     async with factory.db_session.begin():
         service = factory.create_intersphinx_cache_service()
-        inventory = await service.get_inventory(INVENTORY_URL)
+        inventory = (await service.get_inventory(INVENTORY_URL)).inventory
 
     assert terminal_route.call_count == 1
     assert inventory.content == INVENTORY_BODY
@@ -845,7 +845,7 @@ async def test_cold_miss_without_redirect_leaves_resolved_columns_null(
 
     async with factory.db_session.begin():
         service = factory.create_intersphinx_cache_service()
-        inventory = await service.get_inventory(INVENTORY_URL)
+        inventory = (await service.get_inventory(INVENTORY_URL)).inventory
 
     assert inventory.resolved_url is None
     assert inventory.resolved_redirect_permanent is None
@@ -878,7 +878,7 @@ async def test_location_fragment_stripped_from_resolved_url(
 
     async with factory.db_session.begin():
         service = factory.create_intersphinx_cache_service()
-        inventory = await service.get_inventory(INVENTORY_URL)
+        inventory = (await service.get_inventory(INVENTORY_URL)).inventory
 
     assert inventory.resolved_url == terminal
 
@@ -916,7 +916,7 @@ async def test_relative_location_joins_against_current_hop(
 
     async with factory.db_session.begin():
         service = factory.create_intersphinx_cache_service()
-        inventory = await service.get_inventory(INVENTORY_URL)
+        inventory = (await service.get_inventory(INVENTORY_URL)).inventory
 
     assert terminal_route.call_count == 1
     assert wrong_route.call_count == 0
@@ -954,7 +954,7 @@ async def test_repeated_location_headers_follow_the_first(
 
     async with factory.db_session.begin():
         service = factory.create_intersphinx_cache_service()
-        inventory = await service.get_inventory(INVENTORY_URL)
+        inventory = (await service.get_inventory(INVENTORY_URL)).inventory
 
     assert first_route.call_count == 1
     assert second_route.call_count == 0
@@ -1401,7 +1401,7 @@ async def test_chain_at_the_hop_cap_resolves(
 
     async with factory.db_session.begin():
         service = factory.create_intersphinx_cache_service()
-        inventory = await service.get_inventory(chain[0])
+        inventory = (await service.get_inventory(chain[0])).inventory
 
     assert inventory.content == INVENTORY_BODY
     assert inventory.resolved_url == terminal
@@ -1509,7 +1509,7 @@ async def test_redirect_hop_bodies_not_counted_against_size_cap(
 
     service = _make_service(factory, max_content_size=64)
     async with factory.db_session.begin():
-        inventory = await service.get_inventory(INVENTORY_URL)
+        inventory = (await service.get_inventory(INVENTORY_URL)).inventory
 
     assert inventory.content == b"small"
     assert inventory.last_fetch_status is InventoryFetchStatus.success
@@ -1547,7 +1547,7 @@ async def test_small_redirect_hop_body_is_drained(
 
     async with factory.db_session.begin():
         service = factory.create_intersphinx_cache_service()
-        inventory = await service.get_inventory(INVENTORY_URL)
+        inventory = (await service.get_inventory(INVENTORY_URL)).inventory
 
     assert drained is True
     assert inventory.content == INVENTORY_BODY
@@ -1589,7 +1589,7 @@ async def test_oversized_redirect_hop_body_is_abandoned(
 
     service = _make_service(factory, max_content_size=len(INVENTORY_BODY))
     async with factory.db_session.begin():
-        inventory = await service.get_inventory(INVENTORY_URL)
+        inventory = (await service.get_inventory(INVENTORY_URL)).inventory
 
     assert yielded < total_chunks
     assert inventory.content == INVENTORY_BODY
@@ -1630,7 +1630,7 @@ async def test_repeated_host_in_a_chain_is_resolved_once(
 
     async with factory.db_session.begin():
         service = factory.create_intersphinx_cache_service()
-        inventory = await service.get_inventory(INVENTORY_URL)
+        inventory = (await service.get_inventory(INVENTORY_URL)).inventory
 
     assert inventory.content == INVENTORY_BODY
     # The requested host is resolved by the pre-fetch guard and not again
@@ -1839,7 +1839,7 @@ async def test_fast_redirect_chain_resolves_within_the_time_budget(
 
     service = _make_service(factory, request_timeout=timedelta(seconds=5))
     async with factory.db_session.begin():
-        inventory = await service.get_inventory(INVENTORY_URL)
+        inventory = (await service.get_inventory(INVENTORY_URL)).inventory
 
     assert inventory.content == INVENTORY_BODY
     assert inventory.last_fetch_status is InventoryFetchStatus.success

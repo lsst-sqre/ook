@@ -9,7 +9,7 @@ from safir.datetime import isodatetime
 
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
-from ook.domain.intersphinx import IntersphinxInventory
+from ook.domain.intersphinx import IntersphinxInventory, InventoryCacheStatus
 from ook.exceptions import UpstreamInventoryError
 
 router = APIRouter(
@@ -68,11 +68,42 @@ reference, so the header is documented once for every shape that carries
 it.
 """
 
+CACHE_STATUS_HEADER = "X-Ook-Inventory-Cache-Status"
+"""Header saying how this response's inventory was obtained."""
+
+CACHE_STATUS_HEADER_SPEC = {
+    CACHE_STATUS_HEADER: {
+        "description": (
+            "How Ook obtained the inventory this response describes:"
+            " ``hit`` (served from a cached copy fetched within the"
+            " freshness TTL), ``stale`` (served from a cached copy fetched"
+            " longer ago than the TTL and retained for availability), or"
+            " ``miss`` (not cached, so the origin was fetched"
+            " synchronously to answer this request). Always present."
+        ),
+        "schema": {
+            "type": "string",
+            "enum": [status.value for status in InventoryCacheStatus],
+        },
+    }
+}
+"""OpenAPI ``headers`` entry for the cache-status header.
+
+The documented values are generated from `InventoryCacheStatus` itself, so
+a member added to (or renamed in) the enum the service reports from cannot
+leave the published contract behind.
+
+Merged into `INVENTORY_CACHE_HEADERS_SPEC`, which is what the responses
+reference, so the header is documented once for every shape that carries
+it.
+"""
+
 INVENTORY_CACHE_HEADERS_SPEC = {
     **PERMANENT_REDIRECT_HEADER_SPEC,
     **DATE_FETCHED_HEADER_SPEC,
+    **CACHE_STATUS_HEADER_SPEC,
 }
-"""OpenAPI ``headers`` block for every header served from the cached row.
+"""OpenAPI ``headers`` block for every header describing the cached copy.
 
 All of them ride the ``200`` and the ``304`` alike, so both responses
 reference this one object instead of each assembling its own set — which is
@@ -198,6 +229,25 @@ def _date_fetched_headers(
         " ``0`` on such a row and so reports a copy of unknown age as"
         " freshly fetched."
         "\n\n"
+        "Every response also carries an"
+        " ``X-Ook-Inventory-Cache-Status`` header saying how Ook obtained"
+        " the inventory it is describing. ``hit`` means it was served from"
+        " a cached copy fetched within the freshness TTL. ``stale`` means"
+        " it was served from a cached copy fetched longer ago than that"
+        " TTL — still a cache serve, not an error: a copy past its TTL is"
+        " deliberately retained for availability while the background"
+        " refresh job revalidates it, so read ``stale`` together with"
+        " ``Age`` to judge how far past it is. ``miss`` means the"
+        " inventory was not cached when the request arrived, so the origin"
+        " was fetched synchronously to answer it."
+        "\n\n"
+        "This header rides the ``304`` as well as the ``200``, where it"
+        " describes how Ook obtained the copy it compared the client's"
+        " validator against — not the client's own copy, which a ``304``"
+        " has already said is current. A cold miss whose freshly-fetched"
+        " bytes turn out to match an ``If-None-Match`` therefore reports"
+        " ``miss``, not ``hit``."
+        "\n\n"
         "Redirects are followed when fetching the origin. If the chain"
         " was made up entirely of permanent redirects (301 or 308), the"
         " response carries an"
@@ -277,7 +327,7 @@ async def get_intersphinx_inventory(
     """Serve a cached intersphinx inventory, fetching on a cache miss."""
     service = context.factory.create_intersphinx_cache_service()
     try:
-        inventory = await service.get_inventory(url)
+        served = await service.get_inventory(url)
     except UpstreamInventoryError:
         # The service wrote a negative-cache row before raising; commit it
         # so the failure is actually cached even though the client gets a
@@ -285,6 +335,7 @@ async def get_intersphinx_inventory(
         await context.session.commit()
         raise
     await context.session.commit()
+    inventory = served.inventory
 
     age = 0
     if inventory.date_fetched is not None:
@@ -302,13 +353,19 @@ async def get_intersphinx_inventory(
     content = inventory.content or b""
     etag = f'"{hashlib.sha256(content).hexdigest()}"'
 
-    # Facts about the cached row itself, carried on both response shapes:
-    # a permanently-moved inventory URL, and when that row was last
-    # confirmed with its origin. A client that holds the current bytes only
-    # ever revalidates, so anything reported on the 200 alone would reach it
-    # exactly once. ``Age`` is the deliberate exception — it is the 200's
-    # own freshness statement about a body, and a bodyless 304 has none.
+    # Facts about the cached row itself and about this serve of it, carried
+    # on both response shapes: a permanently-moved inventory URL, when that
+    # row was last confirmed with its origin, and how this request obtained
+    # it. A client that holds the current bytes only ever revalidates, so
+    # anything reported on the 200 alone would reach it exactly once.
+    # ``Age`` is the deliberate exception — it is the 200's own freshness
+    # statement about a body, and a bodyless 304 has none.
+    #
+    # The cache status is the one value here that is not read from the row:
+    # it comes from the service, which decided it while serving, because the
+    # row cannot be asked afterwards which serve it was part of.
     cache_headers = {
+        CACHE_STATUS_HEADER: served.cache_status.value,
         **_permanent_redirect_headers(inventory),
         **_date_fetched_headers(inventory),
     }

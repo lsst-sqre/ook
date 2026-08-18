@@ -8,7 +8,9 @@ from enum import StrEnum
 
 __all__ = [
     "IntersphinxInventory",
+    "InventoryCacheStatus",
     "InventoryFetchStatus",
+    "ServedInventory",
 ]
 
 
@@ -24,6 +26,36 @@ class InventoryFetchStatus(StrEnum):
     """The most recent fetch failed. A row in this state with no content
     is the negative cache; a row with content is a stale copy retained for
     availability.
+    """
+
+
+class InventoryCacheStatus(StrEnum):
+    """How a served inventory response was obtained from the cache.
+
+    These are the outcomes a client can actually be handed a body (or a
+    ``304`` about one) under, and nothing else: the cache's other outcomes —
+    a negatively-cached failure, a refresh whose chain had moved, a failed
+    refresh — never reach a served response, so they are not members here
+    and stay literal log markers.
+    """
+
+    hit = "hit"
+    """Served from the cached copy, which was fetched within the freshness
+    TTL.
+    """
+
+    stale = "stale"
+    """Served from the cached copy, which was fetched longer ago than the
+    freshness TTL.
+
+    Still a cache serve, not an error: the copy is deliberately retained
+    past its TTL for availability while the background refresh job
+    revalidates it.
+    """
+
+    miss = "miss"
+    """Not cached at the start of this request; the origin was fetched
+    synchronously to answer it.
     """
 
 
@@ -123,3 +155,22 @@ class IntersphinxInventory:
     and None when the chain did not redirect. Only an all-permanent chain
     means the requested URL itself should be updated at its source.
     """
+
+
+@dataclass(frozen=True, slots=True)
+class ServedInventory:
+    """A cached inventory together with how this request obtained it.
+
+    The cache status is decided where the serve happens — the freshness
+    comparison on the cache-hit path, the fetch on the cold-miss path — and
+    carried out with the record, because it cannot be recovered from the
+    record afterwards: a cold miss stamps the same just-now ``date_fetched``
+    a fast hit has, and a stale serve is only distinguishable from either by
+    a TTL the caller does not hold.
+    """
+
+    inventory: IntersphinxInventory
+    """The cached inventory record to serve."""
+
+    cache_status: InventoryCacheStatus
+    """How this request obtained that record."""
