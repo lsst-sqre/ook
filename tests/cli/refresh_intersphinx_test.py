@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import click
 import pytest
 import respx
 from httpx import Response
 
-from ook.cli import main, run_refresh_intersphinx
+from ook.cli import main, report_refresh_intersphinx, run_refresh_intersphinx
 from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
 from ook.factory import Factory
+from ook.services.intersphinx import IntersphinxRefreshSummary
 
 INVENTORY_URL = "https://docs.example.com/en/latest/objects.inv"
 
@@ -61,3 +63,48 @@ async def test_run_refresh_intersphinx(
     assert stored.content == b"objects.inv payload"
     assert stored.date_fetched is not None
     assert stored.date_fetched > now - timedelta(hours=1)
+
+
+def test_report_refresh_intersphinx_reports_a_clean_run(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A run whose failures were all recorded reports its counts and exits
+    successfully.
+    """
+    report_refresh_intersphinx(
+        IntersphinxRefreshSummary(
+            considered=3,
+            refreshed=1,
+            revalidated=1,
+            superseded=0,
+            failed=1,
+            unrecorded_failures=0,
+        )
+    )
+
+    assert "3 considered" in capsys.readouterr().out
+
+
+def test_report_refresh_intersphinx_fails_on_an_unrecorded_failure(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A refresh failure whose bookkeeping write failed fails the run.
+
+    An inventory left without its backoff marker heads the next run's due
+    list and fails again, so the CronJob has to exit nonzero — but only
+    after the batch has run to the end and reported its counts, since a
+    bookkeeping error is not a reason to abandon the other inventories.
+    """
+    with pytest.raises(click.ClickException):
+        report_refresh_intersphinx(
+            IntersphinxRefreshSummary(
+                considered=3,
+                refreshed=1,
+                revalidated=1,
+                superseded=0,
+                failed=1,
+                unrecorded_failures=1,
+            )
+        )
+
+    assert "1 unrecorded" in capsys.readouterr().out

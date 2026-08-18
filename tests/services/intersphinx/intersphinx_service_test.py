@@ -15,6 +15,7 @@ import respx
 import structlog
 from httpx import Response
 from safir.database import create_async_session, create_database_engine
+from sqlalchemy.exc import OperationalError
 from structlog.testing import capture_logs
 
 from ook.config import config
@@ -2109,6 +2110,88 @@ async def test_refresh_per_inventory_failure_does_not_abort_batch(
         kept = await store.get_inventory(failing_url)
     assert kept is not None
     assert kept.content == b"kept payload"
+
+
+@pytest.mark.asyncio
+async def test_refresh_bookkeeping_failure_does_not_abort_batch(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A database error while *recording* a refresh failure is counted, not
+    fatal.
+
+    The guarded backoff write races the very cold miss it defends against, so
+    a serialization or deadlock error is the expected contention rather than a
+    hypothetical. If it escaped the loop the remaining inventories would never
+    be refreshed and the run would end with no summary at all.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    failing_url = "https://failing.example.com/objects.inv"
+    ok_url = "https://ok.example.com/objects.inv"
+    # The due list is stalest-first, so the broken bookkeeping write lands
+    # partway through a batch that still has an inventory left to refresh.
+    await _seed_stale_inventory(
+        factory,
+        failing_url,
+        content=b"kept payload",
+        date_fetched=now - timedelta(hours=3),
+        date_requested=now - timedelta(days=1),
+    )
+    await _seed_stale_inventory(
+        factory,
+        ok_url,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    respx_mock.get(failing_url).mock(return_value=Response(500))
+    respx_mock.get(ok_url).mock(return_value=Response(304))
+
+    unpatched_write = IntersphinxInventoryStore.update_refresh_failure
+
+    async def failing_write(
+        self: IntersphinxInventoryStore, url: str, **kwargs: Any
+    ) -> bool:
+        if url == failing_url:
+            raise OperationalError(
+                "UPDATE intersphinx_inventory SET last_fetch_status=...",
+                {},
+                Exception("deadlock detected"),
+            )
+        return await unpatched_write(self, url, **kwargs)
+
+    monkeypatch.setattr(
+        IntersphinxInventoryStore, "update_refresh_failure", failing_write
+    )
+
+    with capture_logs() as captured:
+        service = factory.create_intersphinx_cache_service()
+        summary = await service.refresh_inventories(now=now)
+
+    assert summary.considered == 2
+    assert summary.failed == 1
+    assert summary.unrecorded_failures == 1
+    # The inventory behind the broken write is still refreshed.
+    assert summary.revalidated == 1
+    assert any(
+        event.get("url") == failing_url
+        and event.get("event")
+        == "Failed to record an intersphinx refresh failure"
+        for event in captured
+    )
+    # The run still reports itself rather than dying inside the loop.
+    assert any(
+        event.get("event") == "Completed intersphinx inventory refresh"
+        for event in captured
+    )
+
+    # The row really is unrecorded: no backoff marker, stored copy intact.
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        kept = await store.get_inventory(failing_url)
+    assert kept is not None
+    assert kept.content == b"kept payload"
+    assert kept.date_refresh_failed is None
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,7 @@ from urllib.parse import SplitResult, urlsplit
 
 import httpx
 from httpx import AsyncClient
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
 
@@ -69,6 +70,18 @@ class IntersphinxRefreshSummary:
     failed: int
     """The number of inventories whose refresh failed (logged, skipped)."""
 
+    unrecorded_failures: int
+    """The number of those failures whose own bookkeeping write also failed.
+
+    Recording a failure is itself a database write, and it races the same
+    client cold miss the write is guarded against, so it can raise a
+    serialization or deadlock error of its own. Such an inventory keeps its
+    old ``date_fetched`` and never receives the ``date_refresh_failed``
+    backoff marker, so it heads the next run's due list and fails again;
+    counting it apart from `failed` is what lets the run report a broken
+    bookkeeping path without treating it as a reason to abandon the batch.
+    """
+
 
 class _RefreshResult(Enum):
     """How one inventory's proactive refresh ended, once its write returned.
@@ -85,6 +98,24 @@ class _RefreshResult(Enum):
 
     superseded = auto()
     """The write was dropped: the row changed since the due-list read."""
+
+
+class _BackoffWrite(Enum):
+    """How the attempt to record one inventory's refresh failure ended."""
+
+    recorded = auto()
+    """The failure detail and backoff marker were written and committed."""
+
+    dropped = auto()
+    """The guard skipped the write: the row changed since the due-list read.
+
+    A deliberate no-op, not an error: a client cold miss refreshed the row
+    while this run's fetch was in flight, so this run's failure describes a
+    copy the row no longer holds.
+    """
+
+    failed = auto()
+    """The write itself raised, so the row carries no backoff marker."""
 
 
 HostResolver = Callable[[str], Awaitable[Sequence[str]]]
@@ -488,6 +519,12 @@ class IntersphinxCacheService:
         failure is reported as ``backoff_recorded=False``, so neither is
         silent.
 
+        Recording a failure is itself a guarded write against a contended
+        row, so it can fail too. That is caught, logged, and counted as
+        ``unrecorded_failures`` rather than allowed out of the loop: a
+        bookkeeping error must not cost the batch every inventory behind it.
+        See `_record_refresh_failure`.
+
         Unlike the rest of this service, which leaves transaction boundaries
         to its caller (the request handler commits `get_inventory` itself),
         this batch-job entry point owns its own commits and must be called
@@ -512,7 +549,8 @@ class IntersphinxCacheService:
         -------
         IntersphinxRefreshSummary
             Counts of the inventories considered, refreshed, revalidated,
-            superseded, and failed.
+            superseded, and failed, plus those failures whose own
+            bookkeeping write failed.
         """
         if now is None:
             now = datetime.now(tz=UTC)
@@ -527,6 +565,7 @@ class IntersphinxCacheService:
         await self._session.commit()
         results: Counter[_RefreshResult] = Counter()
         failed = 0
+        unrecorded = 0
         for inventory in due:
             try:
                 result = await self._refresh_one(inventory)
@@ -536,25 +575,17 @@ class IntersphinxCacheService:
                 await self._session.rollback()
                 failed += 1
                 detail = self._describe_refresh_error(exc, url=inventory.url)
-                # Record the failed attempt in its own transaction, so the
-                # inventory backs off instead of heading the due list again
-                # on the very next run. Stamped now rather than at batch
-                # start, and guarded on the freshness anchor the due-list read
-                # saw, so the backoff runs from this attempt and a row a
-                # client refreshed under us is left alone.
-                recorded = await self._inventory_store.update_refresh_failure(
-                    inventory.url,
-                    now=datetime.now(tz=UTC),
-                    error=detail,
-                    expected_date_fetched=inventory.date_fetched,
+                backoff = await self._record_refresh_failure(
+                    inventory, detail=detail
                 )
-                await self._session.commit()
+                if backoff is _BackoffWrite.failed:
+                    unrecorded += 1
                 self._logger.warning(
                     "Failed to refresh intersphinx inventory",
                     url=inventory.url,
                     cache_status="refresh-failure",
                     error=detail,
-                    backoff_recorded=recorded,
+                    backoff_recorded=backoff is _BackoffWrite.recorded,
                 )
                 continue
             # Commit this inventory's outcome immediately so a later crash in
@@ -567,6 +598,7 @@ class IntersphinxCacheService:
             revalidated=results[_RefreshResult.revalidated],
             superseded=results[_RefreshResult.superseded],
             failed=failed,
+            unrecorded_failures=unrecorded,
         )
         self._logger.info(
             "Completed intersphinx inventory refresh",
@@ -575,8 +607,68 @@ class IntersphinxCacheService:
             revalidated=summary.revalidated,
             superseded=summary.superseded,
             failed=summary.failed,
+            unrecorded_failures=summary.unrecorded_failures,
         )
         return summary
+
+    async def _record_refresh_failure(
+        self, inventory: IntersphinxInventory, *, detail: str
+    ) -> _BackoffWrite:
+        """Record one inventory's failed refresh in its own transaction.
+
+        Writing the failure gives the inventory its ``date_refresh_failed``
+        backoff marker, which holds it out of the due list for one TTL so a
+        broken origin is retried on the normal cadence instead of heading
+        every run. The write is stamped now rather than at batch start, so
+        the backoff runs from this attempt, and guarded on the freshness
+        anchor the due-list read saw, so a row a client cold miss refreshed
+        under this run is left alone.
+
+        A database error here is caught rather than allowed to propagate.
+        This is bookkeeping *about* a failure, in the handler whose whole
+        purpose is that one inventory's failure never stops the batch, and it
+        races the very cold miss the guard defends against — so a
+        serialization or deadlock error is the expected contention, not a
+        remote possibility. Letting it out would strand every inventory after
+        this one unrefreshed, skip the end-of-run summary, and leave this row
+        with its old ``date_fetched`` and no backoff marker, at the head of
+        the next run's due list, ready to abort that batch the same way.
+
+        Parameters
+        ----------
+        inventory
+            The inventory whose refresh failed, as the due-list read saw it.
+        detail
+            The client-facing failure description to store.
+
+        Returns
+        -------
+        _BackoffWrite
+            Whether the backoff marker was recorded, deliberately dropped by
+            the concurrency guard, or lost to a failed write.
+        """
+        try:
+            recorded = await self._inventory_store.update_refresh_failure(
+                inventory.url,
+                now=datetime.now(tz=UTC),
+                error=detail,
+                expected_date_fetched=inventory.date_fetched,
+            )
+            await self._session.commit()
+        except SQLAlchemyError as exc:
+            # Return the session to a usable state for the next inventory:
+            # a failed statement or commit leaves its transaction unusable
+            # until it is rolled back.
+            await self._session.rollback()
+            self._logger.exception(
+                "Failed to record an intersphinx refresh failure",
+                url=inventory.url,
+                cache_status="refresh-failure",
+                error=detail,
+                bookkeeping_error=str(exc),
+            )
+            return _BackoffWrite.failed
+        return _BackoffWrite.recorded if recorded else _BackoffWrite.dropped
 
     def _describe_refresh_error(
         self, error: httpx.HTTPError | InvalidInventoryUrlError, *, url: str

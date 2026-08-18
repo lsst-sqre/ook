@@ -34,6 +34,7 @@ __all__ = [
     "LinkcheckRecheckSummary",
     "help",
     "main",
+    "report_refresh_intersphinx",
     "run_linkcheck_recheck",
     "run_refresh_intersphinx",
     "upload_doc_stub",
@@ -374,10 +375,47 @@ async def run_refresh_intersphinx(
     -------
     IntersphinxRefreshSummary
         Counts of the inventories considered, refreshed, revalidated,
-        superseded, and failed.
+        superseded, and failed, plus those failures whose own bookkeeping
+        write failed.
     """
     service = factory.create_intersphinx_cache_service()
     return await service.refresh_inventories(limit=limit)
+
+
+def report_refresh_intersphinx(summary: IntersphinxRefreshSummary) -> None:
+    """Print a refresh run's counts and fail the run if bookkeeping failed.
+
+    A per-inventory refresh failure is a normal outcome — an origin was down,
+    or answered something the cache would not store — and the batch reports it
+    and exits successfully. A failure the service could not *record* is not:
+    the inventory keeps its old freshness anchor and never receives its
+    backoff marker, so it heads the next run's due list and fails again, and
+    the cause is a database error on Ook's side rather than upstream's. That
+    is worth a nonzero exit so the CronJob surfaces it — but only after the
+    counts are printed, since the batch deliberately runs to the end rather
+    than aborting on it.
+
+    Parameters
+    ----------
+    summary
+        The counts `run_refresh_intersphinx` returned.
+
+    Raises
+    ------
+    click.ClickException
+        If any refresh failure's bookkeeping write itself failed.
+    """
+    click.echo(
+        f"Refreshed intersphinx inventories: {summary.considered} considered, "
+        f"{summary.refreshed} refreshed, {summary.revalidated} revalidated, "
+        f"{summary.superseded} superseded, {summary.failed} failed, "
+        f"{summary.unrecorded_failures} unrecorded."
+    )
+    if summary.unrecorded_failures:
+        raise click.ClickException(
+            f"Could not record {summary.unrecorded_failures} intersphinx "
+            "refresh failure(s); those inventories carry no backoff marker."
+        )
 
 
 @main.command(name="refresh-intersphinx")
@@ -398,6 +436,10 @@ async def refresh_intersphinx(*, limit: int | None) -> None:
     Inventories requested longer ago than the active window are skipped
     until a new request reactivates them. Intended to run as a scheduled
     cron job.
+
+    A per-inventory refresh failure is reported in the counts and does not
+    fail the command; a failure the service could not record does, once the
+    whole batch has run. See `report_refresh_intersphinx`.
     """
     logger = structlog.get_logger("ook")
     engine = create_database_engine(
@@ -408,11 +450,7 @@ async def refresh_intersphinx(*, limit: int | None) -> None:
     ) as factory:
         summary = await run_refresh_intersphinx(factory, limit=limit)
     await engine.dispose()
-    click.echo(
-        f"Refreshed intersphinx inventories: {summary.considered} considered, "
-        f"{summary.refreshed} refreshed, {summary.revalidated} revalidated, "
-        f"{summary.superseded} superseded, {summary.failed} failed."
-    )
+    report_refresh_intersphinx(summary)
 
 
 timespan_pattern = re.compile(
