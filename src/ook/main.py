@@ -69,7 +69,7 @@ async def lifespan(fastapi_app: FastAPI) -> AsyncIterator:
         raise RuntimeError("Database schema out of date")
     await engine.dispose()
     await db_session_dependency.initialize(
-        config.database_url, config.database_password
+        config.database_url, config.database_password, pool_pre_ping=True
     )
 
     logger.info("Ook start up complete.")

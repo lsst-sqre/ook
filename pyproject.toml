@@ -25,7 +25,7 @@ dependencies = [
     "uvicorn[standard]",
     "pydantic >= 2.0.0",
     "pydantic_settings",
-    "safir[db,kafka]>=15",
+    "safir[db,kafka]>=15.2.0",
     "alembic[tz]",
     "faststream[kafka]>=0.7.3,<0.8",
     "faststream-fastapi>=1.2.1,<2",
