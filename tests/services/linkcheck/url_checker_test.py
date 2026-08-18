@@ -1140,6 +1140,44 @@ async def test_overlong_redirect_location_is_failure(
 
 
 @pytest.mark.asyncio
+async def test_chain_at_the_hop_cap_succeeds(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A chain of exactly ``MAX_REDIRECTS`` hops resolves rather than fails.
+
+    The loop tests cover the cap's failing side; this is its passing side.
+    Every other redirect test either walks one to three hops or overshoots
+    the cap outright, so an off-by-one in ``len(hops) >= MAX_REDIRECTS``
+    would report a legitimate 20-hop link as broken — with the rest of the
+    suite still green, and the intersphinx cache's twin loop drifting from
+    this one on the exact boundary they share.
+    """
+    for hop in range(MAX_REDIRECTS):
+        respx_mock.route(
+            method="HEAD", path=f"/hop{hop}", headers={"Host": "example.com"}
+        ).respond(
+            301, headers={"Location": f"https://example.com/hop{hop + 1}"}
+        )
+    terminal = respx_mock.route(
+        method="HEAD",
+        path=f"/hop{MAX_REDIRECTS}",
+        headers={"Host": "example.com"},
+    ).respond(200)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/hop0")
+
+    assert outcome.result is CheckResult.success
+    assert outcome.status_code == 200
+    assert outcome.redirect_status_code == 301
+    assert outcome.redirect_url == f"https://example.com/hop{MAX_REDIRECTS}"
+    assert terminal.call_count == 1
+    # One request per allowed hop, plus the terminal the last hop reaches.
+    assert len(respx_mock.calls) == MAX_REDIRECTS + 1
+
+
+@pytest.mark.asyncio
 async def test_too_many_redirects_is_failure(
     http_client: httpx.AsyncClient,
     respx_mock: respx.Router,

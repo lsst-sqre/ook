@@ -242,6 +242,61 @@ async def test_failure_upsert_leaves_resolved_columns_null(
 
 
 @pytest.mark.asyncio
+async def test_failure_upsert_leaves_refresh_backoff_null(
+    factory: Factory,
+) -> None:
+    """A request-path failure write leaves ``date_refresh_failed`` null.
+
+    The marker is a refresh-path record: it holds a row out of the due list
+    for a TTL after a *proactive* refresh failed. A cold-miss failure dates
+    itself with ``date_fetched`` instead, so a marker written here would
+    back a request-path failure off the refresh cadence for a TTL on top of
+    its negative TTL — and nothing else reads the two together, so the row
+    would simply stop being retried. The row is seeded with a marker already
+    set, so what is asserted is what this write does rather than what its
+    caller happened to pass in.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://down.example.com/objects.inv"
+
+        # A contentless row already backed off by a failed refresh.
+        await store.upsert_inventory(
+            _make_inventory(
+                url,
+                content=None,
+                content_type=None,
+                etag=None,
+                last_modified=None,
+                date_fetched=now - timedelta(hours=2),
+                date_requested=now - timedelta(hours=2),
+                last_fetch_status=InventoryFetchStatus.failure,
+                last_fetch_error="502 Bad Gateway",
+                date_refresh_failed=now - timedelta(hours=1),
+            )
+        )
+
+        await store.upsert_fetch_failure(
+            _make_inventory(
+                url,
+                content=None,
+                content_type=None,
+                etag=None,
+                last_modified=None,
+                date_fetched=now,
+                date_requested=now,
+                last_fetch_status=InventoryFetchStatus.failure,
+                last_fetch_error="502 Bad Gateway",
+            )
+        )
+
+        stored = await store.get_inventory(url)
+        assert stored is not None
+        assert stored.date_refresh_failed is None
+
+
+@pytest.mark.asyncio
 async def test_failure_upsert_updates_contentless_row(
     factory: Factory,
 ) -> None:

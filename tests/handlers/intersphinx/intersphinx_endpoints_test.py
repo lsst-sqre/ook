@@ -16,8 +16,6 @@ from ook.config import config
 from ook.domain.intersphinx import InventoryFetchStatus
 from ook.handlers.intersphinx.endpoints import (
     MAX_PERMANENT_REDIRECT_URL_LENGTH,
-    PERMANENT_REDIRECT_HEADER,
-    PERMANENT_REDIRECT_HEADER_SPEC,
 )
 from ook.storage.intersphinxstore import IntersphinxInventoryStore
 
@@ -776,24 +774,53 @@ async def test_permanent_redirect_header_at_length_bound(
 @pytest.mark.asyncio
 async def test_permanent_redirect_header_documented_on_both_responses(
     client: AsyncClient,
+    respx_mock: respx.Router,
 ) -> None:
-    """The 200 and 304 responses document the header from one spec.
+    """The 200 and 304 responses document the header the endpoint emits.
 
-    The header block is defined once, keyed by the header-name constant,
-    and shared by both responses, so the two can never drift apart.
+    The documented name and schema are pinned to literals and the name is
+    looked up in a live response, rather than compared with
+    ``PERMANENT_REDIRECT_HEADER_SPEC``: the published OpenAPI is generated
+    *from* that object, so comparing the two cannot fail, and renaming the
+    header or retyping its schema would silently move the documented
+    contract away from the emitted one. Documenteer reads the published
+    document, so the two drifting apart is the failure this test exists to
+    catch.
     """
+    terminal = "https://docs.example.com/en/21/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(301, headers={"Location": terminal})
+    )
+    respx_mock.get(terminal).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+    served = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert served.status_code == 200
+
     response = await client.get(f"{config.path_prefix}/openapi.json")
     assert response.status_code == 200
     operation = response.json()["paths"][
         f"{config.path_prefix}/intersphinx/inventory"
     ]["get"]
 
-    assert PERMANENT_REDIRECT_HEADER in PERMANENT_REDIRECT_HEADER_SPEC
-    for status in ("200", "304"):
-        assert (
-            operation["responses"][status]["headers"]
-            == PERMANENT_REDIRECT_HEADER_SPEC
-        )
+    documented = operation["responses"]["200"]["headers"]
+    assert set(documented) == {"X-Ook-Inventory-Permanent-Redirect"}
+    assert documented["X-Ook-Inventory-Permanent-Redirect"]["schema"] == {
+        "type": "string",
+        "format": "uri",
+    }
+    # The documented name is the one a live response actually carries.
+    (documented_name,) = documented
+    assert served.headers[documented_name] == terminal
+    # Both responses document it identically, from the one shared block.
+    assert operation["responses"]["304"]["headers"] == documented
 
 
 @pytest.mark.asyncio

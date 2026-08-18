@@ -71,15 +71,25 @@ async def _assert_negative_cached(
     url: str = INVENTORY_URL,
     *,
     error_contains: str | None = None,
+    backoff_marked: bool = False,
 ) -> IntersphinxInventory:
     """Assert ``url`` is stored as a negative-cache row and return that row.
 
     The negative-cache shape is one invariant — no content, a ``failure``
-    status, and a stored error detail — so asserting it is all-or-nothing
+    status, a stored error detail, and a backoff marker set by the refresh
+    path and only by the refresh path — so asserting it is all-or-nothing
     here rather than each test spelling out whichever part of it that test
     happened to think of. ``error_contains`` adds the detail the caller's
     own failure mode is identified by; the row is returned for any further
     assertion specific to the caller.
+
+    ``backoff_marked`` names which path wrote the row. A request-path
+    failure dates itself with ``date_fetched`` and must leave
+    ``date_refresh_failed`` null; a refresh failure must set it, since that
+    marker is the only thing holding a broken inventory back to the normal
+    refresh cadence. Defaulting to the request path and making the refresh
+    callers say so keeps that split asserted at every call site instead of
+    at none of them.
     """
     stored = await factory.create_intersphinx_inventory_store().get_inventory(
         url
@@ -90,6 +100,10 @@ async def _assert_negative_cached(
     assert stored.last_fetch_error is not None
     if error_contains is not None:
         assert error_contains in stored.last_fetch_error
+    if backoff_marked:
+        assert stored.date_refresh_failed is not None
+    else:
+        assert stored.date_refresh_failed is None
     return stored
 
 
@@ -547,6 +561,39 @@ async def test_cold_miss_no_content_status_negatively_cached(
     assert route.call_count == 1
 
     await _assert_negative_cached(factory, error_contains="empty")
+
+
+@pytest.mark.asyncio
+async def test_cold_miss_304_negatively_cached(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A ``304`` answering a cold miss is an upstream failure, not a hit.
+
+    A cold miss has nothing to revalidate — no stored entity-tag, no stored
+    modification date — so its request goes out unconditional and a ``304``
+    answers a question it never asked. Trusting it would store a
+    content-None row under a ``success`` status: unservable, invisible to
+    the negative-cache window, and, because every later read tests
+    ``content is not None``, never displaced by another cold miss.
+
+    This is the shape that exercises the terminal check with the empty
+    header dict the request path builds. The refresh path reaches the same
+    branch, but always through a row that had *some* headers to consider,
+    so an ``_has_validator`` that read an empty mapping as conditional would
+    pass every one of those tests.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(return_value=Response(304))
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible,
+    # mirroring how the handler commits the failure path.
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError, match="unconditional"):
+        await service.get_inventory(INVENTORY_URL)
+
+    assert route.call_count == 1
+
+    await _assert_negative_cached(factory, error_contains="unconditional")
 
 
 @pytest.mark.asyncio
@@ -1312,6 +1359,46 @@ async def test_requested_url_without_addresses_negatively_cached(
     assert route.call_count == 0
 
     await _assert_negative_cached(factory, error_contains="resolved")
+
+
+@pytest.mark.asyncio
+async def test_chain_at_the_hop_cap_resolves(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A chain of exactly ``MAX_REDIRECTS`` hops resolves and is stored.
+
+    The loop tests cover the cap's failing side; this is its passing side.
+    Every other redirect test either walks one to three hops or overshoots
+    the cap outright, so an off-by-one in ``len(hops) >= MAX_REDIRECTS``
+    would report a legitimate 20-hop inventory as ``Exceeded 20 redirects``
+    — negatively cached, and 502 for the whole negative TTL — with the rest
+    of the suite still green.
+    """
+    chain = [
+        f"https://docs.example.com/hop{hop}/objects.inv"
+        for hop in range(MAX_REDIRECTS)
+    ]
+    terminal = "https://docs.example.com/en/21/objects.inv"
+    for index, hop_url in enumerate(chain):
+        next_url = chain[index + 1] if index + 1 < len(chain) else terminal
+        respx_mock.get(hop_url).mock(
+            return_value=Response(301, headers={"Location": next_url})
+        )
+    terminal_route = respx_mock.get(terminal).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_cache_service()
+        inventory = await service.get_inventory(chain[0])
+
+    assert inventory.content == INVENTORY_BODY
+    assert inventory.resolved_url == terminal
+    assert inventory.resolved_redirect_permanent is True
+    assert terminal_route.call_count == 1
+    # One request per allowed hop, plus the terminal the last hop reaches.
+    assert respx_mock.calls.call_count == MAX_REDIRECTS + 1
 
 
 @pytest.mark.asyncio
@@ -2244,7 +2331,9 @@ async def test_refresh_304_without_a_validator_records_a_failure(
     assert summary.revalidated == 0
     assert summary.refreshed == 0
 
-    await _assert_negative_cached(factory, error_contains="unconditional")
+    await _assert_negative_cached(
+        factory, error_contains="unconditional", backoff_marked=True
+    )
 
 
 @pytest.mark.asyncio
