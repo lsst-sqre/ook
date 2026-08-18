@@ -152,6 +152,31 @@ class _InventoryTooLargeError(httpx.HTTPError):
     """
 
 
+class _EmptyInventoryError(httpx.HTTPError):
+    """An origin answered a success status with no inventory bytes at all.
+
+    Covers a terminal ``200`` with a zero-length body — a CDN edge glitch,
+    a truncated object — and a ``204``, which is neither a redirect nor a
+    ``304`` and so reaches the terminal branch as a success carrying
+    nothing. ``raise_for_status()`` waves both through, and storing the
+    result would write a ``success`` row whose content is ``b""``: an
+    inventory documenteer cannot parse, served with a ``200`` and the
+    ``ETag`` of the empty string, and one that nothing can displace. Every
+    later decision point tests ``content is not None`` rather than
+    truthiness, so such a row is a permanent cache hit — never a cold miss
+    again, never a live negative-cache entry, and immune to
+    `IntersphinxInventoryStore.upsert_fetch_failure`'s ``content IS NULL``
+    guard.
+
+    An ``httpx.HTTPError`` for the same reason as `_InventoryTooLargeError`:
+    an origin that answers a well-formed request with no inventory has
+    misbehaved, so this reuses the existing upstream-failure plumbing — a
+    negatively cached 502 on the request path, and on the refresh path a
+    per-inventory skip that leaves the stored copy serving stale rather
+    than overwriting it with nothing.
+    """
+
+
 class _UpstreamTooManyRedirectsError(TooManyRedirectsError, httpx.HTTPError):
     """An origin inventory's redirect chain exceeded the hop cap.
 
@@ -224,6 +249,22 @@ URL, naming a host it already knows, and it is never stored.
 """
 
 
+_UNRESOLVABLE_HOST_DETAIL = "The inventory host could not be resolved"
+"""Client-facing detail for a URL whose host would not resolve.
+
+Generic for the same reason as `_UNSAFE_REFRESH_URL_DETAIL`, and stored in
+the same place: this detail goes onto the negative-cache row and is replayed
+in the 502 body of every request for the URL inside the negative-TTL window,
+while the resolver's own message describes what Ook's resolver saw from
+inside the cluster rather than anything a client can act on. The specific
+reason is logged at the raise site instead.
+
+It names no host on purpose, and loses nothing by it: on the request path
+the client just asked for the URL, and on the refresh path the stored copy
+of this detail is only ever replayed to a client asking for that same URL.
+"""
+
+
 _UNCONDITIONAL_304_DETAIL = (
     "Upstream answered 304 Not Modified to an unconditional inventory request"
 )
@@ -249,6 +290,28 @@ class _UnconditionalNotModifiedError(httpx.HTTPError):
     upstream misbehaved, so this reuses the existing upstream-failure
     plumbing — a negatively cached 502 on the request path, a recorded
     per-inventory failure on the refresh path.
+    """
+
+
+class _ResolutionFailedError(httpx.HTTPError):
+    """A URL's host could not be resolved to any address.
+
+    Distinct from `InvalidInventoryUrlError`, which reports something about
+    the URL the *client* chose and can fix: one no parser accepts, one that
+    is not ``https``, one whose host resolves to a non-public address. A
+    well-formed host that will not resolve *right now* is none of those —
+    the URL may be perfectly good and the resolver merely blinking — so
+    reporting it as a bad request tells a doc author to fix an
+    ``intersphinx_mapping`` entry that has nothing wrong with it.
+
+    An ``httpx.HTTPError``, so it lands in the same upstream-failure
+    plumbing as the identical failure on a redirect hop, which
+    `_UnsafeRedirectError` already classifies this way: a negatively cached
+    502 on the request path, a recorded per-inventory failure on the
+    refresh path. Being cached is half the point — a 400 escapes
+    `_fetch_and_store`'s handler entirely, so nothing is stored and every
+    repeat re-pays a full lookup, in a cluster with no caching resolver
+    where ``ndots`` search expansion multiplies each one.
     """
 
 
@@ -324,6 +387,10 @@ class IntersphinxCacheService:
     Before any upstream fetch the origin URL passes an SSRF guard: it must
     use ``https`` and its host must not resolve to a private, link-local,
     or loopback address. A guarded URL is never fetched and never stored.
+    A URL the guard refuses for what it *is* — unparseable, not ``https``,
+    or pointing at a non-public address — is a bad client request; a
+    well-formed URL whose host simply will not resolve is not the client's
+    mistake and is treated as an upstream failure like any other.
 
     Every upstream fetch is hardened against a hostile or misbehaving
     origin: redirects are followed by hand, one guarded hop at a time and
@@ -331,15 +398,15 @@ class IntersphinxCacheService:
     upstream ``Location`` and a redirect loop terminates), the whole fetch —
     the guard on the requested URL included — is cancelled at a single time
     budget so neither a long chain nor one stalled hop can outlast it, and
-    the terminal response body is
-    streamed under a size cap so an oversized inventory is abandoned rather
-    than buffered into memory. An oversized response, an over-long chain, an
-    exhausted time budget, an unusable ``Location``, a ``304`` answering a
-    request that carried no validator, and a hop the guard rejects —
-    including one whose host will not resolve — are all treated as upstream
-    fetch failures, so every way a chain can fail lands in the same
-    negative-cache-and-502 treatment on the request path and the same
-    skip-one-inventory treatment on the refresh path. A guard-rejected hop's
+    the terminal response body is streamed under a size cap so an oversized
+    inventory is abandoned rather than buffered into memory. An oversized
+    response, an empty one, an over-long chain, an exhausted time budget, an
+    unusable ``Location``, a ``304`` answering a request that carried no
+    validator, and a hop the guard rejects — including one whose host will
+    not resolve — are all treated as upstream fetch failures, so every way a
+    chain can fail lands in the same negative-cache-and-502 treatment on the
+    request path and the same skip-one-inventory treatment on the refresh
+    path. A guard-rejected hop's
     stored and served detail is deliberately generic; the guard's specific
     reason, which would report Ook's own resolution of an upstream-chosen
     host, is logged rather than replayed to clients.
@@ -973,10 +1040,14 @@ class IntersphinxCacheService:
         ``Content-Length`` pre-check and the streamed-size cap apply to the
         terminal response alone. The terminal body is streamed so an
         oversized response is abandoned as soon as the cap is exceeded
-        rather than fully buffered. A hop's body is discarded by *reading*
-        it, under `_HOP_DRAIN_LIMIT` — see `_drain_hop_body`, which explains
-        why the read is what keeps a chain from opening a connection per
-        hop.
+        rather than fully buffered, and a terminal answering a success
+        status with no body at all is rejected rather than stored as
+        content — see `_EmptyInventoryError`. Only a *success* status is
+        checked for emptiness, so an empty 4xx or 5xx still reports the
+        status code its caller's ``raise_for_status()`` raises on. A hop's
+        body is discarded by *reading* it, under `_HOP_DRAIN_LIMIT` — see
+        `_drain_hop_body`, which explains why the read is what keeps a chain
+        from opening a connection per hop.
 
         The conditional-request headers, if any, are re-sent on every hop so
         a chain ending in a ``304 Not Modified`` still revalidates — except
@@ -1016,6 +1087,9 @@ class IntersphinxCacheService:
 
         Raises
         ------
+        _EmptyInventoryError
+            Raised when the terminal response carries a success status and
+            an empty body, including a ``204``.
         _FetchDeadlineExceededError
             Raised when the chain outlasts the whole-fetch time budget.
         _InventoryTooLargeError
@@ -1071,6 +1145,11 @@ class IntersphinxCacheService:
                         content = await self._read_capped_body(
                             response, deadline=deadline
                         )
+                        if response.is_success and not content:
+                            raise _EmptyInventoryError(
+                                "Upstream returned an empty inventory body"
+                                f" with HTTP {response.status_code}"
+                            )
                         return _InventoryFetch(
                             response, content, current_url, hops
                         )
@@ -1352,6 +1431,13 @@ class IntersphinxCacheService:
         link-local, or loopback address. A rejected URL is never fetched and
         never stored.
 
+        It refuses a URL in two distinguishable ways, and they are not the
+        same kind of failure. Everything above is a fact about the URL the
+        caller chose, so it is a bad client request (400) — see
+        `_reject_url`. A host that cannot be resolved at all is the absence
+        of an answer rather than a fact about the URL, so it is an upstream
+        failure (502, negatively cached) — see `_fail_resolution`.
+
         Parsing comes first, and rejects before anything is resolved — see
         `_parse_url`.
 
@@ -1386,9 +1472,11 @@ class IntersphinxCacheService:
         Raises
         ------
         InvalidInventoryUrlError
-            Raised if the URL cannot be parsed, uses a non-``https`` scheme,
-            its host cannot be resolved at all, or its host resolves to a
-            non-public address.
+            Raised if the URL cannot be parsed, uses a non-``https``
+            scheme, or its host resolves to a non-public address.
+        _ResolutionFailedError
+            Raised if the host cannot be resolved at all, whether the
+            resolver failed or answered with no addresses.
         """
         parts = self._parse_url(url)
         if parts.scheme != "https":
@@ -1414,16 +1502,19 @@ class IntersphinxCacheService:
                 # failure as socket.gaierror (an OSError) and a host label
                 # IDNA cannot encode as UnicodeEncodeError. Neither is an
                 # httpx.HTTPError, so left to propagate they escape both
-                # fetch paths' handlers; a rejection here keeps every
-                # resolution failure inside the guard's own taxonomy, which
-                # the redirect-hop wrapper then re-raises as an upstream
-                # failure.
-                self._reject_url(
+                # fetch paths' handlers; failing here keeps every
+                # resolution failure inside the upstream-failure taxonomy,
+                # which the redirect-hop wrapper then re-describes as a
+                # refused hop.
+                self._fail_resolution(
                     url, f"Host {host!r} could not be resolved: {exc}"
                 )
             addresses = [ipaddress.ip_address(a) for a in resolved]
         if not addresses:
-            self._reject_url(
+            # Reachable only from the resolver, never from the IP-literal
+            # branch above, and an empty answer is the same absence of an
+            # answer a resolver error is.
+            self._fail_resolution(
                 url, f"Host {host!r} did not resolve to any address"
             )
         for address in addresses:
@@ -1498,7 +1589,13 @@ class IntersphinxCacheService:
         self._remaining_budget(deadline)
         try:
             await self._guard_url(url, validated_hosts=validated_hosts)
-        except InvalidInventoryUrlError as exc:
+        except (InvalidInventoryUrlError, _ResolutionFailedError) as exc:
+            # A hop that will not resolve is re-described here like any
+            # other refused hop, so an unresolvable target upstream chose
+            # is never reported as though the client's own URL failed to
+            # resolve. Its `reason` is the scrubbed detail by this point;
+            # what the resolver actually said is in `_fail_resolution`'s
+            # own earlier record, against this hop's URL.
             self._logger.warning(
                 "Rejected an intersphinx inventory redirect hop",
                 url=requested_url,
@@ -1515,6 +1612,26 @@ class IntersphinxCacheService:
             reason=reason,
         )
         raise InvalidInventoryUrlError(reason)
+
+    def _fail_resolution(self, url: str, reason: str) -> NoReturn:
+        """Log a resolution failure and raise ``_ResolutionFailedError``.
+
+        The scrub lives here at the raise site, unlike the refresh path's
+        scrub of a guard *rejection*, which lives at that path's error
+        boundary. The difference is who reads each. A rejection is shared
+        with the request path's 400, which keeps the specific reason for
+        the client that chose the URL, so only the refresh side of it can
+        be scrubbed. A resolution failure has no 400 path left: every path
+        it reaches ends in a stored, replayed detail, so the exception
+        carries the generic one from birth and every reader of it is
+        scrub-safe without having to remember to be.
+        """
+        self._logger.warning(
+            "Could not resolve an intersphinx inventory host",
+            url=url,
+            reason=reason,
+        )
+        raise _ResolutionFailedError(_UNRESOLVABLE_HOST_DETAIL)
 
 
 def _first_location(headers: httpx.Headers) -> str | None:
@@ -1640,9 +1757,11 @@ def _describe_upstream_error(error: httpx.HTTPError) -> str:
     """
     if isinstance(
         error,
-        _FetchDeadlineExceededError
+        _EmptyInventoryError
+        | _FetchDeadlineExceededError
         | _InventoryTooLargeError
         | _UpstreamTooManyRedirectsError
+        | _ResolutionFailedError
         | _UnconditionalNotModifiedError
         | _UnsafeRedirectError
         | _InvalidRedirectError,

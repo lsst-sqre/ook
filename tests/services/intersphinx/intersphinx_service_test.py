@@ -498,6 +498,58 @@ async def test_cold_miss_content_length_over_cap_negatively_cached(
 
 
 @pytest.mark.asyncio
+async def test_cold_miss_empty_body_negatively_cached(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A terminal ``200`` carrying no bytes is an upstream failure.
+
+    ``raise_for_status()`` waves an empty ``200`` through, so a CDN edge
+    glitch or a truncated object used to be stored as a ``success`` row
+    holding ``b""``: a permanent cache hit serving nothing that no later
+    cold miss, no negative-cache expiry, and no failure upsert could
+    displace, because every one of those reads the row as content-bearing.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=b"")
+    )
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible,
+    # mirroring how the handler commits the failure path.
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    assert route.call_count == 1
+
+    await _assert_negative_cached(factory, error_contains="empty")
+
+
+@pytest.mark.asyncio
+async def test_cold_miss_no_content_status_negatively_cached(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A ``204 No Content`` terminal is an upstream failure, not a hit.
+
+    A 204 is neither a redirect nor a ``304``, so it reaches the terminal
+    branch as a success status with an empty body — the same unservable
+    content-less ``success`` row an empty ``200`` would leave behind.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(return_value=Response(204))
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible,
+    # mirroring how the handler commits the failure path.
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    assert route.call_count == 1
+
+    await _assert_negative_cached(factory, error_contains="empty")
+
+
+@pytest.mark.asyncio
 async def test_negative_cache_expiry_refetches(
     factory: Factory,
     respx_mock: respx.Router,
@@ -1097,16 +1149,18 @@ def test_join_redirect_url_rejects_unparseable_location() -> None:
 
 
 @pytest.mark.asyncio
-async def test_requested_url_dns_failure_rejected_as_invalid(
+async def test_requested_url_dns_failure_negatively_cached(
     factory: Factory,
     respx_mock: respx.Router,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A requested URL whose host fails to resolve is a bad client request.
+    """A requested URL whose host will not resolve is an upstream failure.
 
-    Unlike a hop upstream chose, the client picked this hostname and can
-    fix it, so the guard's existing 400 rejection covers it rather than the
-    502 an upstream failure gets.
+    A well-formed host that does not resolve right now is not the client's
+    mistake — a resolver blip would otherwise tell a doc author their
+    ``intersphinx_mapping`` entry is bad — so it is the 502 an upstream
+    failure gets rather than the 400 a URL the client can fix gets, and it
+    is negatively cached like every other upstream failure.
     """
     route = respx_mock.get(INVENTORY_URL).mock(
         return_value=Response(200, content=INVENTORY_BODY)
@@ -1117,11 +1171,147 @@ async def test_requested_url_dns_failure_rejected_as_invalid(
 
     monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
 
+    # No ``begin()`` wrapper so the negative-cache row stays visible,
+    # mirroring how the handler commits the failure path.
     service = factory.create_intersphinx_cache_service()
-    with pytest.raises(InvalidInventoryUrlError):
+    with pytest.raises(UpstreamInventoryError):
         await service.get_inventory(INVENTORY_URL)
 
     assert route.call_count == 0
+
+    await _assert_negative_cached(factory, error_contains="resolved")
+
+
+@pytest.mark.asyncio
+async def test_requested_url_dns_failure_served_from_negative_cache(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A repeat request for an unresolvable host pays for no second lookup.
+
+    The 400 this used to be escaped `_fetch_and_store`'s ``httpx.HTTPError``
+    handler, so nothing was cached and every retry re-paid a full
+    ``ndots``-expanded lookup in a cluster with no caching resolver.
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+    lookups: list[str] = []
+
+    async def resolve(host: str) -> list[str]:
+        lookups.append(host)
+        raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    # No ``begin()`` wrapper: the negative-cache row must stay visible to
+    # the second request rather than being rolled back.
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    assert lookups == ["docs.example.com"]
+
+
+@pytest.mark.asyncio
+async def test_requested_url_dns_failure_detail_omits_the_resolver_text(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stored and served detail says nothing the resolver said.
+
+    This detail is not a transient message to one client: it is written to
+    the negative-cache row and replayed in the 502 body of every request
+    inside the negative-TTL window, so it is scrubbed for the same reason
+    a refused hop's and a rebound stored URL's are.
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    async def resolve(host: str) -> list[str]:
+        raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError) as excinfo:
+        await service.get_inventory(INVENTORY_URL)
+
+    assert "Name or service not known" not in str(excinfo.value)
+    stored = await _assert_negative_cached(factory)
+    # Re-asserted only for the narrowing the helper's own assertion cannot
+    # carry back across the call.
+    assert stored.last_fetch_error is not None
+    assert "Name or service not known" not in stored.last_fetch_error
+
+
+@pytest.mark.asyncio
+async def test_requested_url_dns_failure_logs_the_specific_reason(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The resolver's reason scrubbed off the row is logged instead."""
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    async def resolve(host: str) -> list[str]:
+        raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    service = factory.create_intersphinx_cache_service()
+    with capture_logs() as logs, pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    reasons = [
+        record
+        for record in logs
+        if "Name or service not known" in str(record.get("reason", ""))
+    ]
+    assert len(reasons) == 1
+    assert reasons[0]["url"] == INVENTORY_URL
+    assert reasons[0]["log_level"] == "warning"
+
+
+@pytest.mark.asyncio
+async def test_requested_url_without_addresses_negatively_cached(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host that resolves to nothing is the same failure as one that
+    raises.
+
+    An empty answer is an absence of an answer, not a fact about the
+    client's URL, so it belongs on the 502 side of the split with the
+    resolver errors rather than with the rejections (bad scheme, non-public
+    address) that name something the client asked for and can fix.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    async def resolve(host: str) -> list[str]:
+        return []
+
+    monkeypatch.setattr(intersphinx_service, "_default_resolve_host", resolve)
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible,
+    # mirroring how the handler commits the failure path.
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    assert route.call_count == 0
+
+    await _assert_negative_cached(factory, error_contains="resolved")
 
 
 @pytest.mark.asyncio
@@ -2817,6 +3007,43 @@ async def test_refresh_oversized_response_counts_as_failure(
     )
 
     service = _make_service(factory, max_content_size=64)
+    summary = await service.refresh_inventories(now=now)
+
+    assert summary.failed == 1
+    assert summary.refreshed == 0
+    assert summary.revalidated == 0
+
+    # The stored copy is untouched, so it keeps serving stale.
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        kept = await store.get_inventory(INVENTORY_URL)
+    assert kept is not None
+    assert kept.content == b"kept payload"
+
+
+@pytest.mark.asyncio
+async def test_refresh_empty_response_counts_as_failure(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A refresh ``200`` carrying no bytes fails and keeps stored content.
+
+    An empty body is no more servable on this path than on the cold-miss
+    one, and here it would additionally overwrite a good stored copy with
+    nothing, so it must be a per-inventory failure that leaves the stored
+    copy serving stale.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        content=b"kept payload",
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    respx_mock.get(INVENTORY_URL).mock(return_value=Response(200, content=b""))
+
+    service = factory.create_intersphinx_cache_service()
     summary = await service.refresh_inventories(now=now)
 
     assert summary.failed == 1
