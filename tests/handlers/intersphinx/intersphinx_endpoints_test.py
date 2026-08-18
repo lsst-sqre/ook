@@ -134,10 +134,9 @@ async def test_http_url_rejected_with_400(
 @pytest.mark.parametrize(
     "malformed_url",
     [
-        # A port ``urlsplit`` never validates, so the guard's own parse
-        # accepts it and only httpx refuses it.
+        # A bogus port, which the stdlib's own URL split waves through.
         "https://docs.example.com:notaport/objects.inv",
-        # An unterminated IPv6 literal, which ``urlsplit`` itself refuses.
+        # An unterminated IPv6 literal.
         "https://[::1/objects.inv",
     ],
 )

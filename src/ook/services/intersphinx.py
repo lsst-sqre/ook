@@ -19,7 +19,6 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum, auto
 from typing import NoReturn
-from urllib.parse import SplitResult, urlsplit
 
 import httpx
 from httpx import AsyncClient
@@ -31,7 +30,6 @@ from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
 from ook.domain.redirects import (
     MAX_REDIRECTS,
     REDIRECT_CODES,
-    TooManyRedirectsError,
     is_permanent_chain,
 )
 from ook.exceptions import InvalidInventoryUrlError, UpstreamInventoryError
@@ -126,6 +124,20 @@ _DEFAULT_MAX_CONTENT_SIZE = 50 * 1024 * 1024
 """Default cap, in bytes, on an origin inventory response body (50 MB)."""
 
 
+_IF_NONE_MATCH = "If-None-Match"
+"""The ``ETag`` half of the conditional request a revalidation sends."""
+
+
+_IF_MODIFIED_SINCE = "If-Modified-Since"
+"""The ``Last-Modified`` half of that conditional request.
+
+Both names are spelled once, here, and matched by that spelling rather than
+case-insensitively: `_fetch_inventory` is private, the only caller that
+gives it validators is `_revalidate`, and both read the names from here. No
+code outside this module chooses the casing, so there is none to normalize.
+"""
+
+
 _HOP_DRAIN_LIMIT = 8 * 1024
 """Cap, in bytes, on how much of a redirect hop's body is read and discarded.
 
@@ -141,76 +153,41 @@ are discarded and never counted against it.
 """
 
 
-class _InventoryTooLargeError(httpx.HTTPError):
-    """An origin inventory response exceeded the configured size cap.
+class _UpstreamFetchError(httpx.HTTPError):
+    """An origin inventory fetch failed a check this service makes itself.
 
-    Modeled as an ``httpx.HTTPError`` so an oversized body reuses the same
-    upstream-failure plumbing as a 4xx/5xx or timeout: the cold-miss path
-    catches it and negatively caches the failure, and the refresh path
-    counts it as a per-inventory failure. Both paths therefore need no
-    extra catch clause, only a branch in `_describe_upstream_error`.
-    """
+    Every way a fetch can fail on Ook's own terms is this one class: an
+    oversized body, an empty one, an over-long redirect chain, an exhausted
+    time budget, a ``Location`` that resolves to no URL, a ``304``
+    answering a request that carried no validator, a host that will not
+    resolve, and a hop the SSRF guard refuses. They are one class because
+    the plumbing treats them identically — nothing catches any of them
+    apart from the others — and splitting them apart cost three edits per
+    failure mode (the class, the raise, and a branch in
+    `_describe_upstream_error`) of which only the third had to be
+    remembered, and forgetting it silently degraded that failure's stored
+    detail to `_GENERIC_UPSTREAM_ERROR`.
 
+    An ``httpx.HTTPError`` so these ride the plumbing the transport's own
+    failures already ride. Both fetch paths catch that base, so a new
+    failure mode needs no catch clause of its own: on the request path it
+    is negatively cached and served as a 502, and on the refresh path it is
+    a per-inventory skip that leaves the stored copy serving stale rather
+    than replacing it with the failure.
 
-class _EmptyInventoryError(httpx.HTTPError):
-    """An origin answered a success status with no inventory bytes at all.
+    Distinct from `InvalidInventoryUrlError`, which reports something about
+    the URL the *client* chose and can fix: a URL httpx cannot build a
+    request from, or one that is not ``https`` or points at a non-public
+    address. Everything here is upstream's misbehavior or the absence of an
+    answer, neither of which a doc author can act on by editing an
+    ``intersphinx_mapping`` entry.
 
-    Covers a terminal ``200`` with a zero-length body — a CDN edge glitch,
-    a truncated object — and a ``204``, which is neither a redirect nor a
-    ``304`` and so reaches the terminal branch as a success carrying
-    nothing. ``raise_for_status()`` waves both through, and storing the
-    result would write a ``success`` row whose content is ``b""``: an
-    inventory documenteer cannot parse, served with a ``200`` and the
-    ``ETag`` of the empty string, and one that nothing can displace. Every
-    later decision point tests ``content is not None`` rather than
-    truthiness, so such a row is a permanent cache hit — never a cold miss
-    again, never a live negative-cache entry, and immune to
-    `IntersphinxInventoryStore.upsert_fetch_failure`'s ``content IS NULL``
-    guard.
-
-    An ``httpx.HTTPError`` for the same reason as `_InventoryTooLargeError`:
-    an origin that answers a well-formed request with no inventory has
-    misbehaved, so this reuses the existing upstream-failure plumbing — a
-    negatively cached 502 on the request path, and on the refresh path a
-    per-inventory skip that leaves the stored copy serving stale rather
-    than overwriting it with nothing.
-    """
-
-
-class _UpstreamTooManyRedirectsError(TooManyRedirectsError, httpx.HTTPError):
-    """An origin inventory's redirect chain exceeded the hop cap.
-
-    Also an ``httpx.HTTPError``, for the same reason as
-    `_InventoryTooLargeError`: the client's URL was fine and upstream
-    misbehaved, so this reuses the existing upstream-failure plumbing and
-    surfaces as a 502. The shared
-    `ook.domain.redirects.TooManyRedirectsError` base keeps a catch of the
-    shared class correct here too, and the distinct name keeps this from
-    shadowing the link checker's plain-``Exception`` handling.
-    """
-
-
-class _FetchDeadlineExceededError(httpx.HTTPError):
-    """An origin inventory fetch outlasted its whole-chain time budget.
-
-    The per-request timeout bounds one hop, not the chain: an origin that
-    answers each redirect just inside that timeout could otherwise hold the
-    fetch — and, on the cold-miss path, the request's open DB session — for
-    the hop cap times the per-request timeout. An ``httpx.HTTPError`` for
-    the same reason as `_UpstreamTooManyRedirectsError`, so an exhausted
-    budget lands in the existing upstream-failure plumbing: a negatively
-    cached 502 on the request path, a skipped inventory on the refresh
-    path.
-    """
-
-
-class _InvalidRedirectError(httpx.HTTPError):
-    """An origin's ``Location`` header could not be resolved to a URL.
-
-    An ``httpx.HTTPError`` for the same reason as
-    `_UpstreamTooManyRedirectsError`: a ``Location`` the client never chose
-    is upstream's misbehavior, so it surfaces as a 502 and is negatively
-    cached rather than escaping as an unhandled error.
+    The message is the whole payload, and it must be safe to store and to
+    replay: `_describe_upstream_error` returns it verbatim, so it lands on
+    the negative-cache row and is served to every client asking for that
+    URL for the negative-TTL window. A detail that would report Ook's own
+    resolution of an upstream-chosen host is scrubbed before it reaches
+    here — see `_UNSAFE_REDIRECT_DETAIL` and `_UNRESOLVABLE_HOST_DETAIL`.
     """
 
 
@@ -252,6 +229,14 @@ URL, naming a host it already knows, and it is never stored.
 _UNRESOLVABLE_HOST_DETAIL = "The inventory host could not be resolved"
 """Client-facing detail for a URL whose host would not resolve.
 
+A well-formed host that will not resolve *right now* is not a fact about
+the URL the way a bad scheme or a private address is — the URL may be
+perfectly good and the resolver merely blinking — so it is an upstream
+failure rather than the client's bad request. Being negatively cached is
+half the point: a 400 escapes `_fetch_and_store`'s handler entirely, so
+nothing is stored and every repeat re-pays a full lookup, in a cluster with
+no caching resolver where ``ndots`` search expansion multiplies each one.
+
 Generic for the same reason as `_UNSAFE_REFRESH_URL_DETAIL`, and stored in
 the same place: this detail goes onto the negative-cache row and is replayed
 in the 502 body of every request for the URL inside the negative-TTL window,
@@ -268,67 +253,20 @@ of this detail is only ever replayed to a client asking for that same URL.
 _UNCONDITIONAL_304_DETAIL = (
     "Upstream answered 304 Not Modified to an unconditional inventory request"
 )
-"""Client-facing detail for a 304 answering a validator-less request."""
+"""Client-facing detail for a 304 answering a validator-less request.
 
-
-class _UnconditionalNotModifiedError(httpx.HTTPError):
-    """An origin answered ``304`` to a request carrying no validator.
-
-    A ``304`` asserts that the validator the client sent still matches, so
-    one answering a request that sent none asserts nothing about any
-    particular copy and carries no body to store. Two requests this service
-    makes are unconditional by construction — a cold-miss fetch, and a
-    refresh whose chain landed on a terminal other than the one that minted
-    the stored validators, which `_revalidate` withholds them from — and a
-    third, the refresh of a row with no stored validators (a negative-cache
-    row that aged into the due list), is unconditional by accident. So is
-    every hop before the minting terminal on a chain that reaches it.
-    Trusting a ``304`` on any of them would write a content-less success
-    row: neither servable nor a live negative-cache entry, and able to
-    clobber content a concurrent cold miss had just stored.
-
-    An ``httpx.HTTPError`` for the same reason as
-    `_UpstreamTooManyRedirectsError`: the request was well-formed and
-    upstream misbehaved, so this reuses the existing upstream-failure
-    plumbing — a negatively cached 502 on the request path, a recorded
-    per-inventory failure on the refresh path.
-    """
-
-
-class _ResolutionFailedError(httpx.HTTPError):
-    """A URL's host could not be resolved to any address.
-
-    Distinct from `InvalidInventoryUrlError`, which reports something about
-    the URL the *client* chose and can fix: one no parser accepts, one that
-    is not ``https``, one whose host resolves to a non-public address. A
-    well-formed host that will not resolve *right now* is none of those —
-    the URL may be perfectly good and the resolver merely blinking — so
-    reporting it as a bad request tells a doc author to fix an
-    ``intersphinx_mapping`` entry that has nothing wrong with it.
-
-    An ``httpx.HTTPError``, so it lands in the same upstream-failure
-    plumbing as the identical failure on a redirect hop, which
-    `_UnsafeRedirectError` already classifies this way: a negatively cached
-    502 on the request path, a recorded per-inventory failure on the
-    refresh path. Being cached is half the point — a 400 escapes
-    `_fetch_and_store`'s handler entirely, so nothing is stored and every
-    repeat re-pays a full lookup, in a cluster with no caching resolver
-    where ``ndots`` search expansion multiplies each one.
-    """
-
-
-class _UnsafeRedirectError(httpx.HTTPError):
-    """A redirect hop's target failed the SSRF guard.
-
-    Covers every way the guard can refuse a hop, including a host that will
-    not resolve at all: the guard reports those as rejections so no
-    resolver failure escapes as something other than an upstream failure.
-
-    Distinct from `InvalidInventoryUrlError`, which reports a URL the
-    *client* asked for and can fix. A hop chosen by upstream is upstream's
-    misbehavior, so this is an ``httpx.HTTPError`` that surfaces as a 502
-    and is negatively cached like any other upstream failure.
-    """
+A ``304`` asserts that the validator the client sent still matches, so one
+answering a request that sent none asserts nothing about any particular copy
+and carries no body to store. Three requests this service makes can be
+unconditional: a cold-miss fetch and a refresh whose chain landed on a
+terminal other than the one that minted the stored validators (both by
+construction), and the refresh of a row with no stored validators at all — a
+negative-cache row that aged into the due list — by accident. So is every
+hop before the minting terminal on a chain that reaches it. Trusting a
+``304`` on any of them would write a content-less success row: neither
+servable nor a live negative-cache entry, and able to clobber content a
+concurrent cold miss had just stored.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -639,9 +577,12 @@ class IntersphinxCacheService:
             try:
                 result = await self._refresh_one(inventory)
             except (httpx.HTTPError, InvalidInventoryUrlError) as exc:
-                # Discard this inventory's pending write and leave the stored
-                # copy untouched so it keeps serving stale.
-                await self._session.rollback()
+                # No rollback: every failure this catches is raised before
+                # `_refresh_one` writes anything, so the session is idle
+                # here. A store write that fails raises `SQLAlchemyError`
+                # instead, which is not caught here and does not belong to
+                # a per-inventory skip. The stored copy is untouched either
+                # way and keeps serving stale.
                 failed += 1
                 detail = self._describe_refresh_error(exc, url=inventory.url)
                 backoff = await self._record_refresh_failure(
@@ -924,18 +865,18 @@ class IntersphinxCacheService:
 
         Raises
         ------
-        _UnconditionalNotModifiedError
+        _UpstreamFetchError
             Raised, from `_fetch_inventory`, when the origin answers 304 to
             a request that carried no validator.
         """
-        headers: dict[str, str] = {}
+        validators: dict[str, str] = {}
         if inventory.etag is not None:
-            headers["If-None-Match"] = inventory.etag
+            validators[_IF_NONE_MATCH] = inventory.etag
         if inventory.last_modified is not None:
-            headers["If-Modified-Since"] = inventory.last_modified
+            validators[_IF_MODIFIED_SINCE] = inventory.last_modified
         fetch = await self._fetch_inventory(
             inventory.url,
-            headers=headers,
+            validators=validators,
             validator_url=inventory.resolved_url,
             deadline=deadline,
         )
@@ -1040,7 +981,7 @@ class IntersphinxCacheService:
         url: str,
         *,
         deadline: float,
-        headers: dict[str, str] | None = None,
+        validators: Mapping[str, str] | None = None,
         validator_url: str | None = None,
     ) -> _InventoryFetch:
         """Fetch an origin inventory, following redirects under the guard.
@@ -1062,9 +1003,9 @@ class IntersphinxCacheService:
         oversized response is abandoned as soon as the cap is exceeded
         rather than fully buffered, and a terminal answering a success
         status with no body at all is rejected rather than stored as
-        content — see `_EmptyInventoryError`. Only a *success* status is
-        checked for emptiness, so an empty 4xx or 5xx still reports the
-        status code its caller's ``raise_for_status()`` raises on. A hop's
+        content. Only a *success* status is checked for emptiness, so an
+        empty 4xx or 5xx still reports the status code its caller's
+        ``raise_for_status()`` raises on. A hop's
         body is discarded by *reading* it, under `_HOP_DRAIN_LIMIT` — see
         `_drain_hop_body`, which explains why the read is what keeps a chain
         from opening a connection per hop.
@@ -1106,9 +1047,9 @@ class IntersphinxCacheService:
         The chain runs inside the caller's `_fetch_budget`, which cancels it
         outright at the deadline; that cancellation, not any check here, is
         what bounds the fetch. ``deadline`` is the same budget's monotonic
-        expiry, used here only to size each hop's per-call httpx timeout and
-        to refuse to start work the budget can no longer pay for — belt and
-        braces behind the cancellation, and the reason a slow chain usually
+        expiry, and its one use is to size each hop's per-call httpx
+        timeout — which is also what stops a hop the budget can no longer
+        pay for from being started, and the reason a slow chain usually
         reports a spent budget rather than being cut mid-syscall.
 
         Parameters
@@ -1117,54 +1058,50 @@ class IntersphinxCacheService:
             The origin inventory URL to fetch.
         deadline
             The enclosing `_fetch_budget`'s monotonic expiry.
-        headers
-            Conditional-request headers to send, if any.
+        validators
+            The conditional-request validators to send, if any, keyed by
+            `_IF_NONE_MATCH` and `_IF_MODIFIED_SINCE`. These are the only
+            headers this fetch ever sends, which is what lets a request
+            carrying none of them be recognized as unconditional by the
+            mapping being empty.
         validator_url
-            The URL that minted ``headers``' validators, when the caller
-            knows it. The headers are then sent only to that URL and to no
-            other hop in the chain. None means the minting URL is unknown,
-            and the headers ride every hop.
+            The URL that minted ``validators``, when the caller knows it.
+            They are then sent only to that URL and to no other hop in the
+            chain. None means the minting URL is unknown, and they ride
+            every hop.
 
         Raises
         ------
-        _EmptyInventoryError
+        _UpstreamFetchError
             Raised when the terminal response carries a success status and
-            an empty body, including a ``204``.
-        _FetchDeadlineExceededError
-            Raised when the chain outlasts the whole-fetch time budget.
-        _InventoryTooLargeError
-            Raised when the terminal response body, by its
-            ``Content-Length`` or by its streamed size, exceeds the
-            configured cap.
-        _InvalidRedirectError
-            Raised when a hop's ``Location`` cannot be resolved to a URL,
-            whether by this service's own join or by the one httpx runs
-            inside the request.
-        _UnconditionalNotModifiedError
-            Raised when the terminal answers ``304`` to a request that
-            carried no validator.
-        _UpstreamTooManyRedirectsError
-            Raised when the chain exceeds `MAX_REDIRECTS` hops.
-        _UnsafeRedirectError
-            Raised when a redirect hop's target fails the SSRF guard,
-            including when its host cannot be resolved.
+            an empty body (including a ``204``); when its body exceeds the
+            size cap by its ``Content-Length`` or by its streamed size;
+            when the chain outlasts the whole-fetch time budget; when a
+            hop's ``Location`` cannot be resolved to a URL, whether by this
+            service's own join or by the one httpx runs inside the request;
+            when the terminal answers ``304`` to a request that carried no
+            validator; when the chain exceeds `MAX_REDIRECTS` hops; and
+            when a redirect hop's target fails the SSRF guard, including
+            when its host cannot be resolved.
         httpx.HTTPError
             Propagated from the transport on a timeout or connection error.
         """
         current_url = url
-        carried_headers = headers or {}
+        # This fetch's own copy, since a hop can strip a validator from it
+        # and the caller's mapping is not this method's to edit.
+        carried_validators = dict(validators or {})
         hops: list[int] = []
         # Seeded with the requested URL's host, which both callers guard
         # immediately before this fetch, so a chain that comes back to it
         # does not resolve it a second time. Local to this fetch: a host is
         # skipped only within the chain that just validated it.
-        validated_hosts = {host} if (host := urlsplit(url).hostname) else set()
+        validated_hosts = {host} if (host := httpx.URL(url).host) else set()
         while True:
             # A validator is an assertion about one resource, so it is sent
             # only where it holds: to the URL that minted it, or anywhere at
             # all when the caller does not know which URL that was.
-            request_headers = (
-                carried_headers
+            request_validators = (
+                carried_validators
                 if validator_url is None or current_url == validator_url
                 else {}
             )
@@ -1172,7 +1109,7 @@ class IntersphinxCacheService:
                 async with self._http_client.stream(
                     "GET",
                     current_url,
-                    headers=request_headers,
+                    headers=request_validators,
                     follow_redirects=False,
                     timeout=self._remaining_budget(deadline),
                 ) as response:
@@ -1182,19 +1119,25 @@ class IntersphinxCacheService:
                         or not location
                     ):
                         if response.status_code == 304:
-                            if not _has_validator(request_headers):
-                                raise _UnconditionalNotModifiedError(
+                            if not request_validators:
+                                raise _UpstreamFetchError(
                                     _UNCONDITIONAL_304_DETAIL
                                 )
                             return _InventoryFetch(
                                 response, None, current_url, hops
                             )
                         self._check_content_length(response)
-                        content = await self._read_capped_body(
-                            response, deadline=deadline
-                        )
+                        content = await self._read_capped_body(response)
                         if response.is_success and not content:
-                            raise _EmptyInventoryError(
+                            # Storing it would write a success row whose
+                            # content is b"": every later decision point
+                            # tests ``content is not None``, so such a row
+                            # is a permanent cache hit — never a cold miss
+                            # again, never a live negative-cache entry, and
+                            # immune to the store's ``content IS NULL``
+                            # guard on a failure upsert. Refusing the fetch
+                            # is the whole fix.
+                            raise _UpstreamFetchError(
                                 "Upstream returned an empty inventory body"
                                 f" with HTTP {response.status_code}"
                             )
@@ -1206,12 +1149,12 @@ class IntersphinxCacheService:
                         # guarding a target this fetch will never request,
                         # so the reported failure never depends on a URL
                         # already ruled out.
-                        raise _UpstreamTooManyRedirectsError(
+                        raise _UpstreamFetchError(
                             f"Exceeded {MAX_REDIRECTS} redirects"
                         )
                     hops.append(response.status_code)
                     next_url = _join_redirect_url(current_url, location)
-                    await self._drain_hop_body(response, deadline=deadline)
+                    await self._drain_hop_body(response)
             except httpx.InvalidURL as exc:
                 # httpx joins a 3xx ``Location`` itself even under
                 # ``follow_redirects=False``, so a target that only
@@ -1226,7 +1169,7 @@ class IntersphinxCacheService:
                 # left alone it escapes the cold-miss handler as an
                 # unhandled 500 that caches nothing, and aborts the whole
                 # refresh batch on one hostile origin.
-                raise _InvalidRedirectError(
+                raise _UpstreamFetchError(
                     _malformed_redirect_detail(exc)
                 ) from exc
             if validator_url is None:
@@ -1237,21 +1180,18 @@ class IntersphinxCacheService:
                 # the check above already sends it nowhere else, and
                 # stripping it as well would drop a validator that is safe
                 # exactly where it lands.
-                carried_headers = _without_if_modified_since(carried_headers)
+                carried_validators.pop(_IF_MODIFIED_SINCE, None)
             # Guard outside the stream context so the hop's connection is
             # released — back to the pool, its body already drained — before
             # the guard's DNS lookup and the next hop's request.
             await self._guard_redirect_url(
                 next_url,
                 requested_url=url,
-                deadline=deadline,
                 validated_hosts=validated_hosts,
             )
             current_url = next_url
 
-    async def _drain_hop_body(
-        self, response: httpx.Response, *, deadline: float
-    ) -> None:
+    async def _drain_hop_body(self, response: httpx.Response) -> None:
         """Read and discard a redirect hop's body so its connection is reused.
 
         Exiting a streamed response with its body unread leaves the HTTP/1.1
@@ -1267,19 +1207,15 @@ class IntersphinxCacheService:
         drained bytes are discarded and never counted against
         ``max_content_size``, which governs the terminal body alone.
 
-        The whole-fetch budget is re-checked per chunk for the same reason as
-        in `_read_capped_body`: the read timeout bounds the wait for one
-        chunk, not for the whole body, so a hop dribbling its body out could
-        otherwise outlast the budget within the drain.
-
-        Raises
-        ------
-        _FetchDeadlineExceededError
-            Raised when the fetch's time budget is spent mid-drain.
+        The whole-fetch budget needs no check of its own here. This runs
+        inside `_fetch_budget`, whose `asyncio.timeout` cancels the fetch at
+        the deadline, and a hop dribbling its body out suspends on every
+        read — which is exactly where that cancellation lands. The only read
+        that never suspends is one served from a buffer, and the cap above
+        bounds that one.
         """
         drained = 0
         async for chunk in response.aiter_bytes():
-            self._remaining_budget(deadline)
             drained += len(chunk)
             if drained > _HOP_DRAIN_LIMIT:
                 return
@@ -1318,7 +1254,7 @@ class IntersphinxCacheService:
 
         Raises
         ------
-        _FetchDeadlineExceededError
+        _UpstreamFetchError
             Raised when the budget expires, so an exhausted budget reaches
             both fetch paths as the same upstream failure however it was
             spent: negatively cached and served as a 502 on the request
@@ -1334,21 +1270,26 @@ class IntersphinxCacheService:
     def _remaining_budget(self, deadline: float) -> float:
         """Return the seconds left in the whole-fetch budget.
 
+        Sizes the per-hop httpx timeout, which is this value's only use:
+        the budget is enforced by `_fetch_budget`'s cancellation, so a check
+        of the clock is worth making only where its answer is needed as a
+        number.
+
         Raises
         ------
-        _FetchDeadlineExceededError
-            Raised when the budget is already spent, so every caller both
-            bounds the operation it is about to start and refuses to start
-            it at all once there is no time left.
+        _UpstreamFetchError
+            Raised when the budget is already spent, so a hop the budget
+            can no longer pay for is not started at all — and never asked
+            for with a non-positive timeout.
         """
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise self._deadline_error()
         return remaining
 
-    def _deadline_error(self) -> _FetchDeadlineExceededError:
+    def _deadline_error(self) -> _UpstreamFetchError:
         """Build the spent-budget error carrying the configured budget."""
-        return _FetchDeadlineExceededError(
+        return _UpstreamFetchError(
             "Upstream inventory fetch exceeded its time budget of "
             f"{self._request_timeout:g} s"
         )
@@ -1365,29 +1306,30 @@ class IntersphinxCacheService:
         if declared > self._max_content_size:
             raise self._too_large_error()
 
-    async def _read_capped_body(
-        self, response: httpx.Response, *, deadline: float
-    ) -> bytes:
-        """Stream the body, aborting on the size cap or the time budget.
+    async def _read_capped_body(self, response: httpx.Response) -> bytes:
+        """Stream the body, abandoning it as soon as it passes the size cap.
 
-        The request's read timeout bounds the wait for one chunk, not the
-        whole body, so a body dribbled out a byte at a time would otherwise
-        outlast the budget however small each gap is. Checking the budget
-        per chunk keeps the terminal read inside it.
+        Streamed rather than buffered so an oversized inventory is dropped
+        at the cap instead of being read into memory in full.
+
+        The whole-fetch budget needs no check of its own here, for the same
+        reason as in `_drain_hop_body`: a body dribbled out a byte at a time
+        suspends on every read, which is where `_fetch_budget`'s
+        cancellation lands, and the cap bounds the read that does not
+        suspend.
         """
         chunks: list[bytes] = []
         total = 0
         async for chunk in response.aiter_bytes():
-            self._remaining_budget(deadline)
             total += len(chunk)
             if total > self._max_content_size:
                 raise self._too_large_error()
             chunks.append(chunk)
         return b"".join(chunks)
 
-    def _too_large_error(self) -> _InventoryTooLargeError:
+    def _too_large_error(self) -> _UpstreamFetchError:
         """Build the oversized-response error carrying the configured cap."""
-        return _InventoryTooLargeError(
+        return _UpstreamFetchError(
             "Upstream inventory exceeds the size cap of "
             f"{_format_size_cap(self._max_content_size)}"
         )
@@ -1433,47 +1375,45 @@ class IntersphinxCacheService:
         )
         raise UpstreamInventoryError(detail)
 
-    def _parse_url(self, url: str) -> SplitResult:
-        """Split a URL for the guard, rejecting one no parser accepts.
+    def _parse_url(self, url: str) -> httpx.URL:
+        """Parse a URL for the guard, rejecting one httpx cannot request.
 
-        The two parsers this service relies on disagree about what a URL is,
-        and the gap between them is an escape hatch. ``urlsplit`` never
-        validates a port, so ``https://example.com:notaport/objects.inv``
-        passes the guard, is resolved, and only then makes httpx raise
-        ``httpx.InvalidURL`` — which is not an ``httpx.HTTPError``, so it
-        escapes every fetch path's handler as an unhandled 500 that is never
-        negatively cached and re-pays the lookup on every repeat.
-        ``urlsplit`` for its part raises ``ValueError`` outright on an
-        unterminated IPv6 literal, escaping from the guard itself. Running
-        both parsers up front, before anything is resolved, turns each of
-        those into the 400 the error taxonomy already assigns a bad
-        requested URL: the URL is the client's own choice, so the failure is
-        the client's to fix and is not cached.
+        Parsed with ``httpx.URL`` and with nothing else, because httpx is
+        what the fetch actually connects with: a second parser's reading is
+        not the one the socket obeys, so validating a host httpx would
+        never have asked for is a gap no amount of agreement closes. It is
+        also the stricter of the two readings on the shapes that matter —
+        it refuses a bogus port (``https://example.com:notaport/objects.inv``,
+        which ``urlsplit`` waves through) and an unterminated IPv6 literal
+        alike — and refusing them here, before anything is resolved, is
+        what makes them the 400 the error taxonomy assigns a bad requested
+        URL rather than an ``httpx.InvalidURL`` escaping every fetch path's
+        handler as an unhandled 500 that caches nothing.
+
+        The line this draws is "a URL httpx cannot build a request from".
+        A netloc ``urlsplit`` alone refuses — a stray bracket, say — is
+        percent-encoded by httpx into a host that simply does not exist, so
+        it is refused a step later by resolution, as the negatively cached
+        upstream failure every unresolvable host is. That is one fewer
+        parser and one fewer taxonomy for a shape no inventory URL has.
 
         This is the requested URL's counterpart to `_join_redirect_url`,
         which closes the same escape for a hop's ``Location``.
 
         Returns
         -------
-        SplitResult
-            The ``urlsplit`` parse, which is what the guard's own checks and
-            the rest of the service read. httpx's parse is run for its
-            stricter reading and then discarded.
+        httpx.URL
+            The parse the guard's own checks and the fetch both read.
 
         Raises
         ------
         InvalidInventoryUrlError
-            Raised when either parser refuses the URL.
+            Raised when httpx refuses the URL.
         """
         try:
-            parts = urlsplit(url)
-            httpx.URL(url)
-        except (ValueError, httpx.InvalidURL) as exc:
-            # Both are named because neither implies the other:
-            # httpx.InvalidURL is not a ValueError, and urlsplit's failure
-            # is not an httpx error.
+            return httpx.URL(url)
+        except httpx.InvalidURL as exc:
             self._reject_url(url, f"URL could not be parsed: {exc}")
-        return parts
 
     async def _guard_url(
         self, url: str, *, validated_hosts: set[str] | None = None
@@ -1528,7 +1468,7 @@ class IntersphinxCacheService:
         InvalidInventoryUrlError
             Raised if the URL cannot be parsed, uses a non-``https``
             scheme, or its host resolves to a non-public address.
-        _ResolutionFailedError
+        _UpstreamFetchError
             Raised if the host cannot be resolved at all, whether the
             resolver failed or answered with no addresses.
         """
@@ -1537,7 +1477,7 @@ class IntersphinxCacheService:
             self._reject_url(
                 url, f"URL scheme must be 'https', not {parts.scheme!r}"
             )
-        host = parts.hostname
+        host = parts.host
         if not host:
             self._reject_url(url, "URL has no host to validate")
         if validated_hosts is not None and host in validated_hosts:
@@ -1594,13 +1534,12 @@ class IntersphinxCacheService:
         url: str,
         *,
         requested_url: str,
-        deadline: float,
         validated_hosts: set[str],
     ) -> None:
         """Run the SSRF guard on a redirect hop's target, inside the budget.
 
         Same check as `_guard_url`, but a rejection is re-raised as an
-        `_UnsafeRedirectError` rather than an `InvalidInventoryUrlError`:
+        `_UpstreamFetchError` rather than an `InvalidInventoryUrlError`:
         the requested URL was valid and upstream chose this hop, so it is
         an upstream failure (502, negatively cached) rather than a bad
         client request (400).
@@ -1622,9 +1561,6 @@ class IntersphinxCacheService:
             The redirect hop's target URL.
         requested_url
             The originally requested inventory URL, for the rejection log.
-        deadline
-            The fetch's whole-chain monotonic deadline, checked so a hop
-            whose guard the budget can no longer pay for is not started.
         validated_hosts
             The fetch's set of already-accepted hosts, passed through to
             `_guard_url` so a hop back to a host this chain already resolved
@@ -1632,31 +1568,29 @@ class IntersphinxCacheService:
 
         Raises
         ------
-        _FetchDeadlineExceededError
-            Raised when the budget is already spent when the guard is
-            reached.
-        _UnsafeRedirectError
+        _UpstreamFetchError
             Raised if the hop target uses a non-``https`` scheme, its host
             cannot be resolved, or its host resolves to a non-public
             address.
         """
-        self._remaining_budget(deadline)
         try:
             await self._guard_url(url, validated_hosts=validated_hosts)
-        except (InvalidInventoryUrlError, _ResolutionFailedError) as exc:
-            # A hop that will not resolve is re-described here like any
-            # other refused hop, so an unresolvable target upstream chose
-            # is never reported as though the client's own URL failed to
-            # resolve. Its `reason` is the scrubbed detail by this point;
-            # what the resolver actually said is in `_fail_resolution`'s
-            # own earlier record, against this hop's URL.
+        except (InvalidInventoryUrlError, _UpstreamFetchError) as exc:
+            # Exactly the two classes `_guard_url` raises: a rejection of
+            # the hop for what it is, and the absence of an answer about
+            # its host. Both are re-described here as one refused hop, so
+            # an unresolvable target upstream chose is never reported as
+            # though the client's own URL had failed to resolve. `reason`
+            # is the scrubbed detail by this point; what the resolver
+            # actually said is in `_fail_resolution`'s own earlier record,
+            # against this hop's URL.
             self._logger.warning(
                 "Rejected an intersphinx inventory redirect hop",
                 url=requested_url,
                 hop_url=url,
                 reason=str(exc),
             )
-            raise _UnsafeRedirectError(_UNSAFE_REDIRECT_DETAIL) from exc
+            raise _UpstreamFetchError(_UNSAFE_REDIRECT_DETAIL) from exc
 
     def _reject_url(self, url: str, reason: str) -> NoReturn:
         """Log a guard rejection and raise ``InvalidInventoryUrlError``."""
@@ -1668,7 +1602,7 @@ class IntersphinxCacheService:
         raise InvalidInventoryUrlError(reason)
 
     def _fail_resolution(self, url: str, reason: str) -> NoReturn:
-        """Log a resolution failure and raise ``_ResolutionFailedError``.
+        """Log a resolution failure and raise ``_UpstreamFetchError``.
 
         The scrub lives here at the raise site, unlike the refresh path's
         scrub of a guard *rejection*, which lives at that path's error
@@ -1685,7 +1619,7 @@ class IntersphinxCacheService:
             url=url,
             reason=reason,
         )
-        raise _ResolutionFailedError(_UNRESOLVABLE_HOST_DETAIL)
+        raise _UpstreamFetchError(_UNRESOLVABLE_HOST_DETAIL)
 
 
 def _first_location(headers: httpx.Headers) -> str | None:
@@ -1736,7 +1670,7 @@ def _join_redirect_url(current_url: str, location: str) -> str:
 
     Raises
     ------
-    _InvalidRedirectError
+    _UpstreamFetchError
         Raised when the ``Location`` cannot be resolved to a valid URL.
     """
     try:
@@ -1744,7 +1678,7 @@ def _join_redirect_url(current_url: str, location: str) -> str:
             httpx.URL(current_url).join(location).copy_with(fragment=None)
         )
     except (httpx.InvalidURL, UnicodeError) as exc:
-        raise _InvalidRedirectError(_malformed_redirect_detail(exc)) from exc
+        raise _UpstreamFetchError(_malformed_redirect_detail(exc)) from exc
 
 
 def _malformed_redirect_detail(error: Exception) -> str:
@@ -1756,32 +1690,6 @@ def _malformed_redirect_detail(error: Exception) -> str:
     apart.
     """
     return f"Upstream redirected the inventory to a malformed URL: {error}"
-
-
-_VALIDATOR_HEADERS = frozenset({"if-none-match", "if-modified-since"})
-"""Request headers that make a GET conditional, lowercased for matching."""
-
-
-def _has_validator(headers: Mapping[str, str]) -> bool:
-    """Return whether request headers make the request conditional.
-
-    The match is case-insensitive because HTTP field names are.
-    """
-    return any(name.lower() in _VALIDATOR_HEADERS for name in headers)
-
-
-def _without_if_modified_since(headers: dict[str, str]) -> dict[str, str]:
-    """Return the headers with any ``If-Modified-Since`` removed.
-
-    A copy rather than a mutation, so the caller's header dict — reused
-    across a retried fetch — is never edited from under it. The match is
-    case-insensitive because HTTP field names are.
-    """
-    return {
-        name: value
-        for name, value in headers.items()
-        if name.lower() != "if-modified-since"
-    }
 
 
 async def _default_resolve_host(host: str) -> Sequence[str]:
@@ -1807,19 +1715,11 @@ def _describe_upstream_error(error: httpx.HTTPError) -> str:
     """Summarize an upstream fetch failure for the client and the cache.
 
     The message is safe to return to the client and to store as the
-    negative-cache row's error detail.
+    negative-cache row's error detail. A failure this service raised itself
+    already carries such a message and is passed through; the branches
+    below describe the transport's own failures, which do not.
     """
-    if isinstance(
-        error,
-        _EmptyInventoryError
-        | _FetchDeadlineExceededError
-        | _InventoryTooLargeError
-        | _UpstreamTooManyRedirectsError
-        | _ResolutionFailedError
-        | _UnconditionalNotModifiedError
-        | _UnsafeRedirectError
-        | _InvalidRedirectError,
-    ):
+    if isinstance(error, _UpstreamFetchError):
         return str(error)
     if isinstance(error, httpx.HTTPStatusError):
         return (

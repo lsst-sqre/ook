@@ -48,11 +48,12 @@ redirect loop terminates.
 class TooManyRedirectsError(Exception):
     """A redirect chain exceeded `MAX_REDIRECTS` hops.
 
-    Shared by both hop loops so code moved between them keeps catching the
-    error it means to. A service needing this failure to travel through
-    its own error plumbing subclasses this alongside that plumbing's base
-    (see `ook.services.intersphinx`), which keeps a catch of this class
-    correct everywhere.
+    Raised and caught by the link checker's hop loop, and defined here so
+    that a service whose own hop loop needs to catch this failure catches
+    the same class rather than growing a second one. The intersphinx cache
+    does not: it reports every way a fetch can fail through one error of
+    its own, and nothing on its paths catches this failure apart from the
+    rest.
     """
 
 

@@ -107,6 +107,46 @@ async def _assert_negative_cached(
     return stored
 
 
+async def _get_stored(
+    factory: Factory, url: str = INVENTORY_URL
+) -> IntersphinxInventory:
+    """Read ``url``'s stored row back in its own transaction.
+
+    The read-back is the epilogue of nearly every test here — what the
+    service put in the database is the assertion most of them exist to
+    make — and it is the same four lines each time: a fresh transaction, a
+    store, the fetch, and the ``is not None`` that narrows the row for the
+    assertions that follow. Only those assertions differ, so only they are
+    left at the call sites.
+
+    Its own transaction, not the caller's: the tests that write through the
+    service commit first, and reading in a new one is what proves the row
+    survived the commit rather than merely reaching the session. The
+    negative-cache epilogue is deliberately not routed through here, since
+    those tests run the service without a surrounding transaction and read
+    the row the failure path flushed into the open one.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(url)
+    assert stored is not None
+    return stored
+
+
+async def _assert_not_stored(factory: Factory, url: str) -> None:
+    """Assert ``url`` was never written as a cache row at all.
+
+    `_get_stored`'s counterpart, for the guard tests: a URL the guard
+    refuses is neither fetched nor stored, not even as a negative-cache
+    row, so the assertion is the absence of the row rather than anything
+    about its columns.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        stored = await store.get_inventory(url)
+    assert stored is None
+
+
 @pytest.mark.asyncio
 async def test_cold_miss_fetches_and_stores(
     factory: Factory,
@@ -139,10 +179,7 @@ async def test_cold_miss_fetches_and_stores(
     assert respx_mock.calls.call_count == 1
 
     # The fetched inventory is persisted keyed by its URL.
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.content == INVENTORY_BODY
 
 
@@ -281,10 +318,7 @@ async def test_http_url_rejected_before_fetch(
     assert route.call_count == 0
 
     # The guarded URL is never stored as a cache row.
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(http_url)
-    assert stored is None
+    await _assert_not_stored(factory, http_url)
 
 
 @pytest.mark.asyncio
@@ -313,10 +347,7 @@ async def test_private_host_rejected_before_fetch(
 
     assert route.call_count == 0
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(private_url)
-    assert stored is None
+    await _assert_not_stored(factory, private_url)
 
 
 @pytest.mark.asyncio
@@ -343,10 +374,7 @@ async def test_ip_literal_link_local_rejected_before_fetch(
 
     assert route.call_count == 0
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(metadata_url)
-    assert stored is None
+    await _assert_not_stored(factory, metadata_url)
 
 
 @pytest.mark.asyncio
@@ -371,10 +399,7 @@ async def test_ipv4_mapped_ipv6_literal_rejected_before_fetch(
 
     assert route.call_count == 0
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(mapped_url)
-    assert stored is None
+    await _assert_not_stored(factory, mapped_url)
 
 
 @pytest.mark.asyncio
@@ -384,9 +409,9 @@ async def test_unparseable_url_rejected_before_resolution(
 ) -> None:
     """A URL that does not parse is refused without a DNS lookup.
 
-    ``urlsplit`` accepts this URL's bogus port, so before the guard parsed
-    the URL with httpx as well the host was resolved — every repeat paying
-    for the lookup again — only for httpx to then refuse the URL.
+    The stdlib's own URL split accepts this URL's bogus port, so a guard
+    parsing with it resolved the host — every repeat paying for the lookup
+    again — only for httpx to then refuse to request the URL at all.
     """
     resolved: list[str] = []
 
@@ -578,10 +603,10 @@ async def test_cold_miss_304_negatively_cached(
     ``content is not None``, never displaced by another cold miss.
 
     This is the shape that exercises the terminal check with the empty
-    header dict the request path builds. The refresh path reaches the same
-    branch, but always through a row that had *some* headers to consider,
-    so an ``_has_validator`` that read an empty mapping as conditional would
-    pass every one of those tests.
+    validator mapping the request path builds. The refresh path reaches the
+    same branch, but always through a row that had *some* validator to
+    consider, so a terminal check that read an empty mapping as conditional
+    would pass every one of those tests.
     """
     route = respx_mock.get(INVENTORY_URL).mock(return_value=Response(304))
 
@@ -738,10 +763,7 @@ async def test_cold_miss_follows_cross_host_redirect_chain(
 
     # The terminal content is cached under the requested URL, not the
     # terminal one, so the next request for the same URL is a hit.
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.content == INVENTORY_BODY
 
 
@@ -771,10 +793,7 @@ async def test_cold_miss_stores_temporary_redirect_chain(
         service = factory.create_intersphinx_cache_service()
         await service.get_inventory(INVENTORY_URL)
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.resolved_url == terminal
     assert stored.resolved_redirect_permanent is False
 
@@ -805,10 +824,7 @@ async def test_cold_miss_stores_permanent_redirect_chain(
         service = factory.create_intersphinx_cache_service()
         await service.get_inventory(INVENTORY_URL)
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.resolved_url == terminal
     assert stored.resolved_redirect_permanent is True
 
@@ -834,10 +850,7 @@ async def test_cold_miss_without_redirect_leaves_resolved_columns_null(
     assert inventory.resolved_url is None
     assert inventory.resolved_redirect_permanent is None
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.resolved_url is None
     assert stored.resolved_redirect_permanent is None
 
@@ -869,10 +882,7 @@ async def test_location_fragment_stripped_from_resolved_url(
 
     assert inventory.resolved_url == terminal
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.resolved_url == terminal
 
 
@@ -1843,11 +1853,11 @@ async def test_stalled_response_headers_stop_at_the_time_budget(
 ) -> None:
     """An origin that stalls mid-response cannot outlast the fetch budget.
 
-    The budget checks between hops and between body chunks only run when a
-    hop completes, and the per-call httpx read timeout is re-armed on every
-    socket read while the response headers arrive. Only cancelling the fetch
-    at the deadline bounds an origin that stalls inside a single hop — the
-    request's DB session is held open for as long as it does.
+    The per-hop httpx timeout is sized from the budget but re-armed on
+    every socket read while the response headers arrive, so it never adds
+    up to the budget. Only cancelling the fetch at the deadline bounds an
+    origin that stalls inside a single hop — the request's DB session is
+    held open for as long as it does.
     """
 
     async def stalled(request: httpx.Request) -> Response:
@@ -2013,10 +2023,7 @@ async def test_refresh_304_keeps_content_and_bumps_fetch(
     assert summary.refreshed == 0
     assert summary.failed == 0
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.content == INVENTORY_BODY
     _assert_stamped_at_write_time(stored.date_fetched, not_before=now)
     assert stored.last_fetch_status is InventoryFetchStatus.success
@@ -2055,10 +2062,7 @@ async def test_refresh_304_records_chain_from_this_revalidation(
 
     assert summary.revalidated == 1
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.content == INVENTORY_BODY
     assert stored.resolved_url == terminal
     assert stored.resolved_redirect_permanent is True
@@ -2099,10 +2103,7 @@ async def test_refresh_updates_resolved_url_when_chain_changes(
 
     assert summary.refreshed == 1
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.resolved_url == new_terminal
     # The new chain is temporary, so the stored permanence flips too.
     assert stored.resolved_redirect_permanent is False
@@ -2155,10 +2156,7 @@ async def test_refresh_304_trusted_when_no_terminal_is_stored(
     assert summary.refreshed == 0
     assert summary.failed == 0
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.content == INVENTORY_BODY
     # The terminal the revalidation walked to is now on the row, so the
     # next refresh has a terminal to hold the origin to.
@@ -2221,10 +2219,7 @@ async def test_refresh_withholds_validators_from_a_moved_terminal(
     assert summary.revalidated == 0
     assert summary.failed == 0
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.content == new_body
     assert stored.etag == '"v20-etag"'
     assert stored.resolved_url == new_terminal
@@ -2378,10 +2373,7 @@ async def test_refresh_304_from_a_withheld_validator_fails(
     assert summary.revalidated == 0
     assert summary.refreshed == 0
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.content == INVENTORY_BODY
     assert stored.date_fetched == fetched_at
     assert stored.last_fetch_status is InventoryFetchStatus.failure
@@ -2426,10 +2418,7 @@ async def test_refresh_200_replaces_content_and_validators(
     assert summary.refreshed == 1
     assert summary.revalidated == 0
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.content == new_body
     assert stored.etag == '"new-etag"'
     assert stored.last_modified == "Fri, 10 Jul 2026 00:00:00 GMT"
@@ -2509,10 +2498,7 @@ async def test_refresh_per_inventory_failure_does_not_abort_batch(
     )
 
     # The failing inventory keeps its stored content for stale serving.
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        kept = await store.get_inventory(failing_url)
-    assert kept is not None
+    kept = await _get_stored(factory, failing_url)
     assert kept.content == b"kept payload"
 
 
@@ -2590,10 +2576,7 @@ async def test_refresh_bookkeeping_failure_does_not_abort_batch(
     )
 
     # The row really is unrecorded: no backoff marker, stored copy intact.
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        kept = await store.get_inventory(failing_url)
-    assert kept is not None
+    kept = await _get_stored(factory, failing_url)
     assert kept.content == b"kept payload"
     assert kept.date_refresh_failed is None
 
@@ -2700,10 +2683,7 @@ async def test_refresh_failure_marker_dates_the_attempt_not_the_batch(
 
     assert summary.failed == 1
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.date_refresh_failed is not None
     assert stored.date_refresh_failed >= now + elapsed
 
@@ -2776,10 +2756,7 @@ async def test_refresh_304_leaves_a_concurrently_refreshed_row_alone(
     assert summary.refreshed == 0
     assert summary.failed == 0
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     # The winning cold miss's row stands, down to the freshness anchor that
     # dates its content.
     assert stored.content == fresh_content
@@ -2850,10 +2827,7 @@ async def test_refresh_failure_leaves_a_concurrently_refreshed_row_alone(
 
     assert summary.failed == 1
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     # The winning cold miss's row stands, cross-column invariants intact.
     assert stored.content == fresh_content
     assert stored.last_fetch_status is InventoryFetchStatus.success
@@ -2892,10 +2866,7 @@ async def test_refresh_success_after_failure_restores_the_cadence(
     assert recovered_run.refreshed == 1
     assert recovered_run.failed == 0
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.content == new_body
     _assert_stamped_at_write_time(stored.date_fetched, not_before=now)
     assert stored.last_fetch_status is InventoryFetchStatus.success
@@ -2955,10 +2926,7 @@ async def test_refresh_redirect_hop_dns_failure_skips_one_inventory(
     assert ok_route.call_count == 1
 
     # The failing inventory keeps its stored content for stale serving.
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        kept = await store.get_inventory(failing_url)
-    assert kept is not None
+    kept = await _get_stored(factory, failing_url)
     assert kept.content == b"kept payload"
 
 
@@ -2999,10 +2967,7 @@ async def test_refresh_rebound_stored_url_detail_omits_resolution(
     # A URL the guard refuses is never fetched.
     assert route.call_count == 0
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert (
         stored.last_fetch_error
         == "The cached inventory URL is no longer allowed to be fetched"
@@ -3093,10 +3058,7 @@ async def test_refresh_guard_resolution_bounded_by_the_time_budget(
     # The URL whose guard never finished is never fetched.
     assert route.call_count == 0
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     # The stored copy keeps serving stale; only the failure columns move.
     assert stored.content == INVENTORY_BODY
     assert stored.last_fetch_error is not None
@@ -3135,10 +3097,7 @@ async def test_refresh_malformed_redirect_location_counts_as_failure(
     assert summary.refreshed == 0
     assert summary.revalidated == 0
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        kept = await store.get_inventory(INVENTORY_URL)
-    assert kept is not None
+    kept = await _get_stored(factory)
     assert kept.content == b"kept payload"
 
 
@@ -3189,10 +3148,7 @@ async def test_refresh_overlong_redirect_location_skips_one_inventory(
 
     # The failing inventory keeps its stored content for stale serving,
     # and records why it failed.
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        kept = await store.get_inventory(failing_url)
-    assert kept is not None
+    kept = await _get_stored(factory, failing_url)
     assert kept.content == b"kept payload"
     assert kept.last_fetch_error is not None
     assert "malformed URL" in kept.last_fetch_error
@@ -3228,10 +3184,7 @@ async def test_refresh_oversized_response_counts_as_failure(
     assert summary.revalidated == 0
 
     # The stored copy is untouched, so it keeps serving stale.
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        kept = await store.get_inventory(INVENTORY_URL)
-    assert kept is not None
+    kept = await _get_stored(factory)
     assert kept.content == b"kept payload"
 
 
@@ -3265,10 +3218,7 @@ async def test_refresh_empty_response_counts_as_failure(
     assert summary.revalidated == 0
 
     # The stored copy is untouched, so it keeps serving stale.
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        kept = await store.get_inventory(INVENTORY_URL)
-    assert kept is not None
+    kept = await _get_stored(factory)
     assert kept.content == b"kept payload"
 
 
@@ -3383,10 +3333,7 @@ async def test_refresh_sends_validators_only_at_the_stored_terminal(
     assert seen[1].get("if-none-match") == '"stored-etag"'
     assert seen[1].get("if-modified-since") == "Wed, 01 Jan 2025 00:00:00 GMT"
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.content == INVENTORY_BODY
     _assert_stamped_at_write_time(stored.date_fetched, not_before=now)
 
@@ -3445,10 +3392,7 @@ async def test_refresh_drops_if_modified_since_across_a_redirect(
     assert seen[1].get("if-none-match") == '"stored-etag"'
     assert "if-modified-since" not in seen[1]
 
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_inventory_store()
-        stored = await store.get_inventory(INVENTORY_URL)
-    assert stored is not None
+    stored = await _get_stored(factory)
     assert stored.content == INVENTORY_BODY
     _assert_stamped_at_write_time(stored.date_fetched, not_before=now)
 
