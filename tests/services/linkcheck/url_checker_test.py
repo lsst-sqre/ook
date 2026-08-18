@@ -16,8 +16,10 @@ import structlog
 import ook
 from ook.config import Configuration, config
 from ook.domain.linkcheck import CheckResult
+from ook.domain.redirects import MAX_REDIRECTS
 from ook.factory import Factory
-from ook.services.linkcheck import UrlChecker
+from ook.services.linkcheck import HostResolver, UrlChecker
+from ook.services.linkcheck import _urlchecker as urlchecker
 
 PUBLIC_IP = "93.184.216.34"
 """A public (globally-routable) IPv4 address for fake DNS resolution."""
@@ -31,16 +33,19 @@ def make_checker(
     request_timeout: float = 5.0,
     ip_map: dict[str, Sequence[str]] | None = None,
     user_agent: str | None = None,
+    resolve_host: HostResolver | None = None,
 ) -> UrlChecker:
     """Create a UrlChecker with a fake DNS resolver.
 
     The fake resolver returns ``ip_map[host]`` when the host is mapped,
     and a public IP address otherwise, so tests never perform real DNS
-    lookups. The User-Agent defaults to the configured default so tests
-    exercise the production header unless they override it.
+    lookups. A test needing the resolver to fail, or to record what it
+    was asked, passes its own ``resolve_host`` instead. The User-Agent
+    defaults to the configured default so tests exercise the production
+    header unless they override it.
     """
 
-    async def resolve_host(host: str) -> Sequence[str]:
+    async def resolve_mapped_host(host: str) -> Sequence[str]:
         if ip_map is not None and host in ip_map:
             return ip_map[host]
         return [PUBLIC_IP]
@@ -51,7 +56,7 @@ def make_checker(
         request_timeout=timedelta(seconds=request_timeout),
         max_concurrency=max_concurrency,
         host_interval=timedelta(seconds=host_interval),
-        resolve_host=resolve_host,
+        resolve_host=resolve_host or resolve_mapped_host,
         user_agent=(
             user_agent
             if user_agent is not None
@@ -980,6 +985,44 @@ async def test_relative_redirect_location(
 
 
 @pytest.mark.asyncio
+async def test_repeated_location_headers_follow_the_first(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A hop carrying two ``Location`` headers follows the first value.
+
+    ``headers.get("Location")`` joins repeated values with ``", "``, and
+    joining that against the current hop percent-encodes the pair into a
+    single URL naming neither target — one that keeps the origin's host, so
+    it passes the SSRF guard and is fetched, and then 404s, reporting a
+    working link as broken.
+    """
+    respx_mock.route(
+        method="HEAD", path="/two", headers={"Host": "example.com"}
+    ).respond(
+        301,
+        headers=[
+            ("Location", "https://example.com/first"),
+            ("Location", "https://example.com/second"),
+        ],
+    )
+    first = respx_mock.route(
+        method="HEAD", path="/first", headers={"Host": "example.com"}
+    ).respond(200)
+    second = respx_mock.route(
+        method="HEAD", path="/second", headers={"Host": "example.com"}
+    ).respond(200)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/two")
+
+    assert outcome.result is CheckResult.success
+    assert outcome.redirect_url == "https://example.com/first"
+    assert first.call_count == 1
+    assert second.call_count == 0
+
+
+@pytest.mark.asyncio
 async def test_redirect_to_private_host_blocked(
     http_client: httpx.AsyncClient,
     respx_mock: respx.Router,
@@ -1002,6 +1045,139 @@ async def test_redirect_to_private_host_blocked(
 
 
 @pytest.mark.asyncio
+async def test_unencodable_host_is_failure(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A host label IDNA cannot encode is a check failure, not an escape.
+
+    ``getaddrinfo`` reports an all-ASCII label longer than 63 characters
+    as ``UnicodeEncodeError``, which is neither an ``OSError`` nor an
+    ``httpx.HTTPError``. Left to propagate it escapes ``check()``
+    entirely and, through the service's ``asyncio.gather``, discards
+    every other outcome in the batch.
+    """
+
+    async def resolve_host(host: str) -> Sequence[str]:
+        raise UnicodeEncodeError("idna", host, 0, len(host), "label too long")
+
+    checker = make_checker(http_client, resolve_host=resolve_host)
+    outcome = await checker.check(f"https://{'a' * 70}.example.com/page")
+    assert outcome.result is CheckResult.failure
+    assert outcome.status_code is None
+    assert outcome.error is not None
+    assert len(respx_mock.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_redirect_hop_to_unencodable_host_is_failure(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A redirect to an IDNA-unencodable host is a check failure.
+
+    The hop's host is chosen by the checked page, not by Ook, so the
+    resolver failure it provokes must be classified rather than escape
+    the batch.
+    """
+    unencodable = f"{'a' * 70}.example.com"
+    respx_mock.route(
+        method="HEAD", path="/go", headers={"Host": "example.com"}
+    ).respond(302, headers={"Location": f"https://{unencodable}/target"})
+
+    async def resolve_host(host: str) -> Sequence[str]:
+        if host == unencodable:
+            raise UnicodeEncodeError(
+                "idna", host, 0, len(host), "label too long"
+            )
+        return [PUBLIC_IP]
+
+    checker = make_checker(http_client, resolve_host=resolve_host)
+    outcome = await checker.check("https://example.com/go")
+    assert outcome.result is CheckResult.failure
+    assert outcome.error is not None
+    # Only the first hop was fetched.
+    assert len(respx_mock.calls) == 1
+
+
+def test_join_redirect_url_rejects_unparseable_location() -> None:
+    """The redirect join converts an unparseable target to a check error.
+
+    httpx resolves a ``Location`` itself for every 3xx, so a target it
+    refuses outright never reaches this join; this is the backstop for
+    the residue httpx accepts — a relative target that overflows the URL
+    length limit only once joined, say — and for that httpx behavior
+    changing. ``httpx.InvalidURL`` is not an ``httpx.HTTPError``, so
+    without the conversion such a target would escape ``check()``.
+    """
+    with pytest.raises(urlchecker._InvalidRedirectError, match="malformed"):
+        urlchecker._join_redirect_url(
+            "https://example.com/page", "https://example.com:notaport/x"
+        )
+
+
+@pytest.mark.asyncio
+async def test_overlong_redirect_location_is_failure(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A ``Location`` that overflows httpx's URL length limit once joined
+    is a classified failure, not an escaped ``httpx.InvalidURL``.
+
+    httpx builds the redirect request for every 3xx carrying a
+    ``Location`` even with ``follow_redirects=False``, so the join that
+    overflows can raise from inside the request as well as from this
+    checker's own join. Neither is an ``httpx.HTTPError``.
+    """
+    respx_mock.route(
+        method="HEAD", path="/long", headers={"Host": "example.com"}
+    ).respond(302, headers={"Location": "/" + "a" * 65530})
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/long")
+    assert outcome.result is CheckResult.failure
+    assert outcome.error is not None
+
+
+@pytest.mark.asyncio
+async def test_chain_at_the_hop_cap_succeeds(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A chain of exactly ``MAX_REDIRECTS`` hops resolves rather than fails.
+
+    The loop tests cover the cap's failing side; this is its passing side.
+    Every other redirect test either walks one to three hops or overshoots
+    the cap outright, so an off-by-one in ``len(hops) >= MAX_REDIRECTS``
+    would report a legitimate 20-hop link as broken — with the rest of the
+    suite still green, and the intersphinx cache's twin loop drifting from
+    this one on the exact boundary they share.
+    """
+    for hop in range(MAX_REDIRECTS):
+        respx_mock.route(
+            method="HEAD", path=f"/hop{hop}", headers={"Host": "example.com"}
+        ).respond(
+            301, headers={"Location": f"https://example.com/hop{hop + 1}"}
+        )
+    terminal = respx_mock.route(
+        method="HEAD",
+        path=f"/hop{MAX_REDIRECTS}",
+        headers={"Host": "example.com"},
+    ).respond(200)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/hop0")
+
+    assert outcome.result is CheckResult.success
+    assert outcome.status_code == 200
+    assert outcome.redirect_status_code == 301
+    assert outcome.redirect_url == f"https://example.com/hop{MAX_REDIRECTS}"
+    assert terminal.call_count == 1
+    # One request per allowed hop, plus the terminal the last hop reaches.
+    assert len(respx_mock.calls) == MAX_REDIRECTS + 1
+
+
+@pytest.mark.asyncio
 async def test_too_many_redirects_is_failure(
     http_client: httpx.AsyncClient,
     respx_mock: respx.Router,
@@ -1016,6 +1192,57 @@ async def test_too_many_redirects_is_failure(
     assert outcome.result is CheckResult.failure
     assert outcome.error is not None
     assert "redirect" in outcome.error.lower()
+    # One request per allowed hop, plus the one that trips the cap.
+    assert len(respx_mock.calls) == MAX_REDIRECTS + 1
+
+
+@pytest.mark.asyncio
+async def test_hop_cap_reported_before_touching_the_next_target(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The hop cap is reported without inspecting the target it rules out.
+
+    The hop that trips the cap points at a host that resolves to a
+    private address, so a cap enforced only after joining and guarding
+    that target would park the URL as ``unsupported`` — permanently, with
+    no recheck — for a URL this check was never going to request. The
+    outcome must depend on the hop count alone, exactly as the
+    intersphinx cache's twin loop reports it.
+    """
+    calls = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        location = (
+            "https://poison.example.com/x"
+            if calls > MAX_REDIRECTS
+            else "https://example.com/loop"
+        )
+        return httpx.Response(302, headers={"Location": location})
+
+    respx_mock.route(
+        method="HEAD", path="/loop", headers={"Host": "example.com"}
+    ).mock(side_effect=respond)
+
+    resolved_hosts: list[str] = []
+
+    async def resolve_host(host: str) -> Sequence[str]:
+        resolved_hosts.append(host)
+        if host == "poison.example.com":
+            return ["192.168.0.10"]
+        return [PUBLIC_IP]
+
+    checker = make_checker(http_client, resolve_host=resolve_host)
+    outcome = await checker.check("https://example.com/loop")
+    assert outcome.result is CheckResult.failure
+    assert outcome.error is not None
+    assert "redirect" in outcome.error.lower()
+    # One request per allowed hop, plus the one that trips the cap.
+    assert len(respx_mock.calls) == MAX_REDIRECTS + 1
+    # The ruled-out target is never joined, guarded, or resolved.
+    assert "poison.example.com" not in resolved_hosts
 
 
 @pytest.mark.asyncio

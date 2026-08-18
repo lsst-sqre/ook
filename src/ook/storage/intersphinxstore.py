@@ -16,6 +16,39 @@ from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
 __all__ = ["IntersphinxInventoryStore"]
 
 
+_REFRESH_OUTCOME_COLUMNS = (
+    "date_fetched",
+    "last_fetch_status",
+    "last_fetch_error",
+    "resolved_url",
+    "resolved_redirect_permanent",
+    "date_refresh_failed",
+)
+"""Columns every successful refresh writes, whether or not the content moved.
+
+A revalidation changes all of these — it re-dates the copy, clears any
+failure state and backoff marker, and records the chain *this* fetch walked,
+which a ``304`` says nothing about. Notably absent: ``url``, the row key, and
+``date_requested``, which the request path owns.
+"""
+
+
+_CONTENT_COLUMNS = (
+    "content",
+    "content_type",
+    "etag",
+    "last_modified",
+)
+"""Columns only a ``200`` writes: the body and the validators minted with it.
+
+A ``304`` leaves these alone rather than rewriting the values it read at
+due-list time. Rewriting an unchanged 100 to 500 KB blob forces a TOAST and WAL
+rewrite per revalidated inventory per run — for a conditional request whose
+whole purpose is not to move the bytes — and makes the write a revert vector
+for any content committed since that read.
+"""
+
+
 class IntersphinxInventoryStore:
     """Interface for storing cached intersphinx inventories in a database.
 
@@ -70,13 +103,14 @@ class IntersphinxInventoryStore:
         request stored a good copy between this request's cold miss and its
         failure — the write is skipped and the good copy stands. This is what
         makes the negative-cache invariant hold under concurrency rather than
-        only single-threaded.
+        only single-threaded. That same guard is what keeps a failure from
+        clearing a content-bearing row's resolved-redirect columns.
 
         Parameters
         ----------
         inventory
-            The negative-cache record to store: null content and a
-            ``failure`` status.
+            The negative-cache record to store: null content, null
+            resolved-redirect columns, and a ``failure`` status.
         """
         values = self._row_values(inventory)
         insert_stmt = pg_insert(SqlIntersphinxInventory).values(**values)
@@ -96,38 +130,227 @@ class IntersphinxInventoryStore:
         await self._session.flush()
 
     async def update_refresh_outcome(
-        self, inventory: IntersphinxInventory
-    ) -> None:
-        """Persist a proactive-refresh outcome without touching
+        self,
+        inventory: IntersphinxInventory,
+        *,
+        expected_date_fetched: datetime | None,
+    ) -> bool:
+        """Persist a proactive refresh's ``200`` outcome without touching
         ``date_requested``.
 
-        This is the refresh path's write. Unlike `upsert_inventory`, which
-        rewrites every non-key column, this updates only the fetch-outcome
-        columns — content, content type, validators, fetch time, and fetch
-        status — and deliberately leaves ``date_requested`` alone. The refresh
-        job reads a row at due-list selection time and writes it back after an
-        HTTP round-trip; a client request may bump ``date_requested`` in that
+        This is the refresh path's content-replacing write. Unlike
+        `upsert_inventory`, which rewrites every non-key column, this updates
+        only the fetch-outcome columns — content, content type, validators,
+        fetch time, fetch status, and the resolved-redirect columns — and
+        deliberately leaves ``date_requested`` alone. The refresh job reads a
+        row at due-list selection time and writes it back after an HTTP
+        round-trip; a client request may bump ``date_requested`` in that
         window, so rewriting the stale value would silently shorten the
-        inventory's active window. This method never inserts: the refresh path
-        only ever writes rows that already exist.
+        inventory's active window. Use `update_revalidation_outcome` for the
+        ``304`` path, which must not rewrite the content it did not move.
+        This method never inserts: the refresh path only ever writes rows
+        that already exist.
 
         Parameters
         ----------
         inventory
             The refreshed inventory whose outcome columns to persist. Its
             ``date_requested`` value is ignored.
+        expected_date_fetched
+            The row's ``date_fetched`` as the due-list read saw it. The write
+            is skipped when the row's current value differs — see
+            `_write_refresh_columns`.
+
+        Returns
+        -------
+        bool
+            True if the outcome was recorded, False if the guard skipped the
+            write because the row changed since the due-list read.
+        """
+        return await self._write_refresh_columns(
+            inventory,
+            columns=_REFRESH_OUTCOME_COLUMNS + _CONTENT_COLUMNS,
+            expected_date_fetched=expected_date_fetched,
+        )
+
+    async def update_revalidation_outcome(
+        self,
+        inventory: IntersphinxInventory,
+        *,
+        expected_date_fetched: datetime | None,
+    ) -> bool:
+        """Persist a proactive refresh's ``304`` outcome, content untouched.
+
+        The counterpart to `update_refresh_outcome` for a revalidation. It
+        writes only `_REFRESH_OUTCOME_COLUMNS` — the fetch time, the fetch
+        status and error, the resolved-redirect columns, and the backoff
+        marker — and leaves the body and its validators exactly as the last
+        ``200`` wrote them, because a ``304`` is the origin saying those bytes
+        did not move. Rewriting them from the due-list snapshot would pay a
+        TOAST and WAL rewrite of the whole unchanged inventory per revalidated
+        row per run, and would revert anything committed against those columns
+        since that read. Like `update_refresh_outcome`, this never inserts and
+        never touches ``date_requested``.
+
+        Parameters
+        ----------
+        inventory
+            The revalidated inventory whose outcome columns to persist. Its
+            content, validators, and ``date_requested`` values are ignored.
+        expected_date_fetched
+            The row's ``date_fetched`` as the due-list read saw it. The write
+            is skipped when the row's current value differs — see
+            `_write_refresh_columns`.
+
+        Returns
+        -------
+        bool
+            True if the outcome was recorded, False if the guard skipped the
+            write because the row changed since the due-list read.
+        """
+        return await self._write_refresh_columns(
+            inventory,
+            columns=_REFRESH_OUTCOME_COLUMNS,
+            expected_date_fetched=expected_date_fetched,
+        )
+
+    async def _write_refresh_columns(
+        self,
+        inventory: IntersphinxInventory,
+        *,
+        columns: tuple[str, ...],
+        expected_date_fetched: datetime | None,
+    ) -> bool:
+        """Write one refresh outcome's columns under the freshness guard.
+
+        Shared by `update_refresh_outcome` and `update_revalidation_outcome`,
+        which differ only in which columns they write. The guard is what they
+        have in common and is the reason neither is an unconditional UPDATE
+        keyed on the URL alone: the values come from the snapshot the due-list
+        read returned, and a row in the due list is stale by construction, so
+        a client cold miss can fetch and commit good content while this
+        refresh's own fetch is still in flight — up to the whole fetch budget.
+        Writing the snapshot back afterwards would revert that content and
+        stamp the reverted bytes fresh, hiding the regression for a whole TTL.
+        Guarding on the freshness anchor the due-list read saw makes the late
+        write a no-op instead, the same spirit as `upsert_fetch_failure`'s
+        ``content IS NULL`` guard and `update_refresh_failure`'s guard on this
+        same column, and the row needs no refresh anyway because the
+        concurrent success already took it out of the due list.
+
+        Parameters
+        ----------
+        inventory
+            The refreshed inventory whose columns to persist.
+        columns
+            The column names to write. An allowlist rather than a subtraction
+            from `_row_values`, so a column added to the row later has to be
+            classified deliberately instead of joining both writes silently.
+        expected_date_fetched
+            The row's ``date_fetched`` as the due-list read saw it. Compared
+            with ``IS NOT DISTINCT FROM`` rather than ``=``, so a
+            never-fetched row — a real state, and one that reaches the due
+            list — can still be matched instead of failing every guard.
+
+        Returns
+        -------
+        bool
+            True if a row was updated, False if the guard skipped the write.
         """
         values = self._row_values(inventory)
-        # The URL is the row key and date_requested is owned by the request
-        # path, so neither is written here.
-        del values["url"]
-        del values["date_requested"]
-        await self._session.execute(
+        result = await self._session.execute(
             update(SqlIntersphinxInventory)
-            .where(SqlIntersphinxInventory.url == inventory.url)
-            .values(**values)
+            .where(
+                SqlIntersphinxInventory.url == inventory.url,
+                SqlIntersphinxInventory.date_fetched.is_not_distinct_from(
+                    expected_date_fetched
+                ),
+            )
+            .values(**{column: values[column] for column in columns})
         )
         await self._session.flush()
+        return cast("CursorResult", result).rowcount > 0
+
+    async def update_refresh_failure(
+        self,
+        url: str,
+        *,
+        now: datetime,
+        error: str,
+        expected_date_fetched: datetime | None,
+    ) -> bool:
+        """Record a failed proactive refresh without touching the stored copy.
+
+        This is the refresh path's failure write, the counterpart to
+        `update_refresh_outcome`. It writes only the failure columns and the
+        backoff marker — ``last_fetch_status``, ``last_fetch_error``, and
+        ``date_refresh_failed`` — and touches no other column *by
+        construction* rather than by guard: content, its validators, its
+        resolved-redirect columns, and the ``date_fetched`` freshness anchor
+        are all left as the last successful fetch wrote them. That is what
+        keeps the stored copy serving stale at its true reported age.
+
+        Leaving the other columns alone is not on its own enough under
+        concurrency, though, which is what ``expected_date_fetched`` is for.
+        A failing fetch can run for the whole request budget, and a row in
+        the due list is by construction stale — a negative-cache row there is
+        past its negative TTL too — so a client cold miss can fetch and
+        commit good content inside that window. Writing the failure columns
+        unconditionally afterwards would leave fresh content behind a
+        ``failure`` status, a stale error, and a backoff marker: exactly the
+        cross-column shape `IntersphinxInventory` rules out. Guarding on the
+        freshness anchor the refresh job read makes the late write a no-op
+        instead, the same spirit as `upsert_fetch_failure`'s
+        ``content IS NULL`` guard, and the row needs no backoff anyway
+        because the concurrent success already took it out of the due list.
+
+        The marker is what backs the row off: `get_stale_active_inventories`
+        holds a row out of the due list for a TTL after its last failure, so
+        a broken inventory is retried on the normal refresh cadence rather
+        than on every run. Like `update_refresh_outcome`, this never inserts;
+        the refresh path only ever writes rows that already exist.
+
+        Parameters
+        ----------
+        url
+            The URL of the inventory whose refresh failed.
+        now
+            The time of the failed attempt. This is the time the failure is
+            written, not the time the batch started: the marker's whole job
+            is to hold the row back for a TTL from *this* attempt, so a row
+            that fails deep into a long batch must not be backed off from the
+            batch's start.
+        error
+            A description of the failure, stored as ``last_fetch_error``.
+        expected_date_fetched
+            The row's ``date_fetched`` as the due-list read saw it. The write
+            is skipped when the row's current value differs, including when
+            either side is null — ``IS NOT DISTINCT FROM`` compares nulls as
+            values, since a never-fetched row is a real state the guard has
+            to be able to match.
+
+        Returns
+        -------
+        bool
+            True if the failure was recorded, False if the guard skipped the
+            write because the row changed since the due-list read.
+        """
+        result = await self._session.execute(
+            update(SqlIntersphinxInventory)
+            .where(
+                SqlIntersphinxInventory.url == url,
+                SqlIntersphinxInventory.date_fetched.is_not_distinct_from(
+                    expected_date_fetched
+                ),
+            )
+            .values(
+                last_fetch_status=InventoryFetchStatus.failure.value,
+                last_fetch_error=error,
+                date_refresh_failed=now,
+            )
+        )
+        await self._session.flush()
+        return cast("CursorResult", result).rowcount > 0
 
     @staticmethod
     def _row_values(inventory: IntersphinxInventory) -> dict[str, object]:
@@ -146,6 +369,11 @@ class IntersphinxInventoryStore:
                 else None
             ),
             "last_fetch_error": inventory.last_fetch_error,
+            "resolved_url": inventory.resolved_url,
+            "resolved_redirect_permanent": (
+                inventory.resolved_redirect_permanent
+            ),
+            "date_refresh_failed": inventory.date_refresh_failed,
         }
 
     async def get_inventory(self, url: str) -> IntersphinxInventory | None:
@@ -210,10 +438,15 @@ class IntersphinxInventoryStore:
         """Enumerate cached inventories that are due for a refresh.
 
         An inventory is due when its last fetch is older than the freshness
-        TTL (or it has never been fetched) and it was requested by a client
-        within the active window. Inventories requested longer ago than the
+        TTL (or it has never been fetched), it was requested by a client
+        within the active window, and its last refresh failure — if any — is
+        itself older than the TTL. Inventories requested longer ago than the
         active window are skipped so the refresh job doesn't revalidate
-        inventories no client is using.
+        inventories no client is using, and a recently-failed inventory backs
+        off so a broken origin is retried on the normal refresh cadence
+        instead of on every run. Both cutoffs use the same TTL: a failed
+        attempt costs an inventory exactly the interval a successful one
+        would have bought it.
 
         Parameters
         ----------
@@ -221,7 +454,8 @@ class IntersphinxInventoryStore:
             The current time.
         ttl
             The freshness TTL; inventories fetched earlier than
-            ``now - ttl`` are stale.
+            ``now - ttl`` are stale, and a refresh failure earlier than
+            ``now - ttl`` no longer holds its inventory back.
         active_window
             The active window; only inventories requested at or after
             ``now - active_window`` are eligible.
@@ -242,6 +476,8 @@ class IntersphinxInventoryStore:
                 SqlIntersphinxInventory.date_requested >= active_cutoff,
                 (SqlIntersphinxInventory.date_fetched.is_(None))
                 | (SqlIntersphinxInventory.date_fetched < stale_cutoff),
+                (SqlIntersphinxInventory.date_refresh_failed.is_(None))
+                | (SqlIntersphinxInventory.date_refresh_failed < stale_cutoff),
             )
             .order_by(SqlIntersphinxInventory.date_fetched.asc().nullsfirst())
         )
@@ -269,4 +505,7 @@ class IntersphinxInventoryStore:
                 else None
             ),
             last_fetch_error=row.last_fetch_error,
+            resolved_url=row.resolved_url,
+            resolved_redirect_permanent=row.resolved_redirect_permanent,
+            date_refresh_failed=row.date_refresh_failed,
         )

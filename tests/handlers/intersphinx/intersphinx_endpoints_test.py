@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import respx
 import structlog
 from httpx import AsyncClient, Response
 from safir.database import create_async_session, create_database_engine
+from safir.datetime import parse_isodatetime
+from structlog.testing import capture_logs
 
 from ook.config import config
 from ook.domain.intersphinx import InventoryFetchStatus
+from ook.handlers.intersphinx.endpoints import (
+    MAX_PERMANENT_REDIRECT_URL_LENGTH,
+)
 from ook.storage.intersphinxstore import IntersphinxInventoryStore
 
 INVENTORY_URL = "https://docs.example.com/en/latest/objects.inv"
@@ -126,6 +131,37 @@ async def test_http_url_rejected_with_400(
     assert response.status_code == 400
     # The guarded URL is never fetched from upstream.
     assert route.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "malformed_url",
+    [
+        # A bogus port, which the stdlib's own URL split waves through.
+        "https://docs.example.com:notaport/objects.inv",
+        # An unterminated IPv6 literal.
+        "https://[::1/objects.inv",
+    ],
+)
+@pytest.mark.asyncio
+async def test_unparseable_url_rejected_with_400(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+    malformed_url: str,
+) -> None:
+    """A URL no parser accepts is a 400, not an unhandled 500.
+
+    Both shapes name a plausible public host, so nothing but the parse
+    check stands between them and an upstream fetch.
+    """
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": malformed_url},
+    )
+
+    assert response.status_code == 400
+    assert "could not be parsed" in response.json()["detail"][0]["msg"]
+    # Nothing is fetched from upstream for a URL that never parsed.
+    assert respx_mock.calls.call_count == 0
 
 
 @pytest.mark.asyncio
@@ -461,6 +497,380 @@ async def test_if_none_match_list_returns_304(
     assert response.content == b""
 
 
+PERMANENT_HOP = "https://docs.example.com/en/stable/objects.inv"
+"""The first hop of the all-permanent redirect chain used in these tests."""
+
+PERMANENT_TERMINAL = "https://example.com/docs/stable/objects.inv"
+"""The terminal URL of the all-permanent redirect chain."""
+
+
+def _mock_permanent_chain(respx_mock: respx.Router) -> respx.Route:
+    """Mock an all-permanent (301 then 308) chain to a served inventory.
+
+    Returns the route for the originally-requested URL so a test can assert
+    the origin is contacted exactly once.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(301, headers={"Location": PERMANENT_HOP})
+    )
+    respx_mock.get(PERMANENT_HOP).mock(
+        return_value=Response(308, headers={"Location": PERMANENT_TERMINAL})
+    )
+    respx_mock.get(PERMANENT_TERMINAL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+    return route
+
+
+@pytest.mark.asyncio
+async def test_permanent_redirect_header_on_200(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 200 for an all-permanent chain names the resolved URL."""
+    _mock_permanent_chain(respx_mock)
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+
+    assert response.status_code == 200
+    assert response.content == INVENTORY_BODY
+    assert (
+        response.headers["x-ook-inventory-permanent-redirect"]
+        == PERMANENT_TERMINAL
+    )
+
+
+@pytest.mark.asyncio
+async def test_permanent_redirect_header_on_304(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 304 still names the resolved URL, from the cached row alone.
+
+    A client that holds the current bytes only ever revalidates, so without
+    this it would never learn its configured URL has permanently moved.
+    """
+    route = _mock_permanent_chain(respx_mock)
+
+    etag = await _prime_cache(client)
+    assert route.call_count == 1
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+        headers={"If-None-Match": etag},
+    )
+
+    assert response.status_code == 304
+    assert response.content == b""
+    assert (
+        response.headers["x-ook-inventory-permanent-redirect"]
+        == PERMANENT_TERMINAL
+    )
+    # The header is served from the cached row, with no upstream contact.
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_permanent_redirect_header_omits_location_fragment(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A fragment on the final ``Location`` is not served in the header.
+
+    The header value is pasted into ``intersphinx_mapping`` by a doc
+    author, so it has to name the inventory itself; a fragment is display
+    metadata for a document and names nothing there.
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            301, headers={"Location": f"{PERMANENT_TERMINAL}#moved"}
+        )
+    )
+    respx_mock.get(PERMANENT_TERMINAL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+
+    assert response.status_code == 200
+    assert (
+        response.headers["x-ook-inventory-permanent-redirect"]
+        == PERMANENT_TERMINAL
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_permanent_redirect_header_for_temporary_chain(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """An all-temporary chain gets no header, on a 200 or a 304.
+
+    This is the SQLAlchemy shape: an all-302 chain whose ``latest`` alias
+    legitimately moves, so the requested URL is still the right one to ask
+    for and there is nothing for a doc author to fix. The mixed
+    permanent-then-temporary shape is covered by ``is_permanent_chain``'s
+    own tests.
+    """
+    temporary_hop = "https://docs.example.com/en/rolling/objects.inv"
+    temporary_terminal = "https://docs.example.com/en/21/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": temporary_hop})
+    )
+    respx_mock.get(temporary_hop).mock(
+        return_value=Response(302, headers={"Location": temporary_terminal})
+    )
+    respx_mock.get(temporary_terminal).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    etag = await _prime_cache(client)
+
+    ok = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert ok.status_code == 200
+    assert "x-ook-inventory-permanent-redirect" not in ok.headers
+
+    not_modified = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+        headers={"If-None-Match": etag},
+    )
+    assert not_modified.status_code == 304
+    assert "x-ook-inventory-permanent-redirect" not in not_modified.headers
+
+
+@pytest.mark.asyncio
+async def test_no_permanent_redirect_header_without_redirect(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A URL that does not redirect gets no header, on a 200 or a 304."""
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    etag = await _prime_cache(client)
+
+    ok = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert ok.status_code == 200
+    assert "x-ook-inventory-permanent-redirect" not in ok.headers
+
+    not_modified = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+        headers={"If-None-Match": etag},
+    )
+    assert not_modified.status_code == 304
+    assert "x-ook-inventory-permanent-redirect" not in not_modified.headers
+
+
+def _overlong_terminal(length: int) -> str:
+    """Return a permanent-chain terminal URL of exactly ``length`` chars."""
+    prefix = "https://example.com/"
+    suffix = "/objects.inv"
+    filler = length - len(prefix) - len(suffix)
+    assert filler > 0
+    return f"{prefix}{'a' * filler}{suffix}"
+
+
+@pytest.mark.asyncio
+async def test_no_permanent_redirect_header_for_overlong_url(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """An over-long resolved URL is omitted rather than sent or truncated.
+
+    The value is upstream-controlled and stored unbounded, but ingress
+    header buffers are only a few kilobytes; emitting a multi-kilobyte
+    header would turn every cache hit for the row into an ingress-level
+    502 that Ook itself logs as a successful serve.
+    """
+    terminal = _overlong_terminal(MAX_PERMANENT_REDIRECT_URL_LENGTH + 1)
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(301, headers={"Location": terminal})
+    )
+    respx_mock.get(terminal).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    etag = await _prime_cache(client)
+
+    ok = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert ok.status_code == 200
+    assert ok.content == INVENTORY_BODY
+    assert "x-ook-inventory-permanent-redirect" not in ok.headers
+
+    not_modified = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+        headers={"If-None-Match": etag},
+    )
+    assert not_modified.status_code == 304
+    assert "x-ook-inventory-permanent-redirect" not in not_modified.headers
+
+
+@pytest.mark.asyncio
+async def test_permanent_redirect_header_at_length_bound(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A resolved URL exactly at the bound is still emitted."""
+    terminal = _overlong_terminal(MAX_PERMANENT_REDIRECT_URL_LENGTH)
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(301, headers={"Location": terminal})
+    )
+    respx_mock.get(terminal).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-ook-inventory-permanent-redirect"] == terminal
+
+
+@pytest.mark.asyncio
+async def test_permanent_redirect_header_documented_on_both_responses(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The 200 and 304 responses document the header the endpoint emits.
+
+    The documented name and schema are pinned to literals and the name is
+    looked up in a live response, rather than compared with
+    ``PERMANENT_REDIRECT_HEADER_SPEC``: the published OpenAPI is generated
+    *from* that object, so comparing the two cannot fail, and renaming the
+    header or retyping its schema would silently move the documented
+    contract away from the emitted one. Documenteer reads the published
+    document, so the two drifting apart is the failure this test exists to
+    catch.
+    """
+    terminal = "https://docs.example.com/en/21/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(301, headers={"Location": terminal})
+    )
+    respx_mock.get(terminal).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+    served = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert served.status_code == 200
+
+    response = await client.get(f"{config.path_prefix}/openapi.json")
+    assert response.status_code == 200
+    operation = response.json()["paths"][
+        f"{config.path_prefix}/intersphinx/inventory"
+    ]["get"]
+
+    documented = operation["responses"]["200"]["headers"]
+    assert set(documented) == {
+        "X-Ook-Inventory-Permanent-Redirect",
+        "X-Ook-Inventory-Date-Fetched",
+        "X-Ook-Inventory-Cache-Status",
+    }
+    assert documented["X-Ook-Inventory-Permanent-Redirect"]["schema"] == {
+        "type": "string",
+        "format": "uri",
+    }
+    # The documented name is the one a live response actually carries: the
+    # set assertion above ties the document to this literal, and the lookup
+    # ties the literal to the emitted header.
+    assert served.headers["X-Ook-Inventory-Permanent-Redirect"] == terminal
+    # Both responses document it identically, from the one shared block.
+    assert operation["responses"]["304"]["headers"] == documented
+
+
+@pytest.mark.asyncio
+async def test_openapi_documents_304_cache_retention_caveat(
+    client: AsyncClient,
+) -> None:
+    """The endpoint description warns that a 304 cannot withdraw the header.
+
+    RFC 9111 §4.3.4 cache-update rules let a 304 update the headers it
+    carries but never delete the ones it omits, so a client behind a
+    spec-compliant HTTP cache could otherwise learn the flag and never
+    unlearn it.
+    """
+    response = await client.get(f"{config.path_prefix}/openapi.json")
+    assert response.status_code == 200
+    description = response.json()["paths"][
+        f"{config.path_prefix}/intersphinx/inventory"
+    ]["get"]["description"]
+
+    assert "RFC 9111" in description
+
+
+@pytest.mark.asyncio
+async def test_openapi_documents_header_last_successful_fetch_semantics(
+    client: AsyncClient,
+) -> None:
+    """The description dates the header to the last successful fetch.
+
+    A row whose refreshes keep failing keeps its resolved-redirect columns
+    — deliberately, so one transient failure does not withdraw the signal
+    for a whole TTL — which means the header can outlive the chain it was
+    observed on. That staleness is documented rather than suppressed, and
+    ``Age`` is what tells a client how old the observation is.
+    """
+    response = await client.get(f"{config.path_prefix}/openapi.json")
+    assert response.status_code == 200
+    description = response.json()["paths"][
+        f"{config.path_prefix}/intersphinx/inventory"
+    ]["get"]["description"]
+
+    assert "last successful fetch" in description
+    assert "``Age``" in description
+
+
 @pytest.mark.asyncio
 async def test_if_none_match_stale_after_change_returns_200(
     client: AsyncClient,
@@ -504,3 +914,483 @@ async def test_if_none_match_stale_after_change_returns_200(
     assert response.content == new_body
     assert response.headers["etag"] == _expected_etag(new_body)
     assert response.headers["etag"] != old_etag
+
+
+async def _restamp_date_fetched(date_fetched: datetime | None) -> None:
+    """Rewrite the cached row's fetch anchor, leaving its bytes in place.
+
+    The endpoint reads ``date_fetched`` from the stored row, so seeding a
+    known anchor is what makes the header's value assertable; the row keeps
+    its content, so the request that reads it back is a warm hit that never
+    contacts the origin.
+    """
+    logger = structlog.get_logger("test")
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    session = await create_async_session(engine)
+    store = IntersphinxInventoryStore(session=session, logger=logger)
+    stored = await store.get_inventory(INVENTORY_URL)
+    assert stored is not None
+    await store.upsert_inventory(replace(stored, date_fetched=date_fetched))
+    await session.commit()
+    await session.close()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_date_fetched_header_on_200(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 200 dates the served copy's last origin fetch, in RFC 3339 UTC.
+
+    The seeded anchor carries sub-second precision and the assertion is on
+    the whole formatted value, so both halves of the shape are pinned: the
+    microseconds are dropped and the zone is spelled ``Z`` rather than the
+    ``+00:00`` a bare ``datetime.isoformat()`` would emit.
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+    await _prime_cache(client)
+    await _restamp_date_fetched(
+        datetime(2026, 8, 18, 17, 58, 24, 123456, tzinfo=UTC)
+    )
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+
+    assert response.status_code == 200
+    assert (
+        response.headers["x-ook-inventory-date-fetched"]
+        == "2026-08-18T17:58:24Z"
+    )
+
+
+@pytest.mark.asyncio
+async def test_date_fetched_header_on_304(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 304 carries the same anchor, from the cached row alone.
+
+    A client holding the current bytes only ever revalidates, so without
+    this it would learn when the copy was last confirmed exactly once — on
+    the ``200`` that first gave it those bytes — and never again.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+    etag = await _prime_cache(client)
+    await _restamp_date_fetched(datetime(2026, 8, 18, 17, 58, 24, tzinfo=UTC))
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+        headers={"If-None-Match": etag},
+    )
+
+    assert response.status_code == 304
+    assert (
+        response.headers["x-ook-inventory-date-fetched"]
+        == "2026-08-18T17:58:24Z"
+    )
+    # The anchor is served from the cached row, with no upstream contact.
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_no_date_fetched_header_without_fetch(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A row with no recorded fetch reports no anchor at all.
+
+    ``Age`` answers the same row with ``0`` — claiming a copy of unknown
+    age was just fetched — which is exactly the claim this header declines
+    to make: a missing observation is reported as missing rather than as a
+    placeholder a client cannot tell from a real reading.
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+    await _prime_cache(client)
+    await _restamp_date_fetched(None)
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+
+    assert response.status_code == 200
+    assert response.content == INVENTORY_BODY
+    assert "x-ook-inventory-date-fetched" not in response.headers
+    assert response.headers["age"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_date_fetched_header_agrees_with_age(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """``Age`` counts the seconds since the header's absolute anchor.
+
+    Both read the row's ``date_fetched``, so a response states the same
+    observation twice and the two readings must reconcile. The bound is a
+    one-second window rather than an equality because the header is
+    truncated to whole seconds and ``Age`` was computed from the
+    full-precision anchor at an earlier instant than this assertion reads
+    the clock: the elapsed time measured here can only fall in the same
+    second as ``Age`` or the next one. An anchor taken from any other
+    column — ``date_requested``, say, which the serve itself just bumped —
+    lands an hour outside that window.
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+    await _prime_cache(client)
+    # A whole-second anchor, so the header's truncation moves it nowhere.
+    await _restamp_date_fetched(
+        datetime.now(tz=UTC).replace(microsecond=0) - timedelta(hours=1)
+    )
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+
+    assert response.status_code == 200
+    age = int(response.headers["age"])
+    assert age >= 3600
+    fetched = parse_isodatetime(
+        response.headers["x-ook-inventory-date-fetched"]
+    )
+    elapsed = int((datetime.now(tz=UTC) - fetched).total_seconds())
+    assert age <= elapsed <= age + 1
+
+
+@pytest.mark.asyncio
+async def test_date_fetched_header_documented_on_both_responses(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The 200 and 304 responses document the date-fetched header.
+
+    Pinned the same way as its permanent-redirect neighbour: the name and
+    schema are literals, and the documented name is then looked up in a
+    live response, since the published document is generated *from* the
+    module's own spec object and comparing the two could not fail.
+    Documenteer reads the published document, so the contract drifting away
+    from the emitted header is the failure this test exists to catch.
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+    served = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert served.status_code == 200
+
+    response = await client.get(f"{config.path_prefix}/openapi.json")
+    assert response.status_code == 200
+    operation = response.json()["paths"][
+        f"{config.path_prefix}/intersphinx/inventory"
+    ]["get"]
+
+    documented = operation["responses"]["200"]["headers"]
+    assert documented["X-Ook-Inventory-Date-Fetched"]["schema"] == {
+        "type": "string",
+        "format": "date-time",
+    }
+    # The documented name is one a live response actually carries, in the
+    # documented format.
+    served_value = served.headers["X-Ook-Inventory-Date-Fetched"]
+    assert parse_isodatetime(served_value) is not None
+    # Both responses document it identically, from the one shared block.
+    assert operation["responses"]["304"]["headers"] == documented
+
+
+@pytest.mark.asyncio
+async def test_openapi_documents_date_fetched_header_semantics(
+    client: AsyncClient,
+) -> None:
+    """The description ties the header to ``Age`` and to revalidation.
+
+    Both headers read one anchor, so a client needs to be told which
+    observation that anchor is: a ``304`` revalidation bumps it while the
+    stored bytes stay as they were, making it the time Ook last *confirmed*
+    the inventory rather than the time these bytes were downloaded.
+    """
+    response = await client.get(f"{config.path_prefix}/openapi.json")
+    assert response.status_code == 200
+    description = response.json()["paths"][
+        f"{config.path_prefix}/intersphinx/inventory"
+    ]["get"]["description"]
+
+    assert "X-Ook-Inventory-Date-Fetched" in description
+    assert "revalidation" in description
+    assert "confirmed" in description
+
+
+@pytest.mark.asyncio
+async def test_cache_status_header_hit(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A copy fetched within the freshness TTL is reported as a hit."""
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+    await _prime_cache(client)
+    # Well inside the one-hour default freshness TTL.
+    await _restamp_date_fetched(datetime.now(tz=UTC) - timedelta(minutes=1))
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-ook-inventory-cache-status"] == "hit"
+    # A hit is served from the cached row alone.
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cache_status_header_stale(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A copy past the freshness TTL is reported as a stale cache serve.
+
+    ``stale`` is what distinguishes this serve from both of the others: the
+    bytes come from the cache, as on a ``hit``, and the row's fetch time is
+    old, which is a fact the response's other headers report but do not
+    interpret against the TTL.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+    await _prime_cache(client)
+    # Well past the one-hour default freshness TTL.
+    await _restamp_date_fetched(datetime.now(tz=UTC) - timedelta(hours=2))
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-ook-inventory-cache-status"] == "stale"
+    # A stale serve is still a cache serve: the retained bytes are served
+    # and the origin is not contacted a second time.
+    assert response.content == INVENTORY_BODY
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cache_status_header_miss(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A cold miss, which fetches the origin to answer, is reported as one.
+
+    A miss cannot be told from a hit by anything else on the response: the
+    fetch it just made stamps a ``date_fetched`` of now, so ``Age`` and
+    ``X-Ook-Inventory-Date-Fetched`` read exactly as they do on a hit.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-ook-inventory-cache-status"] == "miss"
+    # The origin really was fetched during this request.
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cache_status_header_on_304_describes_the_serve(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A 304 reports how Ook obtained the copy it revalidated against.
+
+    The client's validator is the ETag of the inventory bytes, so it can be
+    computed without ever priming the cache: this request is a cold miss
+    that fetches the origin and only then finds the freshly-fetched bytes
+    already held by the client. The header describes Ook's own work, so it
+    reports ``miss`` — the 304 says the client's copy is current, not that
+    Ook's was.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+
+    response = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+        headers={"If-None-Match": _expected_etag(INVENTORY_BODY)},
+    )
+
+    assert response.status_code == 304
+    assert response.headers["x-ook-inventory-cache-status"] == "miss"
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cache_status_header_matches_the_logged_status(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The header and the serve's ``cache_status`` log field agree.
+
+    Both come from the one `InventoryCacheStatus` the service decided the
+    serve under, which is what this asserts: the header is read out of a
+    live response and compared with the log record emitted for that same
+    request, so a second freshness comparison at the handler — the way the
+    two would come to disagree — fails here rather than shipping.
+
+    A stale serve is the case that pins it, since that is the one the
+    handler could most plausibly recompute and get wrong.
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+    await _prime_cache(client)
+    await _restamp_date_fetched(datetime.now(tz=UTC) - timedelta(hours=2))
+
+    with capture_logs() as captured:
+        response = await client.get(
+            f"{config.path_prefix}/intersphinx/inventory",
+            params={"url": INVENTORY_URL},
+        )
+
+    assert response.status_code == 200
+    logged = [
+        event["cache_status"]
+        for event in captured
+        if event.get("url") == INVENTORY_URL and "cache_status" in event
+    ]
+    assert len(logged) == 1
+    assert response.headers["x-ook-inventory-cache-status"] == logged[0]
+
+
+@pytest.mark.asyncio
+async def test_cache_status_header_documented_on_both_responses(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The 200 and 304 responses document the cache-status header.
+
+    Pinned like its two neighbours: the documented schema is a literal —
+    including the exact value set, which is the whole contract of an
+    enumerated header — and the documented name is then looked up in a live
+    response, since the published document is generated *from* the module's
+    own spec object and comparing the two could not fail.
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=INVENTORY_BODY,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+    served = await client.get(
+        f"{config.path_prefix}/intersphinx/inventory",
+        params={"url": INVENTORY_URL},
+    )
+    assert served.status_code == 200
+
+    response = await client.get(f"{config.path_prefix}/openapi.json")
+    assert response.status_code == 200
+    operation = response.json()["paths"][
+        f"{config.path_prefix}/intersphinx/inventory"
+    ]["get"]
+
+    documented = operation["responses"]["200"]["headers"]
+    assert documented["X-Ook-Inventory-Cache-Status"]["schema"] == {
+        "type": "string",
+        "enum": ["hit", "stale", "miss"],
+    }
+    # The documented name is one a live response actually carries, and its
+    # value is one of the documented ones.
+    assert served.headers["X-Ook-Inventory-Cache-Status"] in {
+        "hit",
+        "stale",
+        "miss",
+    }
+    # Both responses document it identically, from the one shared block.
+    assert operation["responses"]["304"]["headers"] == documented
+
+
+@pytest.mark.asyncio
+async def test_openapi_documents_cache_status_header_semantics(
+    client: AsyncClient,
+) -> None:
+    """The description defines all three values, ``stale`` included.
+
+    ``stale`` is the one a client could reasonably misread as a failure, so
+    the description has to say outright that it is a cache serve: a copy
+    retained past its TTL for availability, to be read alongside ``Age``.
+    """
+    response = await client.get(f"{config.path_prefix}/openapi.json")
+    assert response.status_code == 200
+    description = response.json()["paths"][
+        f"{config.path_prefix}/intersphinx/inventory"
+    ]["get"]["description"]
+
+    assert "X-Ook-Inventory-Cache-Status" in description
+    assert "``hit``" in description
+    assert "``stale``" in description
+    assert "``miss``" in description
+    assert "still a cache serve" in description

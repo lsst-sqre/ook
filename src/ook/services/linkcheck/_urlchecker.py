@@ -21,6 +21,13 @@ from ook.domain.linkcheck import (
     LinkCheckOutcome,
     is_supported_url,
 )
+from ook.domain.redirects import (
+    MAX_REDIRECTS,
+    PERMANENT_REDIRECT_CODES,
+    REDIRECT_CODES,
+    TooManyRedirectsError,
+    is_permanent_chain,
+)
 
 __all__ = ["HostResolver", "UrlChecker"]
 
@@ -34,15 +41,6 @@ HostResolver = Callable[[str], Awaitable[Sequence[str]]]
 
 _SUCCESS_CODES = range(200, 300)
 """HTTP status codes counted as a successful resolution."""
-
-_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
-"""HTTP status codes followed as redirects."""
-
-_PERMANENT_REDIRECT_CODES = frozenset({301, 308})
-"""Redirect status codes indicating the source should be updated."""
-
-_MAX_REDIRECTS = 20
-"""Maximum number of redirect hops followed before giving up."""
 
 _RATE_LIMITED_CODE = 429
 """HTTP status code signalling the client is being rate limited."""
@@ -69,13 +67,28 @@ edge mitigation (e.g. a Cloudflare challenge) rather than the origin.
 """
 
 
-class _TooManyRedirectsError(Exception):
-    """The redirect chain exceeded the maximum number of hops."""
-
-
 class _UnsupportedUrlError(Exception):
     """The URL cannot be checked (bad scheme, malformed, or blocked
     host).
+    """
+
+
+class _ResolutionFailedError(Exception):
+    """A URL's host could not be resolved to any address.
+
+    Distinct from `_UnsupportedUrlError`, which parks a URL as
+    ``unsupported`` with no recheck: a name that will not resolve today
+    may resolve tomorrow, so a resolution failure is a plain check
+    failure that stays on the retry ladder.
+    """
+
+
+class _InvalidRedirectError(Exception):
+    """A redirect's ``Location`` could not be resolved to a URL.
+
+    Raised by `_join_redirect_url` in place of the ``httpx.InvalidURL``
+    (or ``UnicodeError``) the join failed with, neither of which is an
+    ``httpx.HTTPError`` that `UrlChecker.check` would otherwise catch.
     """
 
 
@@ -155,12 +168,13 @@ class _FetchResult:
         """
         if not self.redirect_hops:
             return None
-        temporary = [
+        if is_permanent_chain(self.redirect_hops):
+            return self.redirect_hops[0]
+        return next(
             code
             for code in self.redirect_hops
-            if code not in _PERMANENT_REDIRECT_CODES
-        ]
-        return temporary[0] if temporary else self.redirect_hops[0]
+            if code not in PERMANENT_REDIRECT_CODES
+        )
 
 
 class UrlChecker:
@@ -249,14 +263,24 @@ class UrlChecker:
                 result = await self._retry_after_once(url, pinned, result)
         except _UnsupportedUrlError as e:
             return self._unsupported_outcome(str(e))
-        except socket.gaierror as e:
+        except _ResolutionFailedError as e:
             return self._failure_outcome(f"DNS resolution failed: {e}")
+        except _InvalidRedirectError as e:
+            return self._failure_outcome(str(e))
+        except httpx.InvalidURL as e:
+            # httpx resolves a 3xx ``Location`` itself even with
+            # follow_redirects=False, so a target that only overflows the
+            # URL length limit once joined can be raised from inside the
+            # request as well as from this checker's own join.
+            # httpx.InvalidURL is not an httpx.HTTPError, so without this
+            # clause either route escapes check() and, through a batch
+            # gather that does not collect exceptions, takes every other
+            # URL's outcome with it.
+            return self._failure_outcome(_malformed_redirect_detail(e))
         except TimeoutError, httpx.TimeoutException:
             return self._failure_outcome("Request timed out")
-        except _TooManyRedirectsError:
-            return self._failure_outcome(
-                f"Exceeded {_MAX_REDIRECTS} redirects"
-            )
+        except TooManyRedirectsError:
+            return self._failure_outcome(f"Exceeded {MAX_REDIRECTS} redirects")
         except httpx.HTTPError as e:
             return self._failure_outcome(_describe_error(e))
         return self._response_outcome(result)
@@ -354,29 +378,34 @@ class UrlChecker:
         current_url = url
         current_pinned = pinned
         hops: list[int] = []
-        for _ in range(_MAX_REDIRECTS + 1):
+        while True:
             response = await self._send(method, current_url, current_pinned)
-            location = response.headers.get("Location")
-            if response.status_code in _REDIRECT_CODES and location:
-                hops.append(response.status_code)
-                current_url = str(httpx.URL(current_url).join(location))
-                # The caller guards the original URL; guard each redirect
-                # target before it is fetched, pinning the next hop's
-                # connection to the address the guard validated.
-                current_pinned = await self._resolve_and_validate(current_url)
-                continue
-            return _FetchResult(
-                status_code=response.status_code,
-                final_url=current_url,
-                redirect_hops=hops,
-                diagnostic_headers={
-                    name: response.headers[name]
-                    for name in _DIAGNOSTIC_HEADERS
-                    if name in response.headers
-                },
-                retry_after=response.headers.get("Retry-After"),
-            )
-        raise _TooManyRedirectsError
+            location = _first_location(response.headers)
+            if response.status_code not in REDIRECT_CODES or not location:
+                return _FetchResult(
+                    status_code=response.status_code,
+                    final_url=current_url,
+                    redirect_hops=hops,
+                    diagnostic_headers={
+                        name: response.headers[name]
+                        for name in _DIAGNOSTIC_HEADERS
+                        if name in response.headers
+                    },
+                    retry_after=response.headers.get("Retry-After"),
+                )
+            if len(hops) >= MAX_REDIRECTS:
+                # Give up on the hop count alone, before joining or
+                # guarding a target this fetch will never request, so the
+                # reported outcome never depends on a URL already ruled
+                # out — a guard rejection would park the URL as
+                # ``unsupported`` with no recheck at all.
+                raise TooManyRedirectsError
+            hops.append(response.status_code)
+            current_url = _join_redirect_url(current_url, location)
+            # The caller guards the original URL; guard each redirect
+            # target before it is fetched, pinning the next hop's
+            # connection to the address the guard validated.
+            current_pinned = await self._resolve_and_validate(current_url)
 
     async def _send(
         self, method: str, url: str, pinned: str
@@ -507,7 +536,7 @@ class UrlChecker:
         _UnsupportedUrlError
             Raised if the URL has an unsupported scheme, is malformed,
             or its host resolves to a non-public address.
-        socket.gaierror
+        _ResolutionFailedError
             Raised if the hostname cannot be resolved.
         """
         if not is_supported_url(url):
@@ -522,14 +551,25 @@ class UrlChecker:
             addresses = [ipaddress.ip_address(host)]
         except ValueError:
             # Not an IP literal: resolve the hostname.
-            resolved = list(await self._resolve_host(host))
+            try:
+                resolved = list(await self._resolve_host(host))
+            except (OSError, UnicodeError) as e:
+                # getaddrinfo reports an unknown host or a transient DNS
+                # failure as socket.gaierror (an OSError), and a host
+                # label IDNA cannot encode — an empty label, or an
+                # all-ASCII one over 63 characters, both of which survive
+                # is_supported_url and httpx's own parsing — as
+                # UnicodeEncodeError. Neither is an httpx.HTTPError, and
+                # only the first was ever caught by check(); funnelling
+                # both into one failure here keeps a hostile hostname
+                # from escaping check() and taking every other URL's
+                # outcome in the batch with it.
+                raise _ResolutionFailedError(_describe_error(e)) from e
             addresses = [ipaddress.ip_address(a) for a in resolved]
         else:
             resolved = [host]
         if not addresses:
-            raise socket.gaierror(
-                socket.EAI_NODATA, f"No addresses found for {host!r}"
-            )
+            raise _ResolutionFailedError(f"No addresses found for {host!r}")
         for address in addresses:
             # For IPv4-mapped IPv6 addresses, guard the embedded IPv4
             # address rather than the IPv6 wrapper.
@@ -582,6 +622,62 @@ def _parse_retry_after(value: str) -> float | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return (parsed - datetime.now(tz=UTC)).total_seconds()
+
+
+def _first_location(headers: httpx.Headers) -> str | None:
+    """Return the first ``Location`` header value, or None if there is none.
+
+    ``headers.get("Location")`` concatenates repeated headers with ``", "``,
+    per RFC 9110 §5.2, which is right for a list-valued field and wrong for
+    this one: ``Location`` is singular (RFC 9110 §10.2.2), so the
+    concatenation is not a value the origin ever sent. Joined against the
+    current hop it percent-encodes into one URL naming neither target, which
+    keeps the origin's host often enough to pass the SSRF guard, get fetched,
+    and 404 — reporting a working link as broken. Taking the first value
+    follows a target the origin actually named.
+
+    Mirrored by the intersphinx cache's hop loop rather than shared through
+    `ook.domain.redirects`, for the same reason `_join_redirect_url` is: that
+    module holds redirect *policy* and would have to take an httpx dependency
+    into the domain layer to hold a helper over ``httpx.Headers``.
+    """
+    values = headers.get_list("Location")
+    return values[0] if values else None
+
+
+def _join_redirect_url(current_url: str, location: str) -> str:
+    """Resolve a redirect's ``Location`` against the hop that sent it.
+
+    httpx builds a redirect request for every 3xx carrying a
+    ``Location``, even with ``follow_redirects=False``, and reports a
+    ``Location`` it cannot parse as an ``httpx.RemoteProtocolError``
+    before the response is ever returned — so in practice this join only
+    sees targets httpx has already accepted. This conversion is the
+    backstop for the residue (a relative target that overflows the URL
+    length limit only once joined) and for that httpx behavior changing.
+    Neither ``httpx.InvalidURL`` nor ``UnicodeError`` is an
+    ``httpx.HTTPError``, so an unconverted join failure would leave
+    `UrlChecker.check` to classify a raw transport-library error, or —
+    for the ``UnicodeError`` — not classify it at all.
+
+    The intersphinx cache's twin hop loop converts the same join failure
+    the same way, so an identical chain is classified identically by both
+    services.
+
+    Raises
+    ------
+    _InvalidRedirectError
+        Raised when the ``Location`` cannot be resolved to a valid URL.
+    """
+    try:
+        return str(httpx.URL(current_url).join(location))
+    except (httpx.InvalidURL, UnicodeError) as e:
+        raise _InvalidRedirectError(_malformed_redirect_detail(e)) from e
+
+
+def _malformed_redirect_detail(error: Exception) -> str:
+    """Format the error detail for a redirect target that is not a URL."""
+    return f"Redirect target is malformed: {error}"
 
 
 def _describe_error(error: Exception) -> str:

@@ -82,9 +82,15 @@ class LinkCheckTooManyUrlsError(ClientRequestError):
 class InvalidInventoryUrlError(ClientRequestError):
     """Raised when an intersphinx inventory URL fails the SSRF guard.
 
-    A URL is rejected if it does not use ``https`` or if its host resolves
-    to a private, link-local, or loopback address. Rejected URLs are never
-    fetched from upstream and never stored in the cache.
+    A URL is rejected if no parser accepts it, if it does not use ``https``,
+    or if its host resolves to a private, link-local, or loopback address.
+    Rejected URLs are never fetched from upstream and never stored in the
+    cache.
+
+    Each of those is a fact about the URL the client chose, and so
+    something the client can fix. A well-formed URL whose host merely will
+    not resolve is not: that is reported as an `UpstreamInventoryError`
+    instead, matching how the same failure on a redirect hop is classified.
     """
 
     error = "invalid_inventory_url"

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, LargeBinary, UnicodeText
+from sqlalchemy import BigInteger, Boolean, DateTime, LargeBinary, UnicodeText
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -87,4 +87,43 @@ class SqlIntersphinxInventory(Base):
     )
     """A description of the last fetch failure, or null if the last fetch
     succeeded.
+    """
+
+    resolved_url: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True
+    )
+    """The terminal URL the last fetch's redirect chain ended at, or null
+    when the chain did not redirect.
+
+    Nullable with no backfill: rows cached before this column existed
+    populate on their next fetch or refresh.
+    """
+
+    resolved_redirect_permanent: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    """Whether the last fetch's redirect chain was entirely permanent.
+
+    True when every hop was a 301 or 308, false when any hop was temporary,
+    and null when the chain did not redirect.
+    """
+
+    date_refresh_failed: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    """The time of the most recent failed proactive refresh (the refresh
+    job's backoff marker), or null when no refresh failure is outstanding.
+
+    Refresh-path failures only, so null does not mean the last fetch
+    succeeded: a request-path failure writes a ``failure`` status but leaves
+    this null, because ``date_fetched`` already dates it. See
+    `ook.domain.intersphinx.IntersphinxInventory.date_refresh_failed`.
+
+    Unindexed, unlike the other timestamps: it is a residual filter on the
+    due-list query rather than a driver of it, over a table of at most a few
+    thousand rows.
+
+    Nullable with no backfill: null is the meaningful "no refresh failure is
+    outstanding" value, so rows cached before this column existed are simply
+    eligible for their next refresh.
     """

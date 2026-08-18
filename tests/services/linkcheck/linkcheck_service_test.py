@@ -20,7 +20,7 @@ from ook.domain.linkcheck import (
     UrlOccurrence,
 )
 from ook.factory import Factory
-from ook.services.linkcheck import LinkCheckService, UrlChecker
+from ook.services.linkcheck import HostResolver, LinkCheckService, UrlChecker
 
 PUBLIC_IP = "93.184.216.34"
 """A public (globally-routable) IPv4 address for fake DNS resolution."""
@@ -32,7 +32,10 @@ async def _resolve_public(host: str) -> Sequence[str]:
 
 
 def make_service(
-    factory: Factory, http_client: httpx.AsyncClient
+    factory: Factory,
+    http_client: httpx.AsyncClient,
+    *,
+    resolve_host: HostResolver = _resolve_public,
 ) -> LinkCheckService:
     """Create a LinkCheckService whose UrlChecker uses the given client
     and a fake DNS resolver, so tests never touch the network.
@@ -45,7 +48,7 @@ def make_service(
         max_concurrency=10,
         host_interval=timedelta(seconds=0),
         user_agent=config.linkcheck_user_agent,
-        resolve_host=_resolve_public,
+        resolve_host=resolve_host,
     )
     return LinkCheckService(
         linkcheck_store=factory.create_linkcheck_store(),
@@ -145,6 +148,55 @@ async def test_execute_check_never_ok_failure_is_broken(
             assert report.status is CheckRunStatus.complete
             (url_report,) = report.urls
             assert url_report.status is CheckUrlStatus.broken
+
+
+@pytest.mark.asyncio
+async def test_execute_check_unresolvable_host_preserves_the_batch(
+    factory: Factory,
+) -> None:
+    """One URL whose host cannot be resolved does not discard the batch.
+
+    ``getaddrinfo`` reports an IDNA-unencodable host as
+    ``UnicodeEncodeError``. The batch's ``asyncio.gather`` does not
+    collect exceptions, so one that escapes the checker would abort every
+    other URL's outcome and roll the whole check back to pending, where
+    redelivery deterministically re-fails.
+    """
+    unencodable = f"https://{'a' * 70}.example.com/page"
+
+    async def resolve_host(host: str) -> Sequence[str]:
+        if host.startswith("a" * 70):
+            raise UnicodeEncodeError(
+                "idna", host, 0, len(host), "label too long"
+            )
+        return [PUBLIC_IP]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc, resolve_host=resolve_host)
+        async with factory.db_session.begin():
+            submission = await service.submit_check(
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
+                urls=[
+                    SubmittedUrl(url=unencodable, origin_paths=["a"]),
+                    SubmittedUrl(
+                        url="https://example.com/page", origin_paths=["a"]
+                    ),
+                ],
+            )
+            await service.execute_check(submission.check_id)
+
+            report = await service.get_check_report(submission.check_id)
+            assert report is not None
+            assert report.status is CheckRunStatus.complete
+            statuses = {
+                url_report.url: url_report.status for url_report in report.urls
+            }
+            assert statuses[unencodable] is CheckUrlStatus.broken
+            assert statuses["https://example.com/page"] is CheckUrlStatus.ok
 
 
 @pytest.mark.asyncio

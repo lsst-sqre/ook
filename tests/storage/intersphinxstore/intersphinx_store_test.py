@@ -26,6 +26,9 @@ def _make_inventory(
         InventoryFetchStatus.success
     ),
     last_fetch_error: str | None = None,
+    resolved_url: str | None = None,
+    resolved_redirect_permanent: bool | None = None,
+    date_refresh_failed: datetime | None = None,
 ) -> IntersphinxInventory:
     return IntersphinxInventory(
         url=url,
@@ -37,6 +40,9 @@ def _make_inventory(
         date_requested=date_requested,
         last_fetch_status=last_fetch_status,
         last_fetch_error=last_fetch_error,
+        resolved_url=resolved_url,
+        resolved_redirect_permanent=resolved_redirect_permanent,
+        date_refresh_failed=date_refresh_failed,
     )
 
 
@@ -56,6 +62,31 @@ async def test_upsert_get_roundtrip(factory: Factory) -> None:
 
         stored = await store.get_inventory(url)
         assert stored == inventory
+
+
+@pytest.mark.asyncio
+async def test_upsert_stores_resolved_redirect(factory: Factory) -> None:
+    """An upsert round-trips the resolved redirect columns."""
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://docs.example.com/en/latest/objects.inv"
+
+        inventory = _make_inventory(
+            url,
+            date_fetched=now,
+            date_requested=now,
+            resolved_url="https://docs.example.com/en/21/objects.inv",
+            resolved_redirect_permanent=False,
+        )
+        await store.upsert_inventory(inventory)
+
+        stored = await store.get_inventory(url)
+        assert stored is not None
+        assert (
+            stored.resolved_url == "https://docs.example.com/en/21/objects.inv"
+        )
+        assert stored.resolved_redirect_permanent is False
 
 
 @pytest.mark.asyncio
@@ -149,6 +180,8 @@ async def test_failure_upsert_preserves_existing_content(
             etag='"good-etag"',
             date_fetched=now,
             date_requested=now,
+            resolved_url="https://docs.example.com/en/21/objects.inv",
+            resolved_redirect_permanent=True,
         )
         await store.upsert_inventory(good)
 
@@ -168,7 +201,99 @@ async def test_failure_upsert_preserves_existing_content(
         )
 
         stored = await store.get_inventory(url)
+        # The good row's resolved-redirect columns survive the skipped write
+        # alongside its content: the negative-cache write clears nothing.
         assert stored == good
+
+
+@pytest.mark.asyncio
+async def test_failure_upsert_leaves_resolved_columns_null(
+    factory: Factory,
+) -> None:
+    """A negative-cache row carries no resolved-redirect information.
+
+    A failure row has no content and no resolved chain, so both columns
+    stay null rather than recording whatever chain the failed attempt
+    happened to walk.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://down.example.com/objects.inv"
+
+        await store.upsert_fetch_failure(
+            _make_inventory(
+                url,
+                content=None,
+                content_type=None,
+                etag=None,
+                last_modified=None,
+                date_fetched=now,
+                date_requested=now,
+                last_fetch_status=InventoryFetchStatus.failure,
+                last_fetch_error="502 Bad Gateway",
+            )
+        )
+
+        stored = await store.get_inventory(url)
+        assert stored is not None
+        assert stored.resolved_url is None
+        assert stored.resolved_redirect_permanent is None
+
+
+@pytest.mark.asyncio
+async def test_failure_upsert_leaves_refresh_backoff_null(
+    factory: Factory,
+) -> None:
+    """A request-path failure write leaves ``date_refresh_failed`` null.
+
+    The marker is a refresh-path record: it holds a row out of the due list
+    for a TTL after a *proactive* refresh failed. A cold-miss failure dates
+    itself with ``date_fetched`` instead, so a marker written here would
+    back a request-path failure off the refresh cadence for a TTL on top of
+    its negative TTL — and nothing else reads the two together, so the row
+    would simply stop being retried. The row is seeded with a marker already
+    set, so what is asserted is what this write does rather than what its
+    caller happened to pass in.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://down.example.com/objects.inv"
+
+        # A contentless row already backed off by a failed refresh.
+        await store.upsert_inventory(
+            _make_inventory(
+                url,
+                content=None,
+                content_type=None,
+                etag=None,
+                last_modified=None,
+                date_fetched=now - timedelta(hours=2),
+                date_requested=now - timedelta(hours=2),
+                last_fetch_status=InventoryFetchStatus.failure,
+                last_fetch_error="502 Bad Gateway",
+                date_refresh_failed=now - timedelta(hours=1),
+            )
+        )
+
+        await store.upsert_fetch_failure(
+            _make_inventory(
+                url,
+                content=None,
+                content_type=None,
+                etag=None,
+                last_modified=None,
+                date_fetched=now,
+                date_requested=now,
+                last_fetch_status=InventoryFetchStatus.failure,
+                last_fetch_error="502 Bad Gateway",
+            )
+        )
+
+        stored = await store.get_inventory(url)
+        assert stored is not None
+        assert stored.date_refresh_failed is None
 
 
 @pytest.mark.asyncio
@@ -305,8 +430,11 @@ async def test_update_refresh_outcome_preserves_date_requested(
             last_modified="Fri, 10 Jul 2026 00:00:00 GMT",
             date_fetched=now,
         )
-        await store.update_refresh_outcome(refreshed)
+        landed = await store.update_refresh_outcome(
+            refreshed, expected_date_fetched=stale_read.date_fetched
+        )
 
+        assert landed is True
         stored = await store.get_inventory(url)
         assert stored is not None
         # The concurrent client's newer date_requested is preserved, not
@@ -317,6 +445,402 @@ async def test_update_refresh_outcome_preserves_date_requested(
         assert stored.etag == '"new-etag"'
         assert stored.last_modified == "Fri, 10 Jul 2026 00:00:00 GMT"
         assert stored.date_fetched == now
+
+
+@pytest.mark.asyncio
+async def test_update_refresh_outcome_rewrites_resolved_redirect(
+    factory: Factory,
+) -> None:
+    """A refresh-outcome write replaces the stored resolved-redirect state.
+
+    The chain an inventory redirects through can change between fetches, so
+    the refresh path overwrites both columns from the chain it just walked
+    rather than carrying the stored values forward.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://docs.example.com/en/latest/objects.inv"
+
+        seeded = _make_inventory(
+            url,
+            date_fetched=now - timedelta(hours=2),
+            date_requested=now - timedelta(days=1),
+            resolved_url="https://docs.example.com/en/20/objects.inv",
+            resolved_redirect_permanent=True,
+        )
+        await store.upsert_inventory(seeded)
+
+        await store.update_refresh_outcome(
+            replace(
+                seeded,
+                date_fetched=now,
+                resolved_url="https://docs.example.com/en/21/objects.inv",
+                resolved_redirect_permanent=False,
+            ),
+            expected_date_fetched=seeded.date_fetched,
+        )
+
+        stored = await store.get_inventory(url)
+        assert stored is not None
+        assert (
+            stored.resolved_url == "https://docs.example.com/en/21/objects.inv"
+        )
+        assert stored.resolved_redirect_permanent is False
+
+
+@pytest.mark.asyncio
+async def test_update_refresh_outcome_skips_a_row_fetched_since(
+    factory: Factory,
+) -> None:
+    """A refresh-outcome write is dropped when the row was fetched since.
+
+    The refresh path builds its write from the snapshot the due-list read
+    returned, and a row in the due list is stale by construction, so a client
+    cold miss can fetch and commit good content while this refresh's own
+    fetch is still in flight. Writing the snapshot's columns back afterwards
+    would revert that content — and stamp the reverted bytes fresh, hiding
+    the regression for a whole TTL. Guarding on the freshness anchor the
+    due-list read saw makes the late write a no-op instead, the same spirit
+    as `upsert_fetch_failure`'s ``content IS NULL`` guard.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://docs.example.com/en/latest/objects.inv"
+
+        # The snapshot the refresh path reads from the due list.
+        stale_read = _make_inventory(
+            url,
+            content=b"stale payload",
+            etag='"stale-etag"',
+            date_fetched=now - timedelta(hours=2),
+            date_requested=now - timedelta(days=1),
+        )
+        await store.upsert_inventory(stale_read)
+
+        # A client cold miss commits good content inside the fetch window.
+        winner = replace(
+            stale_read,
+            content=b"concurrent payload",
+            etag='"concurrent-etag"',
+            date_fetched=now,
+        )
+        await store.upsert_inventory(winner)
+
+        landed = await store.update_refresh_outcome(
+            replace(stale_read, date_fetched=now + timedelta(seconds=1)),
+            expected_date_fetched=stale_read.date_fetched,
+        )
+
+        assert landed is False
+        stored = await store.get_inventory(url)
+        assert stored is not None
+        # The winning cold miss's row stands, untouched.
+        assert stored == winner
+
+
+@pytest.mark.asyncio
+async def test_update_revalidation_outcome_leaves_content_alone(
+    factory: Factory,
+) -> None:
+    """A ``304`` write re-dates the copy without rewriting its bytes.
+
+    A revalidation's whole purpose is not to move the content, so its write
+    must not rewrite the blob and validators it read at due-list time.
+    Rewriting them forces a TOAST and WAL rewrite of the unchanged body per
+    revalidated inventory per run, and makes the write a revert vector for
+    anything committed against those columns since the read. The record
+    passed in here carries deliberately wrong content to prove the columns
+    are not in the write at all.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://docs.example.com/en/latest/objects.inv"
+
+        seeded = _make_inventory(
+            url,
+            content=b"stored payload",
+            content_type="application/octet-stream",
+            etag='"stored-etag"',
+            last_modified="Wed, 01 Jan 2025 00:00:00 GMT",
+            date_fetched=now - timedelta(hours=2),
+            date_requested=now - timedelta(days=1),
+            last_fetch_status=InventoryFetchStatus.failure,
+            last_fetch_error="Upstream returned HTTP 500 for the inventory",
+            date_refresh_failed=now - timedelta(hours=1),
+        )
+        await store.upsert_inventory(seeded)
+
+        landed = await store.update_revalidation_outcome(
+            replace(
+                seeded,
+                content=b"must not be written",
+                content_type="text/plain",
+                etag='"must-not-be-written"',
+                last_modified="Fri, 10 Jul 2026 00:00:00 GMT",
+                date_fetched=now,
+                last_fetch_status=InventoryFetchStatus.success,
+                last_fetch_error=None,
+                resolved_url="https://docs.example.com/en/21/objects.inv",
+                resolved_redirect_permanent=True,
+                date_refresh_failed=None,
+            ),
+            expected_date_fetched=seeded.date_fetched,
+        )
+
+        assert landed is True
+        stored = await store.get_inventory(url)
+        assert stored is not None
+        # The body and the validators minted with it are untouched.
+        assert stored.content == b"stored payload"
+        assert stored.content_type == "application/octet-stream"
+        assert stored.etag == '"stored-etag"'
+        assert stored.last_modified == "Wed, 01 Jan 2025 00:00:00 GMT"
+        # Everything a revalidation does change is written.
+        assert stored.date_fetched == now
+        assert stored.last_fetch_status is InventoryFetchStatus.success
+        assert stored.last_fetch_error is None
+        assert (
+            stored.resolved_url == "https://docs.example.com/en/21/objects.inv"
+        )
+        assert stored.resolved_redirect_permanent is True
+        assert stored.date_refresh_failed is None
+        # And date_requested still belongs to the request path.
+        assert stored.date_requested == seeded.date_requested
+
+
+@pytest.mark.asyncio
+async def test_update_revalidation_outcome_skips_a_row_fetched_since(
+    factory: Factory,
+) -> None:
+    """A ``304`` write is dropped when the row was fetched since.
+
+    The content columns are out of this write, but the rest would still land
+    on a row a concurrent cold miss replaced: a ``304`` answering *this*
+    refresh's validators says nothing about the copy that cold miss stored,
+    so re-dating it fresh and recording this chain against it would describe
+    bytes the fetch never saw.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://docs.example.com/en/latest/objects.inv"
+
+        stale_read = _make_inventory(
+            url,
+            date_fetched=now - timedelta(hours=2),
+            date_requested=now - timedelta(days=1),
+        )
+        await store.upsert_inventory(stale_read)
+
+        winner = replace(
+            stale_read,
+            content=b"concurrent payload",
+            etag='"concurrent-etag"',
+            date_fetched=now,
+        )
+        await store.upsert_inventory(winner)
+
+        landed = await store.update_revalidation_outcome(
+            replace(
+                stale_read,
+                date_fetched=now + timedelta(seconds=1),
+                resolved_url="https://docs.example.com/en/21/objects.inv",
+            ),
+            expected_date_fetched=stale_read.date_fetched,
+        )
+
+        assert landed is False
+        stored = await store.get_inventory(url)
+        assert stored is not None
+        assert stored == winner
+
+
+@pytest.mark.asyncio
+async def test_update_refresh_failure_keeps_the_stored_copy(
+    factory: Factory,
+) -> None:
+    """A refresh-failure write records the attempt and changes nothing else.
+
+    The failure must not clear the content, its validators, its
+    resolved-redirect columns, or the ``date_fetched`` freshness anchor: the
+    stored copy keeps serving stale and keeps reporting its true age. Only
+    the failure columns and the backoff marker move.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://docs.example.com/en/latest/objects.inv"
+
+        seeded = _make_inventory(
+            url,
+            content=b"kept payload",
+            date_fetched=now - timedelta(hours=2),
+            date_requested=now - timedelta(days=1),
+            resolved_url="https://docs.example.com/en/21/objects.inv",
+            resolved_redirect_permanent=True,
+        )
+        await store.upsert_inventory(seeded)
+
+        detail = "Upstream returned HTTP 500 for the inventory"
+        recorded = await store.update_refresh_failure(
+            url,
+            now=now,
+            error=detail,
+            expected_date_fetched=seeded.date_fetched,
+        )
+
+        assert recorded is True
+        stored = await store.get_inventory(url)
+        assert stored == replace(
+            seeded,
+            last_fetch_status=InventoryFetchStatus.failure,
+            last_fetch_error=detail,
+            date_refresh_failed=now,
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_refresh_failure_skips_a_concurrently_updated_row(
+    factory: Factory,
+) -> None:
+    """A refresh failure does not write a row that changed since it was read.
+
+    A negative-cache row in the due list is by construction past its negative
+    TTL, so a client cold miss can fetch it successfully while the refresh
+    job's own fetch is still failing. Landing the failure write last would
+    leave fresh content behind a ``failure`` status, a stale error, and a
+    backoff marker — the cross-column shape the domain model rules out. The
+    optimistic guard on ``date_fetched`` makes the late write a no-op instead.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://docs.example.com/en/latest/objects.inv"
+
+        # The row as the due-list read saw it.
+        due_list_read = _make_inventory(
+            url,
+            content=None,
+            etag=None,
+            last_modified=None,
+            date_fetched=now - timedelta(hours=2),
+            date_requested=now - timedelta(days=1),
+            last_fetch_status=InventoryFetchStatus.failure,
+            last_fetch_error="Upstream request for the inventory timed out",
+        )
+        await store.upsert_inventory(due_list_read)
+
+        # A concurrent cold miss stores good content while the refresh job's
+        # fetch is still failing.
+        concurrent = replace(
+            due_list_read,
+            content=b"fresh payload",
+            etag='"fresh-etag"',
+            date_fetched=now,
+            date_requested=now,
+            last_fetch_status=InventoryFetchStatus.success,
+            last_fetch_error=None,
+        )
+        await store.upsert_inventory(concurrent)
+
+        recorded = await store.update_refresh_failure(
+            url,
+            now=now,
+            error="Upstream returned HTTP 500 for the inventory",
+            expected_date_fetched=due_list_read.date_fetched,
+        )
+
+        assert recorded is False
+        stored = await store.get_inventory(url)
+        assert stored == concurrent
+
+
+@pytest.mark.asyncio
+async def test_update_refresh_failure_matches_a_never_fetched_row(
+    factory: Factory,
+) -> None:
+    """The guard matches a row whose ``date_fetched`` is null.
+
+    ``date_fetched = NULL`` is a real state — a row a client requested but no
+    fetch has ever populated — so the guard has to compare it as a value
+    rather than through SQL's three-valued equality, which would never match
+    and would silently drop every such row's backoff.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://docs.example.com/en/latest/objects.inv"
+
+        await store.upsert_inventory(
+            _make_inventory(
+                url,
+                content=None,
+                etag=None,
+                last_modified=None,
+                date_fetched=None,
+                date_requested=now - timedelta(days=1),
+                last_fetch_status=None,
+            )
+        )
+
+        recorded = await store.update_refresh_failure(
+            url,
+            now=now,
+            error="Upstream returned HTTP 500 for the inventory",
+            expected_date_fetched=None,
+        )
+
+        assert recorded is True
+        stored = await store.get_inventory(url)
+        assert stored is not None
+        assert stored.date_refresh_failed == now
+
+
+@pytest.mark.asyncio
+async def test_recently_failed_inventory_is_not_due(factory: Factory) -> None:
+    """A recently-failed inventory is held out of the due list for the TTL.
+
+    Both rows below are stale and active, so only the recorded failure time
+    separates them. Without the backoff a broken inventory would be selected
+    on every run and — sorting stalest-fetch-first — ahead of every healthy
+    one.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        ttl = timedelta(hours=1)
+        active_window = timedelta(days=30)
+
+        await store.upsert_inventory(
+            _make_inventory(
+                "https://backing-off.example.com/objects.inv",
+                date_fetched=now - timedelta(days=1),
+                date_requested=now - timedelta(hours=1),
+                last_fetch_status=InventoryFetchStatus.failure,
+                last_fetch_error="Upstream request timed out",
+                date_refresh_failed=now - timedelta(minutes=10),
+            )
+        )
+        await store.upsert_inventory(
+            _make_inventory(
+                "https://retryable.example.com/objects.inv",
+                date_fetched=now - timedelta(days=1),
+                date_requested=now - timedelta(hours=1),
+                last_fetch_status=InventoryFetchStatus.failure,
+                last_fetch_error="Upstream request timed out",
+                date_refresh_failed=now - timedelta(hours=2),
+            )
+        )
+
+        due = await store.get_stale_active_inventories(
+            now=now, ttl=ttl, active_window=active_window
+        )
+        assert [inv.url for inv in due] == [
+            "https://retryable.example.com/objects.inv"
+        ]
 
 
 @pytest.mark.asyncio
