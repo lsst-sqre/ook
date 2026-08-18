@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Query, Response
+from safir.datetime import isodatetime
 
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
@@ -29,10 +30,11 @@ PERMANENT_REDIRECT_HEADER_SPEC = {
         "schema": {"type": "string", "format": "uri"},
     }
 }
-"""OpenAPI ``headers`` block for the permanent-redirect header.
+"""OpenAPI ``headers`` entry for the permanent-redirect header.
 
-Defined once and shared by every response that can carry the header, so
-the documented shape cannot drift between them.
+Merged into `INVENTORY_CACHE_HEADERS_SPEC`, which is what the responses
+reference, so the header is documented once for every shape that carries
+it.
 """
 
 MAX_PERMANENT_REDIRECT_URL_LENGTH = 2048
@@ -44,6 +46,37 @@ typical ingress (ingress-nginx defaults to a 4k/8k ``proxy_buffer_size``).
 A multi-kilobyte header would turn every cache hit for that row into an
 ingress-level 502 that Ook itself logs as a successful serve, so anything
 past this sanity bound is dropped.
+"""
+
+DATE_FETCHED_HEADER = "X-Ook-Inventory-Date-Fetched"
+"""Header naming when Ook last confirmed this inventory with its origin."""
+
+DATE_FETCHED_HEADER_SPEC = {
+    DATE_FETCHED_HEADER: {
+        "description": (
+            "When Ook last confirmed this inventory with its origin, as an"
+            " RFC 3339 UTC timestamp. Absent when the cached row records no"
+            " fetch at all."
+        ),
+        "schema": {"type": "string", "format": "date-time"},
+    }
+}
+"""OpenAPI ``headers`` entry for the date-fetched header.
+
+Merged into `INVENTORY_CACHE_HEADERS_SPEC`, which is what the responses
+reference, so the header is documented once for every shape that carries
+it.
+"""
+
+INVENTORY_CACHE_HEADERS_SPEC = {
+    **PERMANENT_REDIRECT_HEADER_SPEC,
+    **DATE_FETCHED_HEADER_SPEC,
+}
+"""OpenAPI ``headers`` block for every header served from the cached row.
+
+All of them ride the ``200`` and the ``304`` alike, so both responses
+reference this one object instead of each assembling its own set — which is
+how a header comes to be documented on one shape and not the other.
 """
 
 
@@ -104,6 +137,34 @@ def _permanent_redirect_headers(
     return {PERMANENT_REDIRECT_HEADER: inventory.resolved_url}
 
 
+def _date_fetched_headers(
+    inventory: IntersphinxInventory,
+) -> dict[str, str]:
+    """Return the date-fetched header, if the row records a fetch at all.
+
+    The value is the same ``date_fetched`` anchor the ``Age`` header counts
+    from, so the two never disagree: one states the observation absolutely,
+    the other relative to now.
+
+    A row with no recorded fetch gets no header at all. This is deliberately
+    unlike the ``Age`` computation, which falls back to ``0`` and so reports
+    a copy of unknown age as freshly fetched; a missing observation is
+    reported as missing rather than as a plausible-looking placeholder.
+
+    The timestamp is normalized to UTC before formatting rather than
+    assuming the store hands back a UTC ``tzinfo``: `safir.datetime`'s
+    `isodatetime` raises on anything else, and that would be a 500 on a
+    servable cache hit.
+    """
+    if inventory.date_fetched is None:
+        return {}
+    return {
+        DATE_FETCHED_HEADER: isodatetime(
+            inventory.date_fetched.astimezone(UTC)
+        )
+    }
+
+
 @router.get(
     "/inventory",
     summary="Get a cached intersphinx inventory",
@@ -114,6 +175,28 @@ def _permanent_redirect_headers(
         " stored content type and an ``Age`` header giving the seconds"
         " since the inventory was fetched from the origin. A cold-miss"
         " upstream failure returns a 502 and is negatively cached."
+        "\n\n"
+        "The response also carries an"
+        " ``X-Ook-Inventory-Date-Fetched`` header giving that same"
+        " freshness anchor as an absolute RFC 3339 UTC timestamp"
+        " (``2026-08-18T17:58:24Z``) rather than as a count of seconds"
+        " back from now. It is carried on a ``304`` as well as a"
+        " ``200`` — ``Age`` rides the ``200`` alone — so a client that"
+        " only ever revalidates still learns when its copy was last"
+        " confirmed. The two headers always read the same anchor, so"
+        " ``Age`` is the whole seconds elapsed since the time this"
+        " header names."
+        "\n\n"
+        "That anchor is when Ook last **confirmed** the inventory with"
+        " its origin, not when the bytes being served were downloaded:"
+        " a background refresh whose conditional revalidation is"
+        " answered ``304 Not Modified`` keeps the stored bytes and"
+        " advances the anchor, which is the same thing ``Age`` has"
+        " always reported. A cached row that records no fetch at all"
+        " carries no ``X-Ook-Inventory-Date-Fetched`` header rather"
+        " than a placeholder — unlike ``Age``, which falls back to"
+        " ``0`` on such a row and so reports a copy of unknown age as"
+        " freshly fetched."
         "\n\n"
         "Redirects are followed when fetching the origin. If the chain"
         " was made up entirely of permanent redirects (301 or 308), the"
@@ -156,14 +239,14 @@ def _permanent_redirect_headers(
         200: {
             "content": {"application/octet-stream": {}},
             "description": "The cached inventory bytes.",
-            "headers": PERMANENT_REDIRECT_HEADER_SPEC,
+            "headers": INVENTORY_CACHE_HEADERS_SPEC,
         },
         304: {
             "description": (
                 "The client's ``If-None-Match`` validator matches the"
                 " currently-cached inventory; no body is returned."
             ),
-            "headers": PERMANENT_REDIRECT_HEADER_SPEC,
+            "headers": INVENTORY_CACHE_HEADERS_SPEC,
         },
         502: {"description": "The origin inventory could not be fetched."},
     },
@@ -219,23 +302,29 @@ async def get_intersphinx_inventory(
     content = inventory.content or b""
     etag = f'"{hashlib.sha256(content).hexdigest()}"'
 
+    # Facts about the cached row itself, carried on both response shapes:
+    # a permanently-moved inventory URL, and when that row was last
+    # confirmed with its origin. A client that holds the current bytes only
+    # ever revalidates, so anything reported on the 200 alone would reach it
+    # exactly once. ``Age`` is the deliberate exception — it is the 200's
+    # own freshness statement about a body, and a bodyless 304 has none.
+    cache_headers = {
+        **_permanent_redirect_headers(inventory),
+        **_date_fetched_headers(inventory),
+    }
+
     # Conditional-request handling: when the client already holds the
     # currently-cached representation, revalidate cheaply with a bodyless 304
     # that carries only the ETag (not the Age-bearing 200 response shape).
-    # A permanently-moved inventory URL is reported on both response
-    # shapes, so a client that only ever revalidates still learns its
-    # configured URL is stale.
-    redirect_headers = _permanent_redirect_headers(inventory)
-
     if if_none_match is not None and _if_none_match_matches(
         if_none_match, etag
     ):
         return Response(
-            status_code=304, headers={"ETag": etag, **redirect_headers}
+            status_code=304, headers={"ETag": etag, **cache_headers}
         )
 
     return Response(
         content=inventory.content,
         media_type=inventory.content_type or "application/octet-stream",
-        headers={"Age": str(age), "ETag": etag, **redirect_headers},
+        headers={"Age": str(age), "ETag": etag, **cache_headers},
     )
