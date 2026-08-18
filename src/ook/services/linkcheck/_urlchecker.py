@@ -380,7 +380,7 @@ class UrlChecker:
         hops: list[int] = []
         while True:
             response = await self._send(method, current_url, current_pinned)
-            location = response.headers.get("Location")
+            location = _first_location(response.headers)
             if response.status_code not in REDIRECT_CODES or not location:
                 return _FetchResult(
                     status_code=response.status_code,
@@ -622,6 +622,27 @@ def _parse_retry_after(value: str) -> float | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return (parsed - datetime.now(tz=UTC)).total_seconds()
+
+
+def _first_location(headers: httpx.Headers) -> str | None:
+    """Return the first ``Location`` header value, or None if there is none.
+
+    ``headers.get("Location")`` concatenates repeated headers with ``", "``,
+    per RFC 9110 §5.2, which is right for a list-valued field and wrong for
+    this one: ``Location`` is singular (RFC 9110 §10.2.2), so the
+    concatenation is not a value the origin ever sent. Joined against the
+    current hop it percent-encodes into one URL naming neither target, which
+    keeps the origin's host often enough to pass the SSRF guard, get fetched,
+    and 404 — reporting a working link as broken. Taking the first value
+    follows a target the origin actually named.
+
+    Mirrored by the intersphinx cache's hop loop rather than shared through
+    `ook.domain.redirects`, for the same reason `_join_redirect_url` is: that
+    module holds redirect *policy* and would have to take an httpx dependency
+    into the domain layer to hold a helper over ``httpx.Headers``.
+    """
+    values = headers.get_list("Location")
+    return values[0] if values else None
 
 
 def _join_redirect_url(current_url: str, location: str) -> str:

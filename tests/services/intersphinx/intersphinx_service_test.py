@@ -814,6 +814,45 @@ async def test_relative_location_joins_against_current_hop(
 
 
 @pytest.mark.asyncio
+async def test_repeated_location_headers_follow_the_first(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A hop carrying two ``Location`` headers follows the first value.
+
+    ``headers.get("Location")`` concatenates the pair with ``", "``, and
+    joining that against the current hop percent-encodes it into one URL
+    naming neither target — one that keeps the origin's host, so it
+    passes the SSRF guard, is fetched, and 404s. That would negatively
+    cache a working inventory and 502 every documenteer build for the
+    negative-TTL window.
+    """
+    first = "https://www.example.com/docs/latest/objects.inv"
+    second = "https://other.example.com/docs/latest/objects.inv"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            301,
+            headers=[("Location", first), ("Location", second)],
+        )
+    )
+    first_route = respx_mock.get(first).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+    second_route = respx_mock.get(second).mock(
+        return_value=Response(200, content=b"the other target")
+    )
+
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_cache_service()
+        inventory = await service.get_inventory(INVENTORY_URL)
+
+    assert first_route.call_count == 1
+    assert second_route.call_count == 0
+    assert inventory.content == INVENTORY_BODY
+    assert inventory.resolved_url == first
+
+
+@pytest.mark.asyncio
 async def test_redirect_hop_to_private_address_rejected(
     factory: Factory,
     respx_mock: respx.Router,
@@ -1009,6 +1048,35 @@ async def test_malformed_redirect_location_negatively_cached(
         await service.get_inventory(INVENTORY_URL)
 
     await _assert_negative_cached(factory)
+
+
+@pytest.mark.asyncio
+async def test_overlong_redirect_location_negatively_cached(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A ``Location`` httpx itself cannot join is a negatively cached 502.
+
+    httpx builds a redirect request for every 3xx carrying a ``Location``
+    even under ``follow_redirects=False``, and its join of a relative target
+    that only overflows the URL length limit once joined raises
+    ``httpx.InvalidURL`` from inside ``client.stream()`` — before any
+    response is returned, so this service's own join never sees it.
+    ``httpx.InvalidURL`` is not an ``httpx.HTTPError``, so an unconverted
+    one escapes the cold-miss handler as an unhandled 500 that caches
+    nothing and re-walks the chain on every repeat.
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(302, headers={"Location": "/" + "a" * 65530})
+    )
+
+    # No ``begin()`` wrapper so the negative-cache row stays visible,
+    # mirroring how the handler commits the failure path.
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(INVENTORY_URL)
+
+    await _assert_negative_cached(factory, error_contains="malformed URL")
 
 
 def test_join_redirect_url_rejects_unparseable_location() -> None:
@@ -2585,6 +2653,62 @@ async def test_refresh_malformed_redirect_location_counts_as_failure(
         kept = await store.get_inventory(INVENTORY_URL)
     assert kept is not None
     assert kept.content == b"kept payload"
+
+
+@pytest.mark.asyncio
+async def test_refresh_overlong_redirect_location_skips_one_inventory(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A ``Location`` httpx cannot join skips its inventory, not the batch.
+
+    httpx joins a 3xx ``Location`` itself even under
+    ``follow_redirects=False``, and ``httpx.InvalidURL`` is not an
+    ``httpx.HTTPError``, so an unconverted one escapes the per-inventory
+    handler. The failing inventory is the stalest, so it is refreshed
+    first: the escape would abort the run before the second inventory is
+    ever attempted and — because the aborted row keeps its old
+    ``date_fetched`` — it would sort first again on every later run,
+    letting one hostile origin starve the rest of the cache.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    failing_url = "https://failing.example.com/objects.inv"
+    ok_url = "https://ok.example.com/objects.inv"
+    await _seed_stale_inventory(
+        factory,
+        failing_url,
+        content=b"kept payload",
+        date_fetched=now - timedelta(hours=3),
+        date_requested=now - timedelta(days=1),
+    )
+    await _seed_stale_inventory(
+        factory,
+        ok_url,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    respx_mock.get(failing_url).mock(
+        return_value=Response(302, headers={"Location": "/" + "a" * 65530})
+    )
+    ok_route = respx_mock.get(ok_url).mock(return_value=Response(304))
+
+    service = factory.create_intersphinx_cache_service()
+    summary = await service.refresh_inventories(now=now)
+
+    assert summary.failed == 1
+    assert summary.revalidated == 1
+    # The rest of the batch ran despite the first inventory's failure.
+    assert ok_route.call_count == 1
+
+    # The failing inventory keeps its stored content for stale serving,
+    # and records why it failed.
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        kept = await store.get_inventory(failing_url)
+    assert kept is not None
+    assert kept.content == b"kept payload"
+    assert kept.last_fetch_error is not None
+    assert "malformed URL" in kept.last_fetch_error
 
 
 @pytest.mark.asyncio

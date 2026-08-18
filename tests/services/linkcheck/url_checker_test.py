@@ -985,6 +985,44 @@ async def test_relative_redirect_location(
 
 
 @pytest.mark.asyncio
+async def test_repeated_location_headers_follow_the_first(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A hop carrying two ``Location`` headers follows the first value.
+
+    ``headers.get("Location")`` joins repeated values with ``", "``, and
+    joining that against the current hop percent-encodes the pair into a
+    single URL naming neither target — one that keeps the origin's host, so
+    it passes the SSRF guard and is fetched, and then 404s, reporting a
+    working link as broken.
+    """
+    respx_mock.route(
+        method="HEAD", path="/two", headers={"Host": "example.com"}
+    ).respond(
+        301,
+        headers=[
+            ("Location", "https://example.com/first"),
+            ("Location", "https://example.com/second"),
+        ],
+    )
+    first = respx_mock.route(
+        method="HEAD", path="/first", headers={"Host": "example.com"}
+    ).respond(200)
+    second = respx_mock.route(
+        method="HEAD", path="/second", headers={"Host": "example.com"}
+    ).respond(200)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/two")
+
+    assert outcome.result is CheckResult.success
+    assert outcome.redirect_url == "https://example.com/first"
+    assert first.call_count == 1
+    assert second.call_count == 0
+
+
+@pytest.mark.asyncio
 async def test_redirect_to_private_host_blocked(
     http_client: httpx.AsyncClient,
     respx_mock: respx.Router,

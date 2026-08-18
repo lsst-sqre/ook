@@ -931,7 +931,9 @@ class IntersphinxCacheService:
             ``Content-Length`` or by its streamed size, exceeds the
             configured cap.
         _InvalidRedirectError
-            Raised when a hop's ``Location`` cannot be resolved to a URL.
+            Raised when a hop's ``Location`` cannot be resolved to a URL,
+            whether by this service's own join or by the one httpx runs
+            inside the request.
         _UnconditionalNotModifiedError
             Raised when the terminal answers ``304`` to a request that
             carried no validator.
@@ -952,41 +954,62 @@ class IntersphinxCacheService:
         # skipped only within the chain that just validated it.
         validated_hosts = {host} if (host := urlsplit(url).hostname) else set()
         while True:
-            async with self._http_client.stream(
-                "GET",
-                current_url,
-                headers=request_headers,
-                follow_redirects=False,
-                timeout=self._remaining_budget(deadline),
-            ) as response:
-                location = response.headers.get("Location")
-                if response.status_code not in REDIRECT_CODES or not location:
-                    if response.status_code == 304:
-                        if not _has_validator(request_headers):
-                            raise _UnconditionalNotModifiedError(
-                                _UNCONDITIONAL_304_DETAIL
+            try:
+                async with self._http_client.stream(
+                    "GET",
+                    current_url,
+                    headers=request_headers,
+                    follow_redirects=False,
+                    timeout=self._remaining_budget(deadline),
+                ) as response:
+                    location = _first_location(response.headers)
+                    if (
+                        response.status_code not in REDIRECT_CODES
+                        or not location
+                    ):
+                        if response.status_code == 304:
+                            if not _has_validator(request_headers):
+                                raise _UnconditionalNotModifiedError(
+                                    _UNCONDITIONAL_304_DETAIL
+                                )
+                            return _InventoryFetch(
+                                response, None, current_url, hops
                             )
-                        return _InventoryFetch(
-                            response, None, current_url, hops
+                        self._check_content_length(response)
+                        content = await self._read_capped_body(
+                            response, deadline=deadline
                         )
-                    self._check_content_length(response)
-                    content = await self._read_capped_body(
-                        response, deadline=deadline
-                    )
-                    return _InventoryFetch(
-                        response, content, current_url, hops
-                    )
-                if len(hops) >= MAX_REDIRECTS:
-                    # Give up on the hop count alone, before joining or
-                    # guarding a target this fetch will never request, so
-                    # the reported failure never depends on a URL already
-                    # ruled out.
-                    raise _UpstreamTooManyRedirectsError(
-                        f"Exceeded {MAX_REDIRECTS} redirects"
-                    )
-                hops.append(response.status_code)
-                next_url = _join_redirect_url(current_url, location)
-                await self._drain_hop_body(response, deadline=deadline)
+                        return _InventoryFetch(
+                            response, content, current_url, hops
+                        )
+                    if len(hops) >= MAX_REDIRECTS:
+                        # Give up on the hop count alone, before joining or
+                        # guarding a target this fetch will never request,
+                        # so the reported failure never depends on a URL
+                        # already ruled out.
+                        raise _UpstreamTooManyRedirectsError(
+                            f"Exceeded {MAX_REDIRECTS} redirects"
+                        )
+                    hops.append(response.status_code)
+                    next_url = _join_redirect_url(current_url, location)
+                    await self._drain_hop_body(response, deadline=deadline)
+            except httpx.InvalidURL as exc:
+                # httpx joins a 3xx ``Location`` itself even under
+                # ``follow_redirects=False``, so a target that only
+                # overflows the URL length limit once joined raises from
+                # inside the request rather than from `_join_redirect_url`,
+                # which never gets a response to inspect. Converted here in
+                # the hop loop, rather than at each fetch path's error
+                # boundary, so both paths classify it without a catch of
+                # their own and without widening the stored-failure helpers
+                # past the taxonomy they describe.
+                # ``httpx.InvalidURL`` is not an ``httpx.HTTPError``, so
+                # left alone it escapes the cold-miss handler as an
+                # unhandled 500 that caches nothing, and aborts the whole
+                # refresh batch on one hostile origin.
+                raise _InvalidRedirectError(
+                    _malformed_redirect_detail(exc)
+                ) from exc
             # Past a redirect the request is no longer aimed at the URL the
             # stored modification date was minted for, so stop sending it.
             request_headers = _without_if_modified_since(request_headers)
@@ -1402,6 +1425,29 @@ class IntersphinxCacheService:
         raise InvalidInventoryUrlError(reason)
 
 
+def _first_location(headers: httpx.Headers) -> str | None:
+    """Return the first ``Location`` header value, or None if there is none.
+
+    ``headers.get("Location")`` concatenates repeated headers with ``", "``,
+    per RFC 9110 §5.2, which is right for a list-valued field and wrong for
+    this one: ``Location`` is singular (RFC 9110 §10.2.2), so the
+    concatenation is not a value the origin ever sent. Joined against the hop
+    that sent it, the pair percent-encodes into one URL naming neither target,
+    which keeps the origin's host often enough to pass the SSRF guard, be
+    fetched, and 404 — negatively caching a working inventory and 502ing
+    every documenteer build for the negative-TTL window. Taking the first
+    value follows a target the origin actually named.
+
+    The link checker's hop loop mirrors this rather than sharing it through
+    `ook.domain.redirects`, for the same reason `_join_redirect_url` is
+    mirrored: that module holds redirect *policy* and would have to take an
+    httpx dependency into the domain layer to hold a helper over
+    ``httpx.Headers``.
+    """
+    values = headers.get_list("Location")
+    return values[0] if values else None
+
+
 def _join_redirect_url(current_url: str, location: str) -> str:
     """Resolve a redirect's ``Location`` against the hop that sent it.
 
@@ -1435,9 +1481,18 @@ def _join_redirect_url(current_url: str, location: str) -> str:
             httpx.URL(current_url).join(location).copy_with(fragment=None)
         )
     except (httpx.InvalidURL, UnicodeError) as exc:
-        raise _InvalidRedirectError(
-            f"Upstream redirected the inventory to a malformed URL: {exc}"
-        ) from exc
+        raise _InvalidRedirectError(_malformed_redirect_detail(exc)) from exc
+
+
+def _malformed_redirect_detail(error: Exception) -> str:
+    """Format the client-facing detail for an unusable redirect target.
+
+    Shared by `_join_redirect_url` and by `_fetch_inventory`'s conversion of
+    the same failure raised from inside httpx, so which of the two joins
+    tripped is not something a client (or a negative-cache row) can tell
+    apart.
+    """
+    return f"Upstream redirected the inventory to a malformed URL: {error}"
 
 
 _VALIDATOR_HEADERS = frozenset({"if-none-match", "if-modified-since"})
