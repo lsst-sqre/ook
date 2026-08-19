@@ -10,17 +10,27 @@ from pydantic import BeforeValidator
 __all__ = ["Orcid", "normalize_orcid"]
 
 _ORCID_URL_PREFIX_PATTERN = re.compile(
-    r"^(?:https?://)?(?:www\.)?orcid\.org/", re.IGNORECASE
+    r"^(?:https?://)?(?:www\.)?orcid\.org/", re.IGNORECASE | re.ASCII
 )
 """The URL forms an ORCID may be spelled in, ahead of the identifier itself.
 
 Only ``orcid.org`` is accepted as the host: an identifier-shaped path segment
 on any other host is not an ORCID, and reducing such a URL to its last path
-segment would answer a question the client did not ask.
+segment would answer a question the client did not ask. `re.ASCII` is what
+holds that line under `re.IGNORECASE`, which otherwise case-folds non-ASCII
+letters onto ASCII ones and would let a homoglyph host — ``orcid.org`` with
+its ``i`` written U+0131 or U+0130 — pass for the real one.
 """
 
-_ORCID_PATTERN = re.compile(r"\d{4}-\d{4}-\d{4}-\d{3}[0-9X]")
-"""The shape of a bare ORCID identifier, once uppercased."""
+_ORCID_PATTERN = re.compile(r"[0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9X]")
+r"""The shape of a bare ORCID identifier, once uppercased.
+
+The digits are spelled ``[0-9]`` rather than ``\d`` on purpose: ``\d`` also
+matches the non-ASCII decimal digits (U+FF10 and friends), and `int` reads
+those too, so a fullwidth spelling would clear both this shape check and the
+check digit only to come back as a "canonical" value that no canonical
+stored ORCID is equal to.
+"""
 
 
 def normalize_orcid(value: str) -> str:
@@ -47,9 +57,10 @@ def normalize_orcid(value: str) -> str:
     ValueError
         Raised if the value is not an ORCID: a URL on a host other than
         ``orcid.org``, anything that does not match
-        ``\d{4}-\d{4}-\d{4}-\d{3}[0-9X]`` once normalized (including the
-        hyphen-less 16-character compact form), or a well-formed identifier
-        whose ISO 7064 mod-11-2 check digit does not verify.
+        ``[0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9X]`` once normalized
+        (including the hyphen-less 16-character compact form and any spelling
+        that uses non-ASCII digits), or a well-formed identifier whose ISO
+        7064 mod-11-2 check digit does not verify.
     """
     candidate = value.strip()
     url_prefix = _ORCID_URL_PREFIX_PATTERN.match(candidate)
@@ -76,8 +87,9 @@ def _compute_check_digit(orcid: str) -> str:
     Parameters
     ----------
     orcid
-        A bare, uppercase ORCID identifier. Only its leading 15 digits are
-        read; the trailing check character is ignored.
+        A bare, uppercase ORCID identifier that has already passed
+        `_ORCID_PATTERN`, so its digits are ASCII. Only its leading 15 digits
+        are read; the trailing check character is ignored.
 
     Returns
     -------

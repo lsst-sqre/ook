@@ -91,6 +91,10 @@ async def test_get_author_by_orcid_miss(
         "0000-0003-3001-6760",  # valid shape, wrong check digit
         "000000033001676X",  # hyphen-less compact form
         "0000-0003-3001-676",  # too short
+        # Fullwidth digits are not ORCID digits: a 422, not a silent empty
+        # list from a lookup that could never match a canonical stored value.
+        "\uff10\uff10\uff10\uff10-\uff10\uff10\uff10\uff13-\uff13\uff10\uff10\uff11-\uff16\uff17\uff16X",
+        "https://orc\u0131d.org/0000-0003-3001-676X",  # homoglyph host
     ],
 )
 async def test_get_author_by_orcid_rejects(

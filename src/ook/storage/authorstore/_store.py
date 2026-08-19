@@ -639,11 +639,8 @@ class AuthorStore:
             )
 
         if invalid:
-            self._logger.error(
-                "Refusing author ingest with unparsable ORCIDs",
-                internal_ids=[a.internal_id for a in invalid],
-                git_ref=git_ref,
-            )
+            # Raised unlogged, like the DuplicateOrcidError pre-check: the
+            # ingest service logs this failure and posts it to Slack.
             raise InvalidOrcidError(invalid, git_ref)
 
         return normalized

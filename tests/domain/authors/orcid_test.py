@@ -45,6 +45,13 @@ def test_normalize_orcid_accepts(value: str) -> None:
         "0000-0003-3001-676Y",  # non-X final character
         "0000-0003-3001-6760",  # valid shape, wrong check digit
         "0000-0001-2345-6788",  # valid shape, wrong check digit
+        # Only ASCII digits are ORCID digits: the fullwidth forms spell a
+        # different string, which would defeat the equality lookup.
+        "\uff10\uff10\uff10\uff10-\uff10\uff10\uff10\uff13-\uff13\uff10\uff10\uff11-\uff16\uff17\uff16X",
+        "\uff10000-0003-3001-676X",
+        # Only orcid.org is the ORCID host: a homoglyph host is a foreign one.
+        "https://orc\u0131d.org/0000-0003-3001-676X",
+        "https://ORC\u0130D.ORG/0000-0003-3001-676X",
     ],
 )
 def test_normalize_orcid_rejects(value: str) -> None:
