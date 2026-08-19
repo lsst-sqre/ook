@@ -38,6 +38,7 @@ from ook.exceptions import ConflictError, DuplicateOrcidError, NotFoundError
 from ._query import (
     create_all_authors_stmt,
     create_author_by_internal_id_stmt,
+    create_author_by_orcid_stmt,
     create_author_search_stmt,
     create_author_with_affiliations_columns,
 )
@@ -66,6 +67,31 @@ class AuthorStore:
             The author with the specified internal ID, or None if not found.
         """
         stmt = create_author_by_internal_id_stmt(internal_id)
+        result = (await self._session.execute(stmt)).first()
+
+        return (
+            Author.model_validate(result, from_attributes=True)
+            if result
+            else None
+        )
+
+    async def get_author_by_orcid(self, orcid: str) -> Author | None:
+        """Get an author by their ORCID.
+
+        Parameters
+        ----------
+        orcid
+            The bare, uppercase ORCID identifier of the author to retrieve,
+            as normalized by `ook.domain.authors.normalize_orcid`.
+
+        Returns
+        -------
+        Author or None
+            The author with the specified ORCID, or None if no author holds
+            it. An ORCID identifies at most one author because the column
+            carries a unique constraint.
+        """
+        stmt = create_author_by_orcid_stmt(orcid)
         result = (await self._session.execute(stmt)).first()
 
         return (

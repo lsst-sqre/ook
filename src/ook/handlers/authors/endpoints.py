@@ -7,6 +7,7 @@ from safir.models import ErrorModel
 
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
+from ook.domain.authors import Orcid
 from ook.exceptions import NotFoundError
 from ook.handlers.authors.models import Author, AuthorSearchResult
 from ook.storage.authorstore import AuthorsCursor, AuthorSearchCursor
@@ -53,6 +54,19 @@ Search results include a `score` field (0-100) indicating match quality:
 
 Results are automatically sorted by relevance score in descending order.
 
+## Look up by ORCID
+
+Use the `orcid` parameter to resolve an author's ORCID to their record. An
+ORCID identifies at most one author, so the response is an array of zero or
+one authors — an ORCID nobody holds is an empty array, not a `404`.
+
+The ORCID may be written bare (`0000-0003-3001-676X`), with a lowercase
+checksum character, or as an `orcid.org` URL, with or without an
+`https://`/`http://` scheme, a `www.` prefix, or a trailing slash. Anything
+else — including a URL on another host, the hyphen-less 16-character compact
+form, and an identifier whose ISO 7064 check digit does not verify — is
+rejected with a `422`.
+
 ## Pagination
 
 Both regular listing and search results support cursor-based pagination:
@@ -65,6 +79,17 @@ Both regular listing and search results support cursor-based pagination:
 )
 async def get_authors(
     *,
+    orcid: Annotated[
+        Orcid | None,
+        Query(
+            title="ORCID",
+            description=(
+                "ORCID of an author, as the bare identifier or an orcid.org "
+                "URL. Returns zero or one authors."
+            ),
+            examples=["0000-0003-3001-676X"],
+        ),
+    ] = None,
     search: Annotated[
         str | None,
         Query(
@@ -94,6 +119,11 @@ async def get_authors(
 ) -> list[Author] | list[AuthorSearchResult]:
     async with context.session.begin():
         author_service = context.factory.create_author_service()
+
+        if orcid:
+            # Exact lookup by ORCID; at most one author holds any ORCID.
+            author = await author_service.get_author_by_orcid(orcid)
+            return [Author.from_domain(author)] if author else []
 
         if search:
             # Perform fuzzy search
