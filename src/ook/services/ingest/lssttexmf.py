@@ -9,7 +9,7 @@ from safir.github import GitHubAppClientFactory
 from structlog.stdlib import BoundLogger
 
 from ook.domain.authors import Author
-from ook.exceptions import DuplicateOrcidError
+from ook.exceptions import DuplicateOrcidError, InvalidOrcidError
 from ook.services.slack import SlackNotificationService
 from ook.storage.authorstore import AuthorStore
 from ook.storage.github import GitHubRepoStore
@@ -151,7 +151,7 @@ class LsstTexmfIngestService:
                 git_ref=repo._git_ref,  # noqa: SLF001
             )
 
-        # Attempt to upsert authors with duplicate ORCID error handling
+        # Attempt to upsert authors with ORCID error handling
         try:
             await self._author_store.upsert_authors(
                 list(authors.values()),
@@ -165,6 +165,16 @@ class LsstTexmfIngestService:
                     "orcid": e.orcid,
                     "existing_author_id": e.existing_author.internal_id,
                     "new_author_ids": [a.internal_id for a in e.new_authors],
+                },
+            )
+            # SlackException is automatically formatted and sent to Slack
+            await self._slack_service.post_exception(e)
+            raise
+        except InvalidOrcidError as e:
+            self._logger.exception(
+                "Unparsable ORCID in authordb.yaml",
+                extra={
+                    "invalid_author_ids": [a.internal_id for a in e.authors],
                 },
             )
             # SlackException is automatically formatted and sent to Slack

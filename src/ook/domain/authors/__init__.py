@@ -11,6 +11,7 @@ from ._models import (
     AuthorSearchResult,
 )
 from ._nameparser import NameFormat, NameParser, ParsedName
+from ._orcid import Orcid, normalize_orcid
 
 __all__ = [
     "Address",
@@ -20,7 +21,9 @@ __all__ = [
     "AuthorSearchResult",
     "NameFormat",
     "NameParser",
+    "Orcid",
     "ParsedName",
     "get_country_name",
     "normalize_country_code",
+    "normalize_orcid",
 ]

@@ -12,13 +12,17 @@ from safir.slack.webhook import (  # type: ignore[attr-defined]
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from ook.domain.authors import Author
 
 __all__ = [
     "ConflictError",
+    "ConflictingQueryParametersError",
     "DocumentParsingError",
     "DuplicateOrcidError",
     "InvalidInventoryUrlError",
+    "InvalidOrcidError",
     "LinkCheckTooManyUrlsError",
     "LtdSlugClassificationError",
     "NotFoundError",
@@ -121,6 +125,25 @@ class ConflictError(ClientRequestError):
     status_code = status.HTTP_409_CONFLICT
 
 
+class ConflictingQueryParametersError(ClientRequestError):
+    """Raised when a request combines query parameters that cannot both
+    apply.
+
+    Two parameters conflict when there is no single response that honours
+    both — they select different models, different match semantics, or one
+    describes machinery the other does not have. Answering such a request by
+    letting one parameter win would hide the client's bug behind a plausible
+    body, so the request is refused instead.
+
+    Raise this with the ``location`` and ``field_path`` of the parameter the
+    client should drop, so the error lands in the same shape FastAPI produces
+    for a parameter that fails its own validation.
+    """
+
+    error = "conflicting_query_parameters"
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+
+
 class DuplicateOrcidError(SlackException):
     """Raised when attempting to create an author with a duplicate ORCID.
 
@@ -202,6 +225,70 @@ class DuplicateOrcidError(SlackException):
             f"entry still exists in Ook.\n\n"
             f"*Resolution:* Review and delete the stale entry if appropriate, "
             f"then re-run ingest."
+        )
+
+        return SlackMessage(message=message_text)
+
+
+class InvalidOrcidError(SlackException):
+    """Raised when an ingested author's ORCID cannot be normalized.
+
+    The ORCID lookup on ``GET /ook/authors`` matches with a plain equality
+    so it can ride the ``uq_author_orcid`` index, which is only correct
+    while every stored ORCID is the bare, uppercase identifier. The ingest
+    is the sole write path for ``author.orcid``, so it is where that
+    invariant is established: an incoming value that
+    `~ook.domain.authors.normalize_orcid` refuses aborts the run before
+    anything is written.
+
+    Every offender in the run is reported at once rather than one per
+    attempt, so a single upstream fix round clears the ingest.
+
+    Parameters
+    ----------
+    authors
+        The authors whose ORCIDs were refused, each still carrying the
+        rejected value in its ``orcid`` attribute.
+    git_ref
+        Git reference being ingested (for error reporting context).
+    """
+
+    def __init__(self, authors: Sequence[Author], git_ref: str) -> None:
+        self.authors = list(authors)
+        self.git_ref = git_ref
+
+        # Note: message should not contain sensitive information
+        super().__init__(
+            "Cannot ingest author(s) with an unparsable ORCID: "
+            + ", ".join(f"{a.internal_id} ({a.orcid!r})" for a in self.authors)
+        )
+
+    def to_slack(self) -> SlackMessage:
+        """Format exception as a Slack message with detailed context.
+
+        Returns
+        -------
+        SlackMessage
+            Formatted Slack message naming every rejected ORCID.
+        """
+        authors_list = "\n".join(
+            f"• `{a.internal_id}` ("
+            f"{a.given_name + ' ' if a.given_name else ''}{a.surname}): "
+            f"`{a.orcid}`"
+            for a in self.authors
+        )
+
+        message_text = (
+            f"🚨 *Author Ingest Failed: Invalid ORCID*\n\n"
+            f"{len(self.authors)} author(s) carry an ORCID that is not a "
+            f"valid identifier, so no authors were ingested.\n\n"
+            f"*Rejected entries:*\n"
+            f"{authors_list}\n\n"
+            f"*Git ref:* `{self.git_ref}`\n\n"
+            f"*Likely cause:* An ORCID in authordb.yaml is misspelled, "
+            f"truncated, or fails its ISO 7064 check digit.\n\n"
+            f"*Resolution:* Correct the ORCID(s) in lsst-texmf, then re-run "
+            f"ingest."
         )
 
         return SlackMessage(message=message_text)

@@ -101,13 +101,13 @@ async def test_orcid_no_conflict_different_orcids(
                 internal_id="author2",
                 surname="Doe",
                 given_name="Jane",
-                orcid="0000-0002-3456-7890",
+                orcid="0000-0002-3456-7895",
             ),
             Author(
                 internal_id="author3",
                 surname="Johnson",
                 given_name="Bob",
-                orcid="0000-0003-4567-8901",
+                orcid="0000-0003-4567-890X",
             ),
         ]
 

@@ -26,6 +26,7 @@ __all__ = [
     "create_all_authors_stmt",
     "create_author_affiliations_subquery",
     "create_author_by_internal_id_stmt",
+    "create_author_by_orcid_stmt",
     "create_author_json_object",
     "create_author_search_stmt",
     "create_author_with_affiliations_columns",
@@ -203,6 +204,29 @@ def create_author_by_internal_id_stmt(internal_id: str) -> Select:
             SqlAuthor.id == alias_author_id,
         )
     )
+
+
+def create_author_by_orcid_stmt(orcid: str) -> Select:
+    """Create a complete statement to get an author by ORCID.
+
+    The predicate is a plain equality so it rides the ``uq_author_orcid``
+    unique index; neither side is wrapped in ``upper()``, which would force a
+    sequential scan. Stored ORCIDs are already bare and uppercase, and the
+    query value is normalized by `ook.domain.authors.normalize_orcid` before
+    it reaches here.
+
+    Parameters
+    ----------
+    orcid
+        The bare, uppercase ORCID identifier of the author to retrieve.
+
+    Returns
+    -------
+    Select
+        SQLAlchemy select statement ready for execution.
+    """
+    columns = create_author_with_affiliations_columns()
+    return select(*columns).where(SqlAuthor.orcid == orcid)
 
 
 def create_all_authors_stmt() -> Select:

@@ -47,6 +47,23 @@ class AuthorService:
         """
         return await self._author_store.get_author_by_id(internal_id)
 
+    async def get_author_by_orcid(self, orcid: str) -> Author | None:
+        """Get an author by their ORCID.
+
+        Parameters
+        ----------
+        orcid
+            The bare, uppercase ORCID identifier of the author to retrieve,
+            as normalized by `ook.domain.authors.normalize_orcid`.
+
+        Returns
+        -------
+        Author or None
+            The author holding the specified ORCID, or None if no author
+            holds it.
+        """
+        return await self._author_store.get_author_by_orcid(orcid)
+
     async def get_authors(
         self, *, limit: int | None = None, cursor: AuthorsCursor | None
     ) -> CountedPaginatedList[Author, AuthorsCursor]:

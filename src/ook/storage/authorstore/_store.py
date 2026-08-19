@@ -32,12 +32,19 @@ from ook.domain.authors import (
     AuthorAlias,
     AuthorSearchResult,
     normalize_country_code,
+    normalize_orcid,
 )
-from ook.exceptions import ConflictError, DuplicateOrcidError, NotFoundError
+from ook.exceptions import (
+    ConflictError,
+    DuplicateOrcidError,
+    InvalidOrcidError,
+    NotFoundError,
+)
 
 from ._query import (
     create_all_authors_stmt,
     create_author_by_internal_id_stmt,
+    create_author_by_orcid_stmt,
     create_author_search_stmt,
     create_author_with_affiliations_columns,
 )
@@ -66,6 +73,31 @@ class AuthorStore:
             The author with the specified internal ID, or None if not found.
         """
         stmt = create_author_by_internal_id_stmt(internal_id)
+        result = (await self._session.execute(stmt)).first()
+
+        return (
+            Author.model_validate(result, from_attributes=True)
+            if result
+            else None
+        )
+
+    async def get_author_by_orcid(self, orcid: str) -> Author | None:
+        """Get an author by their ORCID.
+
+        Parameters
+        ----------
+        orcid
+            The bare, uppercase ORCID identifier of the author to retrieve,
+            as normalized by `ook.domain.authors.normalize_orcid`.
+
+        Returns
+        -------
+        Author or None
+            The author with the specified ORCID, or None if no author holds
+            it. An ORCID identifies at most one author because the column
+            carries a unique constraint.
+        """
+        stmt = create_author_by_orcid_stmt(orcid)
         result = (await self._session.execute(stmt)).first()
 
         return (
@@ -552,6 +584,67 @@ class AuthorStore:
                     git_ref=git_ref,
                 )
 
+    def _normalize_orcids(
+        self,
+        authors: Sequence[Author],
+        git_ref: str,
+    ) -> list[Author]:
+        """Rewrite every incoming ORCID into its bare, uppercase form.
+
+        `AuthorStore.get_author_by_orcid` matches with a plain equality so it
+        can ride the ``uq_author_orcid`` index, which is correct only while
+        the stored form is canonical. This ingest is the only write path for
+        ``author.orcid``, so normalizing here makes that invariant true by
+        construction rather than merely true of today's upstream data.
+
+        Only the authors that survived `_filter_aliased_authors` are checked:
+        the pass guards what is about to be written, and an aliased entry is
+        discarded rather than stored.
+
+        Parameters
+        ----------
+        authors
+            Authors about to be upserted.
+        git_ref
+            Git reference being ingested (for error reporting context).
+
+        Returns
+        -------
+        list
+            The same authors, with each non-null ORCID replaced by its
+            normalized form.
+
+        Raises
+        ------
+        InvalidOrcidError
+            If any author's ORCID cannot be normalized. Every offender in
+            the run is reported in the one error, and the caller has not
+            written anything yet, so the ingest stays all-or-nothing.
+        """
+        normalized: list[Author] = []
+        invalid: list[Author] = []
+        for author in authors:
+            if author.orcid is None:
+                normalized.append(author)
+                continue
+            try:
+                orcid = normalize_orcid(author.orcid)
+            except ValueError:
+                invalid.append(author)
+                continue
+            normalized.append(
+                author
+                if orcid == author.orcid
+                else author.model_copy(update={"orcid": orcid})
+            )
+
+        if invalid:
+            # Raised unlogged, like the DuplicateOrcidError pre-check: the
+            # ingest service logs this failure and posts it to Slack.
+            raise InvalidOrcidError(invalid, git_ref)
+
+        return normalized
+
     async def _filter_aliased_authors(
         self, authors: Sequence[Author]
     ) -> list[Author]:
@@ -594,10 +687,24 @@ class AuthorStore:
             Git reference being ingested (for error reporting context).
         delete_stale_records
             If True, delete authors that are not in the provided list.
+
+        Raises
+        ------
+        InvalidOrcidError
+            If any author carries an ORCID that cannot be normalized. The
+            run aborts before any write.
+        DuplicateOrcidError
+            If any author's ORCID already belongs to a different author.
         """
         authors = await self._filter_aliased_authors(authors)
         if not authors:
             return
+
+        # Canonicalize ORCIDs before anything compares or stores them. This
+        # must precede the conflict pre-check, which matches incoming ORCIDs
+        # against stored ones by equality: an un-normalized URL-form value
+        # would miss its stored bare twin and hide a real duplicate.
+        authors = self._normalize_orcids(authors, git_ref)
 
         # Pre-check for ORCID conflicts to avoid transaction failures
         await self._check_orcid_conflicts(authors, git_ref)
