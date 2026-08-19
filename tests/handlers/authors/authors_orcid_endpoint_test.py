@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
+from safir.http import PaginationLinkData
 
 from tests.support.github import GitHubMocker
 
@@ -115,3 +116,86 @@ async def test_authors_listing_unaffected(
     search = await client.get("/ook/authors?search=Sick%2C%20Jonathan")
     assert search.status_code == 200
     assert any(r["internal_id"] == "sickj" for r in search.json())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["limit=2", "search=Ho&limit=2"])
+async def test_cursor_still_paginates_without_orcid(
+    client: AsyncClient, ingest_lsst_texmf: None, query: str
+) -> None:
+    """Both paginated modes still walk their cursors, headers included."""
+    first = await client.get(f"/ook/authors?{query}")
+    assert first.status_code == 200
+    assert "X-Total-Count" in first.headers
+
+    next_url = PaginationLinkData.from_header(first.headers["Link"]).next_url
+    assert next_url is not None
+    assert "cursor=" in next_url
+
+    second = await client.get(next_url)
+    assert second.status_code == 200
+    assert "X-Total-Count" in second.headers
+    assert "Link" in second.headers
+    first_ids = {entry["internal_id"] for entry in first.json()}
+    second_ids = {entry["internal_id"] for entry in second.json()}
+    assert first_ids.isdisjoint(second_ids)
+
+
+@pytest.mark.asyncio
+async def test_get_author_by_orcid_conflicts_with_search(
+    client: AsyncClient, ingest_lsst_texmf: None
+) -> None:
+    """`orcid` and `search` together are a 422, not a silent name search."""
+    response = await client.get(
+        f"/ook/authors?orcid={SICKJ_ORCID}&search=Sick"
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail[0]["loc"] == ["query", "orcid"]
+    assert "orcid" in detail[0]["msg"]
+    assert "search" in detail[0]["msg"]
+
+
+@pytest.mark.asyncio
+async def test_get_author_by_orcid_conflicts_with_cursor(
+    client: AsyncClient, ingest_lsst_texmf: None
+) -> None:
+    """`orcid` and `cursor` together are a 422: the lookup has no pages."""
+    listing = await client.get("/ook/authors?limit=5")
+    assert listing.status_code == 200
+    cursor = PaginationLinkData.from_header(listing.headers["Link"]).next_url
+    assert cursor is not None
+    cursor = parse_qs(urlparse(cursor).query)["cursor"][0]
+
+    response = await client.get(
+        f"/ook/authors?orcid={SICKJ_ORCID}&cursor={quote(cursor)}"
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail[0]["loc"] == ["query", "orcid"]
+    assert "orcid" in detail[0]["msg"]
+    assert "cursor" in detail[0]["msg"]
+
+
+@pytest.mark.asyncio
+async def test_get_author_by_orcid_emits_no_pagination(
+    client: AsyncClient, ingest_lsst_texmf: None
+) -> None:
+    """The ORCID response advertises no pagination machinery."""
+    response = await client.get(f"/ook/authors?orcid={SICKJ_ORCID}")
+    assert response.status_code == 200
+    assert "Link" not in response.headers
+    assert "X-Total-Count" not in response.headers
+
+
+@pytest.mark.asyncio
+async def test_get_author_by_orcid_ignores_limit(
+    client: AsyncClient, ingest_lsst_texmf: None
+) -> None:
+    """`limit` cannot be told from absent, so it is accepted and inert."""
+    narrow = await client.get(f"/ook/authors?orcid={SICKJ_ORCID}&limit=1")
+    wide = await client.get(f"/ook/authors?orcid={SICKJ_ORCID}&limit=100")
+    assert narrow.status_code == 200
+    assert wide.status_code == 200
+    assert narrow.json() == wide.json()
+    assert len(narrow.json()) == 1

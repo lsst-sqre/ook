@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ConflictError",
+    "ConflictingQueryParametersError",
     "DocumentParsingError",
     "DuplicateOrcidError",
     "InvalidInventoryUrlError",
@@ -119,6 +120,25 @@ class ConflictError(ClientRequestError):
 
     error = "conflict"
     status_code = status.HTTP_409_CONFLICT
+
+
+class ConflictingQueryParametersError(ClientRequestError):
+    """Raised when a request combines query parameters that cannot both
+    apply.
+
+    Two parameters conflict when there is no single response that honours
+    both — they select different models, different match semantics, or one
+    describes machinery the other does not have. Answering such a request by
+    letting one parameter win would hide the client's bug behind a plausible
+    body, so the request is refused instead.
+
+    Raise this with the ``location`` and ``field_path`` of the parameter the
+    client should drop, so the error lands in the same shape FastAPI produces
+    for a parameter that fails its own validation.
+    """
+
+    error = "conflicting_query_parameters"
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 class DuplicateOrcidError(SlackException):
