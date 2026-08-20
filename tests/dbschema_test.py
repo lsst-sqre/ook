@@ -5,26 +5,22 @@ import subprocess
 
 import pytest
 import sqlalchemy as sa
-import structlog
-from safir.database import (
-    create_database_engine,
-    drop_database,
-    initialize_database,
-)
+from safir.database import create_database_engine, drop_database
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ook.config import config
 from ook.dbschema import Base
 
+from .support.database import reset_database_for_test
+
 
 async def _init_database() -> AsyncEngine:
-    """Build a fresh schema from the models and return the engine."""
+    """Return an engine onto a fresh, empty schema."""
     engine = create_database_engine(
         config.database_url, config.database_password
     )
-    logger = structlog.get_logger("ook")
-    await initialize_database(engine, logger, schema=Base.metadata, reset=True)
+    await reset_database_for_test(engine)
     return engine
 
 
