@@ -88,7 +88,17 @@ def test(session: nox.Session) -> None:
     from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
 
     with KafkaContainer().with_kraft() as kafka:
-        with PostgresContainer("postgres:16") as postgres:
+        # Autovacuum is disabled because its ANALYZE can race a test's
+        # uncommitted bulk seed ingest: it records the table as N pages
+        # holding zero live tuples, and after the ingest commits the
+        # planner still estimates ~0 rows, picking nested-loop plans
+        # that turn millisecond link queries into multi-minute ones
+        # (per-test TRUNCATE keeps tables alive all session, so stats
+        # are never corrected the way per-test DROP/CREATE hid this).
+        # Tests never run long enough to need vacuuming.
+        with PostgresContainer("postgres:16").with_command(
+            "postgres -c autovacuum=off"
+        ) as postgres:
             _install_postgres_extensions(postgres)
 
             env_vars = _make_env_vars(
@@ -119,7 +129,17 @@ def test_coverage(session: nox.Session) -> None:
     from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
 
     with KafkaContainer().with_kraft() as kafka:
-        with PostgresContainer("postgres:16") as postgres:
+        # Autovacuum is disabled because its ANALYZE can race a test's
+        # uncommitted bulk seed ingest: it records the table as N pages
+        # holding zero live tuples, and after the ingest commits the
+        # planner still estimates ~0 rows, picking nested-loop plans
+        # that turn millisecond link queries into multi-minute ones
+        # (per-test TRUNCATE keeps tables alive all session, so stats
+        # are never corrected the way per-test DROP/CREATE hid this).
+        # Tests never run long enough to need vacuuming.
+        with PostgresContainer("postgres:16").with_command(
+            "postgres -c autovacuum=off"
+        ) as postgres:
             _install_postgres_extensions(postgres)
 
             env_vars = _make_env_vars(
