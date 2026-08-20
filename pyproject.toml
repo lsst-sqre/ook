@@ -117,6 +117,11 @@ exclude_lines = [
 ]
 
 [tool.pytest.ini_options]
+# Temporary hang diagnostics for the timing-experiment branch: dump every
+# thread's stack if a single test stalls for 5 minutes, and list each test
+# as it runs so a hung item is identifiable in CI logs.
+faulthandler_timeout = 300
+addopts = "-v"
 asyncio_mode = "strict"
 # Run all async tests and fixtures on one session-scoped event loop so the
 # session-scoped application lifespan (Kafka broker, database pool, HTTP
