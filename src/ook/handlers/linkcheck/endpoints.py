@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query
 from pydantic import AfterValidator
-from safir.models import ErrorModel
+from safir.models import ErrorLocation, ErrorModel
 
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
@@ -13,12 +13,20 @@ from ook.domain.kafka import CheckLinksMessageV1
 from ook.domain.linkcheck import (
     CheckRunStatus,
     CheckUrlStatus,
+    ContributionProvenance,
     normalize_origin_base_url,
 )
-from ook.exceptions import NotFoundError
+from ook.exceptions import InvalidOidcTokenError, NotFoundError
 from ook.storage.linkcheckstore import OriginLinksCursor
 
-from .models import LinkCheck, LinkCheckRequest, OriginLink, UrlRecord
+from .models import (
+    LinkCheck,
+    LinkCheckContributionReport,
+    LinkCheckContributionRequest,
+    LinkCheckRequest,
+    OriginLink,
+    UrlRecord,
+)
 
 router = APIRouter(
     prefix=f"{config.path_prefix}/linkcheck", tags=["linkcheck"]
@@ -133,6 +141,100 @@ async def get_linkcheck_check(
         if report is None:
             raise NotFoundError(message=f"Link check {check_id} not found")
         return LinkCheck.from_domain(report, request=context.request)
+
+
+@router.post(
+    "/checks/{check_id}/contributions",
+    summary="Contribute link-check results",
+    description=(
+        "Contribute results for URLs of a check that Ook could not verify"
+        " from its own vantage point. Only URLs that are members of the"
+        " check and currently ``blocked`` are eligible; the batch applies"
+        " entry by entry, so ineligible entries come back in ``rejected``"
+        " with a reason while the rest still apply. Accepted results run"
+        " through the same status-transition engine, retry ladder, and"
+        " freshness TTL as Ook's own checks, and the URL records the"
+        " contributing repository as its result source. Every request must"
+        " carry a GitHub Actions OIDC id-token minted for this deployment's"
+        " audience: its ``repository``, ``run_id``, and ``workflow_ref``"
+        " claims are the recorded provenance, and the ``environment`` block"
+        " is advisory. Like the check submission endpoint, this endpoint is"
+        " write-protected by Gafaelfawr at the ingress."
+    ),
+    responses={
+        404: {"description": "Not found", "model": ErrorModel},
+        422: {
+            "description": "Invalid submission or id-token",
+            "model": ErrorModel,
+        },
+        502: {
+            "description": (
+                "GitHub's OIDC signing keys could not be fetched, so the"
+                " id-token could not be verified; the request is worth"
+                " retrying."
+            ),
+            "model": ErrorModel,
+        },
+    },
+)
+async def post_linkcheck_contributions(
+    *,
+    check_id: Annotated[
+        Base32Id,
+        Path(
+            title="Check ID",
+            description="The Crockford Base32 identifier of the link check.",
+            examples=["1234-5678-90ab-cd2f"],
+        ),
+    ],
+    contribution: LinkCheckContributionRequest,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> LinkCheckContributionReport:
+    """Apply client-contributed results to a check's blocked URLs."""
+    try:
+        claims = await context.factory.github_oidc_verifier.verify(
+            contribution.id_token
+        )
+    except InvalidOidcTokenError as e:
+        # The token is a body field, so locate the error there; nothing has
+        # been applied, because verification precedes every write.
+        e.location = ErrorLocation.body
+        e.field_path = ["id_token"]
+        raise
+    environment = contribution.environment
+    if environment.repository not in (None, claims.repository):
+        # Advisory and ignored, but a disagreement means the client is
+        # misreporting its own environment, which is worth surfacing.
+        context.logger.warning(
+            "Link-check contribution environment disagrees with its token",
+            attested_repository=claims.repository,
+            reported_repository=environment.repository,
+        )
+    provenance = ContributionProvenance(
+        provider=environment.provider,
+        repository=claims.repository,
+        run_id=claims.run_id,
+        workflow_ref=claims.workflow_ref,
+        run_url=environment.run_url,
+        checker_version=environment.checker_version,
+    )
+    context.logger.info(
+        "Received link-check contribution",
+        check_id=check_id,
+        repository=provenance.repository,
+        run_id=provenance.run_id,
+        result_count=len(contribution.results),
+    )
+    async with context.session.begin():
+        service = context.factory.create_linkcheck_service()
+        report = await service.contribute_results(
+            check_id=check_id,
+            provenance=provenance,
+            results=[result.to_domain() for result in contribution.results],
+        )
+        if report is None:
+            raise NotFoundError(message=f"Link check {check_id} not found")
+        return LinkCheckContributionReport.from_domain(report)
 
 
 @router.get(

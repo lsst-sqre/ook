@@ -3,22 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from ook.domain.linkcheck import (
+    AcceptedContribution,
     CheckedUrlReport,
     CheckRunStatus,
     CheckUrlStatus,
+    ContributionRejectionReason,
+    ContributionReport,
     LinkCheckReport,
     LinkState,
     LinkStatus,
     OriginLink,
+    RejectedContribution,
     SubmittedUrl,
     UrlOccurrence,
     UrlRecord,
     canonicalize_url,
+    contributed_outcome,
     evaluate_outcome,
     is_supported_url,
 )
@@ -31,7 +37,11 @@ if TYPE_CHECKING:
     from safir.database import CountedPaginatedList
     from structlog.stdlib import BoundLogger
 
-    from ook.domain.linkcheck import RetryLadderConfig
+    from ook.domain.linkcheck import (
+        ContributedResult,
+        ContributionProvenance,
+        RetryLadderConfig,
+    )
     from ook.storage.linkcheckstore import (
         CheckUrlRecord,
         LinkCheckStore,
@@ -356,6 +366,167 @@ class LinkCheckService:
         self._logger.info(
             "Completed link recheck", checked_url_count=len(urls)
         )
+
+    async def contribute_results(
+        self,
+        *,
+        check_id: int,
+        provenance: ContributionProvenance,
+        results: Sequence[ContributedResult],
+    ) -> ContributionReport | None:
+        """Apply client-contributed results to a check's blocked URLs.
+
+        A client that re-checked a URL Ook's own egress is bot-blocked from
+        can contribute what it saw. Eligible results run through the same
+        status-transition engine and retry ladder as Ook's own checks, so a
+        contributed success resolves the URL and a contributed failure
+        advances its ladder; only the recorded vantage point differs. Each
+        applied result is also recorded as a contribution row, the
+        append-only provenance trail behind the state it produced.
+
+        The batch is applied entry by entry: ineligible entries are
+        reported back with a reason while the rest still apply.
+
+        Parameters
+        ----------
+        check_id
+            The check the results were contributed against.
+        provenance
+            Where the results were observed from. Its identifying claims
+            come from a verified OIDC token, not the request body.
+        results
+            The per-URL results the client observed.
+
+        Returns
+        -------
+        ContributionReport or None
+            What was applied and what was rejected, or None if the check
+            is unknown.
+        """
+        record = await self._store.get_check(check_id)
+        if record is None:
+            return None
+
+        now = datetime.now(tz=UTC)
+        eligible, rejected = self._partition_contributions(
+            results, members={url.url: url for url in record.urls}
+        )
+
+        states = await self._store.get_url_states(
+            [result.url for result in eligible]
+        )
+        accepted: list[AcceptedContribution] = []
+        for result in eligible:
+            state = evaluate_outcome(
+                url=result.url,
+                prior=states.get(result.url),
+                outcome=contributed_outcome(
+                    result, repository=provenance.repository, received_at=now
+                ),
+                ladder=self._retry_ladder,
+            )
+            await self._store.upsert_url_state(state, now=now)
+            accepted.append(
+                AcceptedContribution(url=result.url, status=state.status)
+            )
+        await self._store.add_contributions(
+            check_id=check_id,
+            provenance=provenance,
+            results=eligible,
+            now=now,
+        )
+
+        self._logger.info(
+            "Applied link-check contributions",
+            check_id=check_id,
+            repository=provenance.repository,
+            run_id=provenance.run_id,
+            accepted_count=len(accepted),
+            rejected_count=len(rejected),
+        )
+        if rejected:
+            self._logger.info(
+                "Rejected link-check contributions",
+                check_id=check_id,
+                repository=provenance.repository,
+                rejected_count=len(rejected),
+                reasons=dict(
+                    Counter(entry.reason.value for entry in rejected)
+                ),
+            )
+        return ContributionReport(
+            check_id=check_id,
+            provenance=provenance,
+            accepted=accepted,
+            rejected=rejected,
+        )
+
+    def _partition_contributions(
+        self,
+        results: Sequence[ContributedResult],
+        *,
+        members: dict[str, CheckUrlRecord],
+    ) -> tuple[list[ContributedResult], list[RejectedContribution]]:
+        """Split contributed results into the eligible and the rejected.
+
+        A result is eligible when its URL is checkable, is a member of the
+        check, is currently blocked, and has not already been contributed
+        earlier in the same batch. Eligible results come back
+        canonicalized, so downstream lookups and writes key on the same URL
+        the check's membership does.
+        """
+        eligible: list[ContributedResult] = []
+        seen: set[str] = set()
+        rejected: list[RejectedContribution] = []
+
+        def reject(
+            url: str, reason: ContributionRejectionReason, message: str
+        ) -> None:
+            rejected.append(
+                RejectedContribution(url=url, reason=reason, message=message)
+            )
+
+        for result in results:
+            if not is_supported_url(result.url):
+                reject(
+                    result.url,
+                    ContributionRejectionReason.unsupported_url,
+                    "The URL is not a checkable http(s) URL, so it cannot"
+                    " be a member of this check.",
+                )
+                continue
+            url = canonicalize_url(result.url)
+            member = members.get(url)
+            if member is None:
+                reject(
+                    result.url,
+                    ContributionRejectionReason.not_a_member,
+                    "The URL is not one of this check's submitted URLs.",
+                )
+            elif member.status is not LinkStatus.blocked:
+                status = (
+                    member.status.value
+                    if member.status is not None
+                    else CheckUrlStatus.pending.value
+                )
+                reject(
+                    result.url,
+                    ContributionRejectionReason.not_blocked,
+                    f"The URL is {status}, not blocked: only URLs Ook"
+                    " could not verify from its own vantage point accept"
+                    " contributed results.",
+                )
+            elif url in seen:
+                reject(
+                    result.url,
+                    ContributionRejectionReason.duplicate,
+                    "An earlier result in this batch already contributed"
+                    " a result for this URL.",
+                )
+            else:
+                seen.add(url)
+                eligible.append(result.model_copy(update={"url": url}))
+        return eligible, rejected
 
     async def list_due_recheck_urls(self) -> list[DueUrl]:
         """Enumerate due, still-referenced URLs for scheduled recheck.

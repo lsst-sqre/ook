@@ -8,11 +8,13 @@ import pytest
 
 from ook.domain.linkcheck import (
     CheckResult,
+    ContributedResult,
     LinkCheckOutcome,
     LinkState,
     LinkStatus,
     ResultSource,
     RetryLadderConfig,
+    contributed_outcome,
     evaluate_outcome,
 )
 
@@ -629,3 +631,78 @@ def test_contributed_source_is_stamped_on_every_path(
     )
     assert state.result_source is ResultSource.contribution
     assert state.contributed_by == "lsst-sqre/documenteer"
+
+
+def test_contributed_success_stamps_the_receipt_time() -> None:
+    """A contributed 2xx becomes a success outcome carrying the redirect
+    metadata, timed at the server's receipt rather than the client's own
+    (advisory) check time.
+    """
+    result = ContributedResult(
+        url=URL,
+        status_code=200,
+        redirect_status_code=301,
+        redirect_url="https://example.com/new-location",
+        checked_at=T0 - timedelta(hours=6),
+    )
+
+    outcome = contributed_outcome(
+        result, repository="lsst-sqre/documenteer", received_at=T0
+    )
+
+    assert outcome.result is CheckResult.success
+    assert outcome.checked_at == T0
+    assert outcome.status_code == 200
+    assert outcome.redirect_status_code == 301
+    assert outcome.redirect_url == "https://example.com/new-location"
+    assert outcome.error is None
+    assert outcome.contributed_by == "lsst-sqre/documenteer"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "is_bot_blocked", "is_transient"),
+    [
+        (403, True, False),
+        (429, False, True),
+        (503, False, True),
+        (404, False, False),
+        (500, False, False),
+    ],
+)
+def test_contributed_failure_classification(
+    status_code: int, *, is_bot_blocked: bool, is_transient: bool
+) -> None:
+    """A contributed non-2xx is a failure, and the codes that are
+    inconclusive from Ook's own vantage point stay inconclusive from a
+    client's: only the rest advance the retry ladder.
+    """
+    result = ContributedResult(url=URL, status_code=status_code, checked_at=T0)
+
+    outcome = contributed_outcome(
+        result, repository="lsst-sqre/documenteer", received_at=T0
+    )
+
+    assert outcome.result is CheckResult.failure
+    assert outcome.is_bot_blocked is is_bot_blocked
+    assert outcome.is_transient is is_transient
+    assert outcome.error is not None
+    assert f"HTTP {status_code}" in outcome.error
+
+
+def test_contributed_result_without_a_response_is_a_failure() -> None:
+    """A client that got no response at all (a connection error) reports no
+    status code; its own error description is carried through.
+    """
+    result = ContributedResult(
+        url=URL, error="Connection refused", checked_at=T0
+    )
+
+    outcome = contributed_outcome(
+        result, repository="lsst-sqre/documenteer", received_at=T0
+    )
+
+    assert outcome.result is CheckResult.failure
+    assert outcome.status_code is None
+    assert outcome.error == "Connection refused"
+    assert outcome.is_bot_blocked is False
+    assert outcome.is_transient is False

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from ook.domain.base32id import Base32Id
 
 __all__ = [
+    "AcceptedContribution",
     "CheckResult",
     "CheckRunStatus",
     "CheckUrlStatus",
@@ -17,6 +18,8 @@ __all__ = [
     "ContributedResult",
     "ContributionProvenance",
     "ContributionProvider",
+    "ContributionRejectionReason",
+    "ContributionReport",
     "LinkCheckOutcome",
     "LinkCheckReport",
     "LinkContribution",
@@ -24,6 +27,7 @@ __all__ = [
     "LinkStatus",
     "OriginLink",
     "OriginPage",
+    "RejectedContribution",
     "ResultSource",
     "RetryLadderConfig",
     "SubmittedUrl",
@@ -455,6 +459,102 @@ class LinkContribution(BaseModel):
 
     date_received: datetime = Field(
         description="Time the server received the contribution."
+    )
+
+
+class ContributionRejectionReason(StrEnum):
+    """Why one contributed result was not applied to its URL.
+
+    A batch is applied entry by entry, so these travel back to the client
+    per URL: the rest of the batch still applies.
+    """
+
+    not_a_member = "not_a_member"
+    """The URL is not one of the check's member URLs.
+
+    Contributions are scoped to a check so that a client can only report on
+    URLs it actually submitted.
+    """
+
+    not_blocked = "not_blocked"
+    """The URL's current status is not ``blocked``.
+
+    Contributions exist to resolve URLs Ook's own egress cannot verify. A
+    URL Ook did resolve is answered by Ook's own vantage point, which is
+    the one its retry ladder is calibrated for.
+    """
+
+    unsupported_url = "unsupported_url"
+    """The entry's URL is not a checkable http(s) URL, so it could never be
+    a member of a check in a blocked state.
+    """
+
+    duplicate = "duplicate"
+    """An earlier entry in the same batch already contributed a result for
+    this URL.
+
+    Applying both would run the status engine twice for one observation,
+    advancing the retry ladder further than the client actually observed.
+    """
+
+
+class AcceptedContribution(BaseModel):
+    """A contributed result that was applied to its URL."""
+
+    url: str = Field(
+        description="The canonical URL the result was applied to."
+    )
+
+    status: LinkStatus = Field(
+        description=(
+            "The URL's status after the contributed result ran through the"
+            " status-transition engine."
+        )
+    )
+
+
+class RejectedContribution(BaseModel):
+    """A contributed result that was not applied, and why."""
+
+    url: str = Field(description="The URL as the client submitted it.")
+
+    reason: ContributionRejectionReason = Field(
+        description="Why the result was not applied."
+    )
+
+    message: str = Field(
+        description="A human-readable explanation of the rejection."
+    )
+
+
+class ContributionReport(BaseModel):
+    """The outcome of applying a batch of contributed results."""
+
+    check_id: Base32Id = Field(
+        description="The check the results were contributed against."
+    )
+
+    provenance: ContributionProvenance = Field(
+        description=(
+            "Where the results were observed from, as attested by the"
+            " client's verified OIDC token."
+        )
+    )
+
+    accepted: list[AcceptedContribution] = Field(
+        default_factory=list,
+        description=(
+            "The results that were applied, with the status each URL"
+            " reached, in submission order."
+        ),
+    )
+
+    rejected: list[RejectedContribution] = Field(
+        default_factory=list,
+        description=(
+            "The results that were not applied, each with its reason, in"
+            " submission order."
+        ),
     )
 
 
