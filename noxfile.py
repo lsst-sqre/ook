@@ -35,6 +35,7 @@ INFRA_TEST_PATHS = (
     "tests/dbschema_test.py",
     "tests/factory_test.py",
     "tests/handlers",
+    "tests/kafka_drain_barrier_test.py",
     "tests/migrations",
     "tests/services",
     "tests/storage",
@@ -625,6 +626,13 @@ def _make_env_vars(
         "ALGOLIA_API_KEY": "test",
         "OOK_GITHUB_APP_ID": "1234",
         "OOK_GITHUB_APP_PRIVATE_KEY": TEST_GITHUB_APP_PRIVATE_KEY,
+        # Turn off the link checker's per-host politeness delay. The whole
+        # test session shares one UrlChecker, so its host schedule would
+        # space every check of example.com a second apart across the entire
+        # suite -- a delay the per-test Kafka drain barrier would then have
+        # to wait out. Politeness itself is covered by unit tests that build
+        # their own checker with an explicit interval.
+        "OOK_LINKCHECK_HOST_INTERVAL": "0s",
     }
     if overrides:
         env_vars.update(overrides)

@@ -1327,16 +1327,25 @@ async def test_politeness_interval_not_applied_across_hosts(
     assert spacing < 0.5
 
 
-def test_linkcheck_configuration_defaults() -> None:
+def test_linkcheck_configuration_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The link-check tuning knobs are exposed as configuration
     settings with defaults.
+
+    The defaults are read from a freshly built `Configuration` rather than
+    from the process-wide singleton because the test environment overrides
+    the politeness interval (see ``_make_env_vars`` in the noxfile).
     """
-    assert config.linkcheck_request_timeout == timedelta(seconds=30)
-    assert config.linkcheck_max_concurrency == 10
-    assert config.linkcheck_host_interval == timedelta(seconds=1)
+    monkeypatch.delenv("OOK_LINKCHECK_HOST_INTERVAL", raising=False)
+    defaults = Configuration()
+
+    assert defaults.linkcheck_request_timeout == timedelta(seconds=30)
+    assert defaults.linkcheck_max_concurrency == 10
+    assert defaults.linkcheck_host_interval == timedelta(seconds=1)
     # The default UA is the browser-prefixed hybrid carrying the running
     # version and repo URL.
-    assert config.linkcheck_user_agent == (
+    assert defaults.linkcheck_user_agent == (
         "Mozilla/5.0 (X11; Linux x86_64; rv:100.0) Gecko/20100101 "
         f"Firefox/100.0 Ook-Linkcheck/{ook.__version__} "
         "(+https://github.com/lsst-sqre/ook)"
