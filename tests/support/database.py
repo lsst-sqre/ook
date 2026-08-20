@@ -58,6 +58,7 @@ __all__ = [
     "TruncateLockError",
     "ddl_database_url",
     "invalidate_schema",
+    "provision_database",
     "reset_database_for_test",
     "truncate_all_tables",
 ]
@@ -101,6 +102,57 @@ class TruncateLockError(RuntimeError):
     """
 
 
+async def provision_database(name: str) -> str:
+    """Create a database on the test PostgreSQL server, replacing any existing.
+
+    This is the one place a test-suite database is created, shared by the
+    pytest-xdist worker shim (`tests.support.xdist`) and by `ddl_database_url`.
+    Keeping it single means a future schema requirement -- a second extension,
+    a non-default encoding -- lands on every test database at once instead of
+    silently applying to some of them.
+
+    The server, credentials, and maintenance database all come from
+    ``OOK_DATABASE_URL`` and ``OOK_DATABASE_PASSWORD`` as they stand when this
+    is called. Under pytest-xdist that means the worker shim provisions from
+    the base database while everything afterwards provisions from the worker's
+    own, so a name derived from the current database stays unique per worker.
+
+    Parameters
+    ----------
+    name
+        Name of the database to create. Any existing database by that name is
+        dropped first, so the caller always gets an empty one.
+
+    Returns
+    -------
+    str
+        Database URL for the new database, carrying the same server and
+        credentials as ``OOK_DATABASE_URL``.
+    """
+    import asyncpg  # noqa: PLC0415
+
+    url = urlsplit(os.environ["OOK_DATABASE_URL"])
+    connect_args = {
+        "host": url.hostname,
+        "port": url.port,
+        "user": url.username,
+        "password": os.environ["OOK_DATABASE_PASSWORD"],
+    }
+    conn = await asyncpg.connect(database=url.path.lstrip("/"), **connect_args)
+    try:
+        await conn.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        await conn.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        await conn.close()
+    conn = await asyncpg.connect(database=name, **connect_args)
+    try:
+        await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+    finally:
+        await conn.close()
+
+    return urlunsplit(url._replace(path=f"/{name}"))
+
+
 async def ddl_database_url() -> str:
     """Return the URL of this pytest process's dedicated DDL database.
 
@@ -108,10 +160,10 @@ async def ddl_database_url() -> str:
     or replaying a data migration that rebuilds foreign keys -- must not do it
     on the database the session-scoped application is connected to: their
     locks collide with the application's pooled connections and with the
-    per-test truncate. This database is created on first use (with ``pg_trgm``
-    installed, matching the databases the noxfile and the xdist worker shim
-    provision) and is named after the current database, so under pytest-xdist
-    each worker gets its own.
+    per-test truncate. This database is created on first use by
+    `provision_database`, the same helper the xdist worker shim uses, and is
+    named after the current database, so under pytest-xdist each worker gets
+    its own.
 
     Returns
     -------
@@ -124,32 +176,8 @@ async def ddl_database_url() -> str:
     if _ddl_database_url is not None:
         return _ddl_database_url
 
-    import asyncpg  # noqa: PLC0415
-
-    url = urlsplit(os.environ["OOK_DATABASE_URL"])
-    base_database = url.path.lstrip("/")
-    ddl_database = f"{base_database}_ddl"
-    password = os.environ["OOK_DATABASE_PASSWORD"]
-
-    connect_args = {
-        "host": url.hostname,
-        "port": url.port,
-        "user": url.username,
-        "password": password,
-    }
-    conn = await asyncpg.connect(database=base_database, **connect_args)
-    try:
-        await conn.execute(f'DROP DATABASE IF EXISTS "{ddl_database}"')
-        await conn.execute(f'CREATE DATABASE "{ddl_database}"')
-    finally:
-        await conn.close()
-    conn = await asyncpg.connect(database=ddl_database, **connect_args)
-    try:
-        await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
-    finally:
-        await conn.close()
-
-    _ddl_database_url = urlunsplit(url._replace(path=f"/{ddl_database}"))
+    base_database = urlsplit(os.environ["OOK_DATABASE_URL"]).path.lstrip("/")
+    _ddl_database_url = await provision_database(f"{base_database}_ddl")
     return _ddl_database_url
 
 

@@ -37,6 +37,7 @@ INFRA_TEST_PATHS = (
     "tests/handlers",
     "tests/kafka_drain_barrier_test.py",
     "tests/migrations",
+    "tests/provision_database_test.py",
     "tests/schema_reset_test.py",
     "tests/services",
     "tests/storage",

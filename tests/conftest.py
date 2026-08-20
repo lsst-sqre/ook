@@ -2,109 +2,55 @@
 
 from __future__ import annotations
 
-import asyncio
-import os
-from urllib.parse import urlsplit, urlunsplit
+from .support.xdist import isolate_xdist_worker, verify_worker_isolation
 
+# Every import below must come after this call: ook.config snapshots the
+# environment into its module-level Configuration() singleton the moment it
+# is imported, so the shim has to rewrite that environment first. Each of
+# those imports carries its own `noqa: E402` rather than a file-wide one, so
+# adding another is a deliberate act; verify_worker_isolation, called after
+# them, fails collection if one ever gets ahead of the shim anyway. See
+# tests.support.xdist.
+isolate_xdist_worker()
 
-def _isolate_xdist_worker() -> None:
-    """Give each pytest-xdist worker its own database and Kafka namespace.
+from collections.abc import AsyncIterator, Iterator, Sequence  # noqa: E402
 
-    Under pytest-xdist every worker is a separate process that would
-    otherwise share the single testcontainers PostgreSQL database and
-    Kafka topics, and the per-test schema reset in the ``app`` and
-    ``factory`` fixtures would clobber concurrently running tests. This
-    shim runs at conftest import time in each worker process -- before
-    ``ook.config`` is imported, so before the module-level
-    ``Configuration()`` singleton reads the environment -- and:
+import pytest  # noqa: E402
+import pytest_asyncio  # noqa: E402
+import structlog  # noqa: E402
+from asgi_lifespan import LifespanManager  # noqa: E402
+from faststream_fastapi import FastStreamAPI  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from safir.database import create_database_engine  # noqa: E402
 
-    - creates a dedicated PostgreSQL database named after the worker
-      (``<base>_gw0``, ...) on the shared container, with the ``pg_trgm``
-      extension installed, and points ``OOK_DATABASE_URL`` at it; and
-    - namespaces the Kafka topics and consumer group per worker so each
-      worker's FastStream broker publishes and consumes independently.
+from ook import main  # noqa: E402
+from ook.config import config  # noqa: E402
+from ook.factory import Factory  # noqa: E402
+from ook.kafkabroker import kafka_broker  # noqa: E402
+from ook.services import intersphinx as intersphinx_service  # noqa: E402
+from ook.services.linkcheck import _urlchecker  # noqa: E402
 
-    In a non-xdist (serial) run ``PYTEST_XDIST_WORKER`` is unset and this
-    is a no-op: the suite runs against the base database and topics
-    exactly as before.
-    """
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER")
-    if worker_id is None:
-        return
-
-    import asyncpg  # noqa: PLC0415
-
-    url = urlsplit(os.environ["OOK_DATABASE_URL"])
-    base_database = url.path.lstrip("/")
-    worker_database = f"{base_database}_{worker_id}"
-    password = os.environ["OOK_DATABASE_PASSWORD"]
-
-    async def _create_worker_database() -> None:
-        conn = await asyncpg.connect(
-            host=url.hostname,
-            port=url.port,
-            user=url.username,
-            password=password,
-            database=base_database,
-        )
-        try:
-            await conn.execute(f'DROP DATABASE IF EXISTS "{worker_database}"')
-            await conn.execute(f'CREATE DATABASE "{worker_database}"')
-        finally:
-            await conn.close()
-        conn = await asyncpg.connect(
-            host=url.hostname,
-            port=url.port,
-            user=url.username,
-            password=password,
-            database=worker_database,
-        )
-        try:
-            await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
-        finally:
-            await conn.close()
-
-    asyncio.run(_create_worker_database())
-
-    os.environ["OOK_DATABASE_URL"] = urlunsplit(
-        url._replace(path=f"/{worker_database}")
-    )
-    os.environ["OOK_INGEST_KAFKA_TOPIC"] = f"ook.ingest.{worker_id}"
-    os.environ["OOK_LINKCHECK_KAFKA_TOPIC"] = f"ook.linkcheck.{worker_id}"
-    os.environ["OOK_GROUP_ID"] = f"ook-{worker_id}"
-
-
-_isolate_xdist_worker()
-
-# The imports below must come after the xdist worker isolation shim so
-# that ook.config reads the (possibly rewritten) environment.
-# ruff: noqa: E402
-
-from collections.abc import AsyncIterator, Iterator, Sequence
-
-import pytest
-import pytest_asyncio
-import structlog
-from asgi_lifespan import LifespanManager
-from faststream_fastapi import FastStreamAPI
-from httpx import ASGITransport, AsyncClient
-from safir.database import create_database_engine
-
-from ook import main
-from ook.config import config
-from ook.factory import Factory
-from ook.kafkabroker import kafka_broker
-from ook.services import intersphinx as intersphinx_service
-from ook.services.linkcheck import _urlchecker
-
-from .support.algoliasearch import MockSearchClient, patch_algoliasearch
-from .support.database import (
+from .support.algoliasearch import (  # noqa: E402
+    MockSearchClient,
+    patch_algoliasearch,
+)
+from .support.database import (  # noqa: E402
     ddl_database_url,
     invalidate_schema,
     reset_database_for_test,
 )
-from .support.github import GitHubMocker
-from .support.kafka import kafka_work_tracker, running_subscriptions
+from .support.github import GitHubMocker  # noqa: E402
+from .support.kafka import (  # noqa: E402
+    kafka_work_tracker,
+    running_subscriptions,
+)
+
+verify_worker_isolation(
+    database_url=str(config.database_url),
+    ingest_kafka_topic=config.ingest_kafka_topic,
+    linkcheck_kafka_topic=config.linkcheck_kafka_topic,
+    kafka_consumer_group_id=config.kafka_consumer_group_id,
+)
 
 
 @pytest.fixture(autouse=True, scope="session")
