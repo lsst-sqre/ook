@@ -105,6 +105,14 @@ class GitHubOidcVerifier:
         amplifying a stream of tokens carrying invented key IDs into a
         stream of requests to GitHub; it costs a genuinely rotated-in key
         at most this long to start verifying.
+    token_leeway
+        Clock skew tolerated when checking a token's time-based claims —
+        see `_decode`, which explains why it applies to expiry as well as
+        to the not-yet-valid checks. Thirty seconds rather than a minute
+        because the nodes involved are NTP-synced and realistic skew is
+        sub-second: this covers it with a wide margin, and skew beyond it
+        is a monitoring problem that should be visible rather than
+        silently absorbed.
     issuer
         The issuer a token must name. Injectable for tests; there is one
         real value.
@@ -125,6 +133,7 @@ class GitHubOidcVerifier:
         logger: BoundLogger,
         jwks_ttl: timedelta = timedelta(hours=1),
         jwks_kid_miss_cooldown: timedelta = timedelta(seconds=60),
+        token_leeway: timedelta = timedelta(seconds=30),
         issuer: str = GITHUB_OIDC_ISSUER,
         jwks_url: str = GITHUB_OIDC_JWKS_URL,
         request_timeout: timedelta = timedelta(seconds=10),
@@ -134,6 +143,7 @@ class GitHubOidcVerifier:
         self._logger = logger
         self._jwks_ttl = jwks_ttl.total_seconds()
         self._kid_miss_cooldown = jwks_kid_miss_cooldown.total_seconds()
+        self._token_leeway = token_leeway.total_seconds()
         self._issuer = issuer
         self._jwks_url = jwks_url
         self._request_timeout = request_timeout.total_seconds()
@@ -223,6 +233,25 @@ class GitHubOidcVerifier:
         Signature, algorithm, audience, issuer, expiry, and claim presence
         are all checked here, in one call, so none of them can be
         accidentally skipped by a later edit that reorders the checks.
+
+        The time-based claims are checked with ``token_leeway`` of slack,
+        because GitHub stamps ``iat`` and ``nbf`` from *its* clock and this
+        process judges them by its own: without the leeway, Ook's clock
+        lagging GitHub's by a second is enough to reject a genuine token as
+        not yet valid, which reaches a client as a contribution rejection
+        it cannot explain or retry its way out of.
+
+        That slack is a single value covering ``iat``, ``nbf``, *and*
+        ``exp`` alike — PyJWT has no way to scope it to the not-yet-valid
+        checks — so a token also stays acceptable for ``token_leeway``
+        past its expiry. That is the accepted cost here: against the ~5
+        minute lifetime of a GitHub Actions id-token it extends by about a
+        tenth a window an attacker holding a captured token could already
+        use in full, and the token attests *provenance*, not
+        authorization — what permits the write at all is the Gafaelfawr
+        scope at the ingress. RFC 7519 §4.1.4 allows exactly this: "a
+        small leeway, usually no more than a few minutes, to account for
+        clock skew".
         """
         try:
             return jwt.decode(
@@ -231,6 +260,7 @@ class GitHubOidcVerifier:
                 algorithms=_ALGORITHMS,
                 audience=self._audience,
                 issuer=self._issuer,
+                leeway=self._token_leeway,
                 options={"require": _REQUIRED_CLAIMS},
             )
         except jwt.InvalidTokenError as e:

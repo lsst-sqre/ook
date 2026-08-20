@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -23,6 +23,16 @@ _TINY_TTL = timedelta(milliseconds=1)
 
 _TINY_COOLDOWN = timedelta(milliseconds=1)
 """An unknown-key-ID cooldown short enough that a brief sleep ends it."""
+
+
+def _numeric_date(offset: timedelta) -> int:
+    """Return a JWT numeric date ``offset`` away from now.
+
+    Skew tests set one time-based claim at a time, rather than shifting the
+    whole token with ``issued_at``, so each test pins the claim it is about
+    and leaves the others plainly valid.
+    """
+    return int((datetime.now(tz=UTC) + offset).timestamp())
 
 
 def _make_verifier(
@@ -138,6 +148,111 @@ async def test_expired_token_is_rejected(
 
     with pytest.raises(InvalidOidcTokenError):
         await _make_verifier(http_client).verify(token)
+
+
+@pytest.mark.asyncio
+async def test_future_iat_within_the_leeway_is_accepted(
+    http_client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A token issued a few seconds ahead of Ook's clock still verifies.
+
+    GitHub stamps ``iat`` from its own clock and PyJWT rejects a
+    future-dated one outright, so without a leeway a clock lag of a single
+    second would surface in a client's CI as an unexplainable contribution
+    rejection.
+    """
+    key = GitHubOidcSigningKey()
+    JwksMock(respx_mock, [key])
+    token = key.mint(
+        repository="org/skewed-clock",
+        extra_claims={"iat": _numeric_date(timedelta(seconds=5))},
+    )
+
+    claims = await _make_verifier(http_client).verify(token)
+
+    assert claims.repository == "org/skewed-clock"
+
+
+@pytest.mark.asyncio
+async def test_future_nbf_within_the_leeway_is_accepted(
+    http_client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The same skew tolerance covers a not-before claim.
+
+    ``nbf`` is checked in the same shape as ``iat`` and against the same
+    lagging clock, so tolerating skew on one and not the other would leave
+    the failure mode in place.
+    """
+    key = GitHubOidcSigningKey()
+    JwksMock(respx_mock, [key])
+    token = key.mint(
+        repository="org/skewed-clock",
+        extra_claims={"nbf": _numeric_date(timedelta(seconds=5))},
+    )
+
+    claims = await _make_verifier(http_client).verify(token)
+
+    assert claims.repository == "org/skewed-clock"
+
+
+@pytest.mark.asyncio
+async def test_future_iat_beyond_the_leeway_is_rejected(
+    http_client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """Skew tolerance widens the validity window; it does not remove it.
+
+    A token issued minutes into the future is not a clock that drifted, so
+    it stays rejected.
+    """
+    key = GitHubOidcSigningKey()
+    JwksMock(respx_mock, [key])
+    token = key.mint(extra_claims={"iat": _numeric_date(timedelta(minutes=5))})
+
+    with pytest.raises(InvalidOidcTokenError):
+        await _make_verifier(http_client).verify(token)
+
+
+@pytest.mark.asyncio
+async def test_expiry_beyond_the_leeway_is_rejected(
+    http_client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The skew tolerance on the expiry side is bounded to seconds.
+
+    PyJWT applies one leeway to every time-based claim, so tolerating a
+    future ``iat`` necessarily tolerates a just-past ``exp`` too. This
+    pins how far that reaches: a token a minute past expiry is already
+    outside it, which is what keeps the accepted cost the tenth of a
+    token's lifetime the service documents rather than an open-ended one.
+    """
+    key = GitHubOidcSigningKey()
+    JwksMock(respx_mock, [key])
+    token = key.mint(lifetime=timedelta(seconds=-60))
+
+    with pytest.raises(InvalidOidcTokenError):
+        await _make_verifier(http_client).verify(token)
+
+
+@pytest.mark.asyncio
+async def test_zero_leeway_rejects_a_skewed_token(
+    http_client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The tolerated skew comes from the constructor, not a constant.
+
+    Turning it off restores PyJWT's own behavior, which is what shows the
+    accepted tokens above are accepted because of the leeway.
+    """
+    key = GitHubOidcSigningKey()
+    JwksMock(respx_mock, [key])
+    token = key.mint(extra_claims={"iat": _numeric_date(timedelta(seconds=5))})
+    verifier = _make_verifier(http_client, token_leeway=timedelta(0))
+
+    with pytest.raises(InvalidOidcTokenError):
+        await verifier.verify(token)
 
 
 @pytest.mark.asyncio
