@@ -24,7 +24,9 @@ handler transactions commit in milliseconds, so a retry practically always
 wins -- and a truncate that never gets its lock raises `TruncateLockError`
 naming the PIDs, states, and queries of the sessions that were in the way.
 Worst case the whole thing gives up in a handful of seconds instead of
-hanging the job.
+hanging the job. The locks are taken table by table, so the same contention
+can also close a lock cycle and get the truncate killed as a deadlock victim
+before its ``lock_timeout`` even fires; that is retried on the same terms.
 
 Tests that run DDL (``tests/dbschema_test.py`` and ``tests/migrations``) must
 not do so against the database the session-scoped application's connection
@@ -60,8 +62,17 @@ __all__ = [
     "truncate_all_tables",
 ]
 
-_LOCK_NOT_AVAILABLE = "55P03"
-"""PostgreSQL SQLSTATE for ``canceling statement due to lock timeout``."""
+_RETRYABLE_TRUNCATE_SQLSTATES = frozenset({"55P03", "40P01"})
+"""PostgreSQL SQLSTATEs for a truncate worth retrying.
+
+``55P03`` (``lock_not_available``) is the ``lock_timeout`` cancellation.
+``40P01`` (``deadlock_detected``) is what PostgreSQL raises when it picks the
+truncate as the victim of a lock cycle: ``TRUNCATE`` takes its ``ACCESS
+EXCLUSIVE`` locks table by table, so a concurrent handler transaction can
+close a cycle with it, and the deadlock detector (``deadlock_timeout``, 1 s)
+fires before the 3 s ``lock_timeout``. Both are the same transient contention,
+and the next attempt practically always wins.
+"""
 
 _UNDEFINED_TABLE = "42P01"
 """PostgreSQL SQLSTATE for ``relation ... does not exist``."""
@@ -220,6 +231,10 @@ async def truncate_all_tables(
 ) -> None:
     """Truncate every schema table, bounded by a lock timeout.
 
+    An attempt that loses its table locks -- cancelled by the ``lock_timeout``
+    or chosen as a deadlock victim -- is retried; any other database error
+    propagates immediately.
+
     Parameters
     ----------
     engine
@@ -234,8 +249,8 @@ async def truncate_all_tables(
     Raises
     ------
     TruncateLockError
-        Raised if every attempt was cancelled by the lock timeout. The message
-        names the other sessions on the database.
+        Raised if every attempt lost its table locks. The message names the
+        other sessions on the database.
     """
     tables = ", ".join(
         f'"{table.name}"' for table in Base.metadata.sorted_tables
@@ -263,7 +278,7 @@ async def _truncate_unless_schema_missing(engine: AsyncEngine) -> bool:
     -------
     bool
         `True` if the truncate succeeded, `False` if the schema's tables no
-        longer exist. Every other database error, including a lock timeout
+        longer exist. Every other database error, including lock contention
         that exhausted its retries, propagates.
     """
     try:
@@ -278,10 +293,10 @@ async def _truncate_unless_schema_missing(engine: AsyncEngine) -> bool:
 async def _attempt_truncate(
     engine: AsyncEngine, statement: TextClause, lock_timeout: str
 ) -> DBAPIError | None:
-    """Run one truncate attempt, returning its lock-timeout error, if any.
+    """Run one truncate attempt, returning its retryable error, if any.
 
-    Any other database error propagates: only a lock timeout is worth
-    retrying.
+    Any other database error propagates: only transient lock contention is
+    worth retrying.
     """
     try:
         async with engine.begin() as conn:
@@ -290,36 +305,33 @@ async def _attempt_truncate(
             )
             await conn.execute(statement)
     except DBAPIError as exc:
-        if not _is_lock_timeout(exc):
+        if not _is_retryable_truncate_error(exc):
             raise
         return exc
     return None
 
 
-def _has_sqlstate(exc: DBAPIError, sqlstate: str) -> bool:
-    """Return whether a database error carries a given PostgreSQL SQLSTATE.
+def _sqlstate(exc: DBAPIError) -> str | None:
+    """Return the PostgreSQL SQLSTATE a database error carries.
 
-    Depending on how deeply SQLAlchemy wrapped the asyncpg exception, the code
-    may live on ``orig`` or on the exception that caused it, and may be spelled
-    either ``sqlstate`` (asyncpg) or ``pgcode`` (SQLAlchemy's translation).
+    SQLAlchemy's asyncpg adapter sets both ``sqlstate`` and ``pgcode`` on the
+    DBAPI error it raises (see ``_handle_exception`` in
+    ``sqlalchemy/dialects/postgresql/asyncpg.py``), so ``orig.sqlstate`` is the
+    single authoritative place to look.
     """
-    candidates = [exc.orig, getattr(exc.orig, "__cause__", None)]
-    for candidate in candidates:
-        if candidate is None:
-            continue
-        code = getattr(candidate, "sqlstate", None) or getattr(
-            candidate, "pgcode", None
-        )
-        if code == sqlstate:
-            return True
-    return False
+    return getattr(exc.orig, "sqlstate", None)
 
 
-def _is_lock_timeout(exc: DBAPIError) -> bool:
-    """Return whether a database error is a ``lock_timeout`` cancellation."""
-    if _has_sqlstate(exc, _LOCK_NOT_AVAILABLE):
-        return True
-    return "due to lock timeout" in str(exc)
+def _is_retryable_truncate_error(exc: DBAPIError) -> bool:
+    """Return whether a failed truncate is transient lock contention.
+
+    Only the SQLSTATE is consulted. Matching on the message text instead would
+    misfire, because a `DBAPIError`'s ``str`` renders the failing statement as
+    well as the driver message: an unrelated error whose text merely mentioned
+    a lock timeout would be retried and then reported as a `TruncateLockError`,
+    burying the real failure.
+    """
+    return _sqlstate(exc) in _RETRYABLE_TRUNCATE_SQLSTATES
 
 
 def _is_undefined_table(exc: DBAPIError) -> bool:
@@ -328,7 +340,7 @@ def _is_undefined_table(exc: DBAPIError) -> bool:
     Only the SQLSTATE is consulted: PostgreSQL says "does not exist" about
     many other objects too, so matching on the message would misclassify them.
     """
-    return _has_sqlstate(exc, _UNDEFINED_TABLE)
+    return _sqlstate(exc) == _UNDEFINED_TABLE
 
 
 async def _describe_other_sessions(engine: AsyncEngine) -> str:

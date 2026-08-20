@@ -1,14 +1,27 @@
 """Tests for the bounded per-test database truncate.
 
 These run against the dedicated DDL database so the deliberately blocking
-transaction can never contend with the session-scoped application.
+transaction can never contend with the session-scoped application. The tests
+that need a specific driver error inject a canned one through
+`_TruncateFailingEngine` rather than racing PostgreSQL for it, but they still
+run the real retry loop against a real database so the blocker diagnostics are
+exercised too.
 """
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any, cast
+
 import pytest
+from asyncpg.exceptions import (
+    DeadlockDetectedError,
+    InsufficientPrivilegeError,
+    LockNotAvailableError,
+)
 from safir.database import create_database_engine
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from ook.config import config
 
@@ -18,6 +31,74 @@ from .support.database import (
     reset_database_for_test,
     truncate_all_tables,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from sqlalchemy.engine import CursorResult
+    from sqlalchemy.engine.url import URL
+    from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+    from sqlalchemy.sql.elements import TextClause
+
+
+class _FailingConnection:
+    def __init__(
+        self, owner: _TruncateFailingEngine, conn: AsyncConnection
+    ) -> None:
+        self._owner = owner
+        self._conn = conn
+
+    async def execute(self, statement: TextClause) -> CursorResult[Any]:
+        """Run the statement, unless it is the truncate this engine fails."""
+        if str(statement).lstrip().startswith("TRUNCATE"):
+            self._owner.attempts += 1
+            raise self._owner.error
+        return await self._conn.execute(statement)
+
+
+class _TruncateFailingEngine:
+    """A real engine whose ``TRUNCATE`` always fails with a canned error.
+
+    Only the members `truncate_all_tables` reaches for are wrapped; ``connect``
+    and ``url`` are the real engine's, so the give-up path still queries
+    ``pg_stat_activity`` for real.
+    """
+
+    def __init__(self, engine: AsyncEngine, error: DBAPIError) -> None:
+        self.error = error
+        self.attempts = 0
+        self._engine = engine
+
+    @property
+    def url(self) -> URL:
+        """URL of the wrapped engine."""
+        return self._engine.url
+
+    def connect(self) -> AsyncConnection:
+        """Return a real connection, which the blocker report needs."""
+        return self._engine.connect()
+
+    @asynccontextmanager
+    async def begin(self) -> AsyncIterator[_FailingConnection]:
+        """Begin a real transaction whose truncate is doomed."""
+        async with self._engine.begin() as conn:
+            yield _FailingConnection(self, conn)
+
+    def as_engine(self) -> AsyncEngine:
+        """Return this wrapper typed as the engine it stands in for."""
+        return cast("AsyncEngine", self)
+
+
+def _canned_error(
+    orig: Exception, *, statement: str = "TRUNCATE"
+) -> DBAPIError:
+    """Build the wrapper SQLAlchemy raises around an asyncpg error.
+
+    The asyncpg adapter copies asyncpg's ``sqlstate`` onto the DBAPI error it
+    raises, so handing the asyncpg exception itself to `DBAPIError` reproduces
+    what the truncate classifier actually sees.
+    """
+    return DBAPIError(statement=statement, params=None, orig=orig)
 
 
 @pytest.mark.asyncio
@@ -57,4 +138,78 @@ async def test_truncate_gives_up_and_names_the_blocker() -> None:
         await truncate_all_tables(engine)
     finally:
         await blocker.dispose()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "orig",
+    [
+        pytest.param(
+            LockNotAvailableError("canceling statement due to lock timeout"),
+            id="lock-timeout",
+        ),
+        pytest.param(
+            DeadlockDetectedError("deadlock detected"), id="deadlock"
+        ),
+    ],
+)
+async def test_truncate_retries_transient_lock_contention(
+    orig: Exception,
+) -> None:
+    """A deadlock gets the same bounded retry as a lock timeout.
+
+    ``TRUNCATE`` takes its ``ACCESS EXCLUSIVE`` locks table by table, so a
+    concurrent handler transaction can close a lock cycle with it. PostgreSQL's
+    deadlock detector (``deadlock_timeout``, 1 s) fires before the truncate's
+    own 3 s ``lock_timeout``, and it may pick the truncate as the victim -- so
+    the very contention the retry exists to absorb often arrives as ``40P01``
+    rather than ``55P03``.
+    """
+    database_url = await ddl_database_url()
+    engine = create_database_engine(database_url, config.database_password)
+    failing = _TruncateFailingEngine(engine, _canned_error(orig))
+    try:
+        with pytest.raises(TruncateLockError) as excinfo:
+            await truncate_all_tables(
+                failing.as_engine(), attempts=3, retry_delay=0.01
+            )
+
+        assert failing.attempts == 3
+        assert excinfo.value.__cause__ is failing.error
+        assert "after 3 attempts" in str(excinfo.value)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_truncate_does_not_retry_on_message_text() -> None:
+    """An unrelated failure propagates even if its text names a lock timeout.
+
+    Classification used to fall back to a ``"due to lock timeout"`` substring
+    match on ``str(exc)``, which renders the statement as well as the driver
+    message. Any error whose text happened to contain the phrase was retried
+    and then reported as a `TruncateLockError`, burying the real failure.
+    """
+    error = _canned_error(
+        InsufficientPrivilegeError('permission denied for table "resource"'),
+        statement=(
+            'SELECT * FROM "resource" WHERE title ='
+            " 'canceling statement due to lock timeout'"
+        ),
+    )
+    assert "due to lock timeout" in str(error)
+
+    database_url = await ddl_database_url()
+    engine = create_database_engine(database_url, config.database_password)
+    failing = _TruncateFailingEngine(engine, error)
+    try:
+        with pytest.raises(DBAPIError) as excinfo:
+            await truncate_all_tables(
+                failing.as_engine(), attempts=3, retry_delay=0.01
+            )
+
+        assert excinfo.value is error
+        assert failing.attempts == 1
+    finally:
         await engine.dispose()
