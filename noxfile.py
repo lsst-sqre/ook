@@ -33,6 +33,7 @@ nox.options.reuse_existing_virtualenvs = True
 INFRA_TEST_PATHS = (
     "tests/cli",
     "tests/dbschema_test.py",
+    "tests/factory_test.py",
     "tests/handlers",
     "tests/migrations",
     "tests/services",

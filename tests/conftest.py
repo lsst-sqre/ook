@@ -212,7 +212,15 @@ async def factory(
     mock_algoliasearch: MockSearchClient,
     mock_github: GitHubMocker,
 ) -> AsyncIterator[Factory]:
-    """Return a configured ``Factory`` without setting up a FastAPI app."""
+    """Return a configured ``Factory`` without setting up a FastAPI app.
+
+    The standalone factory reaches for the same module-level Kafka broker
+    the application runs on. When the session-scoped app lifespan has
+    already started that broker, ``Factory.create_standalone`` leaves its
+    lifecycle alone, so this fixture's teardown cannot close a producer or
+    stop subscribers a later app test still needs. Otherwise the factory
+    owns the broker and stops it here.
+    """
     logger = structlog.get_logger("ook")
     engine = create_database_engine(
         config.database_url, config.database_password
