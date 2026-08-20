@@ -22,6 +22,7 @@ from asgi_lifespan import LifespanManager  # noqa: E402
 from faststream_fastapi import FastStreamAPI  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from safir.database import create_database_engine  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncEngine  # noqa: E402
 
 from ook import main  # noqa: E402
 from ook.config import config  # noqa: E402
@@ -122,8 +123,55 @@ async def http_client() -> AsyncIterator[AsyncClient]:
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def database_engine() -> AsyncIterator[AsyncEngine]:
+    """Return the one database engine this pytest worker's fixtures share.
+
+    Every per-test database reset runs on this engine, and the ``factory``
+    fixture opens its sessions on it too. Constructing an engine costs a
+    connection handshake and a pool teardown, while a reset only needs a
+    working connection and the retry logic around it is connection-local, so
+    there is nothing for a per-test engine to buy. Sharing one is safe here
+    because ``asyncio_default_fixture_loop_scope`` and
+    ``asyncio_default_test_loop_scope`` are both ``session``: the asyncpg
+    connections this engine pools live on the same event loop as every
+    fixture and test that borrows them.
+
+    The engine is yielded with the schema built and Alembic-stamped, because
+    the application's lifespan refuses to start against a database that is
+    not at the current migration and the per-test reset only truncates --
+    it preserves that stamp but never creates it. Under pytest-xdist the
+    database is the worker's own; see `tests.support.xdist`.
+    """
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    try:
+        await reset_database_for_test(engine)
+        yield engine
+    finally:
+        await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def _empty_database(database_engine: AsyncEngine) -> None:
+    """Give this test an empty, Alembic-stamped database.
+
+    Requested by every fixture that hands a test the database, so a test
+    that uses more than one of them still pays for a single reset.
+
+    Because the application's Kafka broker is never stopped between tests, a
+    handler left over from an earlier test can still hold a transaction open
+    when this runs. The reset therefore truncates under a short
+    ``lock_timeout`` with a bounded retry rather than waiting indefinitely;
+    see `tests.support.database`.
+    """
+    await reset_database_for_test(database_engine)
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def _app_lifespan(
     _patched_ssrf_guard_dns: None,
+    database_engine: AsyncEngine,
 ) -> AsyncIterator[FastStreamAPI]:
     """Start the test application once per pytest session.
 
@@ -134,16 +182,15 @@ async def _app_lifespan(
     fixture, and per-test HTTP mocking (respx) intercepts at the transport
     layer so it works with the long-lived clients created here.
 
+    The application's own lifespan checks that the database is at the
+    current Alembic revision, which is why this depends on
+    `database_engine`: creating that fixture builds and stamps the schema.
+
     Because the subscribers keep running between tests, the Kafka work a
     test leaves behind has to be drained before the next one starts; the
     tracker armed here is what the ``app`` and ``factory`` fixtures wait on.
     See `tests.support.kafka`.
     """
-    engine = create_database_engine(
-        config.database_url, config.database_password
-    )
-    await reset_database_for_test(engine)
-    await engine.dispose()
     kafka_work_tracker.install(kafka_broker)
     async with LifespanManager(main.app):
         subscriptions = running_subscriptions(kafka_broker)
@@ -159,30 +206,21 @@ async def _app_lifespan(
 @pytest_asyncio.fixture
 async def app(
     _app_lifespan: FastStreamAPI,
+    _empty_database: None,
     mock_algoliasearch: MockSearchClient,
     mock_github: GitHubMocker,
 ) -> AsyncIterator[FastStreamAPI]:
     """Return the running test application with an empty database.
 
     The application (broker, database pool, HTTP clients) is shared across
-    the session; each test starts from an empty, Alembic-stamped database.
-
-    Because the broker is never stopped between tests, a Kafka handler left
-    over from an earlier test can still hold a transaction open when the reset
-    runs. The reset therefore truncates under a short ``lock_timeout`` with a
-    bounded retry rather than waiting indefinitely; see
-    ``tests.support.database``.
+    the session; each test starts from an empty, Alembic-stamped database,
+    courtesy of `_empty_database`.
 
     The teardown drains the Kafka work this test published before returning,
     so no handler is still running when the respx routers this fixture
     depends on are removed or when the next test truncates the database. It
     is a no-op for a test that published nothing. See `tests.support.kafka`.
     """
-    engine = create_database_engine(
-        config.database_url, config.database_password
-    )
-    await reset_database_for_test(engine)
-    await engine.dispose()
     yield _app_lifespan
     await kafka_work_tracker.drain()
 
@@ -198,10 +236,17 @@ async def client(app: FastStreamAPI) -> AsyncIterator[AsyncClient]:
 
 @pytest_asyncio.fixture
 async def factory(
+    database_engine: AsyncEngine,
+    _empty_database: None,
     mock_algoliasearch: MockSearchClient,
     mock_github: GitHubMocker,
 ) -> AsyncIterator[Factory]:
     """Return a configured ``Factory`` without setting up a FastAPI app.
+
+    The factory's session comes from the shared `database_engine`, so
+    nothing here disposes it: ``Factory.aclose`` closes the session and its
+    connection goes back to the pool that every later test, and the
+    session-scoped application, keep using.
 
     The standalone factory reaches for the same module-level Kafka broker
     the application runs on. When the session-scoped app lifespan has
@@ -216,13 +261,8 @@ async def factory(
     is consuming those topics and the drain is a no-op.
     """
     logger = structlog.get_logger("ook")
-    engine = create_database_engine(
-        config.database_url, config.database_password
-    )
-    await reset_database_for_test(engine)
     async with Factory.create_standalone(
-        logger=logger, engine=engine
+        logger=logger, engine=database_engine
     ) as factory:
         yield factory
         await kafka_work_tracker.drain()
-    await engine.dispose()

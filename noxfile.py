@@ -40,6 +40,7 @@ INFRA_TEST_PATHS = (
     "tests/provision_database_test.py",
     "tests/schema_reset_test.py",
     "tests/services",
+    "tests/shared_engine_test.py",
     "tests/storage",
     "tests/truncate_lock_test.py",
 )
