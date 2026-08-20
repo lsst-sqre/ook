@@ -24,6 +24,29 @@ nox.options.sessions = ["lint", "typing", "test", "docs"]
 nox.options.default_venv_backend = "uv"
 nox.options.reuse_existing_virtualenvs = True
 
+# Test paths that require the Postgres and Kafka testcontainers. Every other
+# path under tests/ is treated as a pure unit test and runs in the
+# "test-unit" session without starting any containers. A new test directory
+# is picked up by test-unit automatically; if its tests actually need the
+# database or Kafka they fail immediately there (connection refused against
+# the unreachable placeholder servers below) until the path is added here.
+INFRA_TEST_PATHS = (
+    "tests/cli",
+    "tests/dbschema_test.py",
+    "tests/handlers",
+    "tests/migrations",
+    "tests/services",
+    "tests/storage",
+    "tests/truncate_lock_test.py",
+)
+
+# Placeholder connection targets for the test-unit session. Nothing listens
+# on port 1, so any test that reaches for the database or Kafka fails
+# immediately with a connection error instead of hanging or silently using
+# real infrastructure.
+UNREACHABLE_DATABASE_URL = "postgresql+asyncpg://ook@127.0.0.1:1/ook"
+UNREACHABLE_KAFKA_BOOTSTRAP = "127.0.0.1:1"
+
 
 @session(uv_only_groups=["lint"], uv_no_install_project=True)
 def lint(session: nox.Session) -> None:
@@ -116,6 +139,40 @@ def test_coverage(session: nox.Session) -> None:
                 *session.posargs,
                 env=env_vars,
             )
+
+
+@session(name="test-unit", uv_groups=["dev"])
+def test_unit(session: nox.Session) -> None:
+    """Run the unit tests that need no testcontainers.
+
+    Runs everything under tests/ except INFRA_TEST_PATHS, without starting
+    the Kafka or Postgres containers. The database and Kafka environment
+    variables point at unreachable placeholder servers, so a test that is
+    misclassified as a unit test (that is, one that actually touches the
+    database or Kafka) fails immediately with a connection error.
+
+    The session runs serially: it takes about a second, so the xdist
+    worker startup that the container-backed sessions need would be pure
+    overhead. Positional arguments replace the default test selection (for
+    example ``nox -s test-unit -- tests/domain/base32id_test.py``); the
+    unreachable-infrastructure environment still applies.
+    """
+    env_vars = _make_env_vars(
+        {
+            "KAFKA_BOOTSTRAP_SERVERS": UNREACHABLE_KAFKA_BOOTSTRAP,
+            "OOK_DATABASE_URL": UNREACHABLE_DATABASE_URL,
+            "OOK_DATABASE_PASSWORD": "unreachable",
+        }
+    )
+    if session.posargs:
+        pytest_args = list(session.posargs)
+    else:
+        pytest_args = ["tests", *(f"--ignore={p}" for p in INFRA_TEST_PATHS)]
+    session.run(
+        "pytest",
+        *pytest_args,
+        env=env_vars,
+    )
 
 
 @session(name="dump-db-schema")
