@@ -33,15 +33,15 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Run prek
         run: uv run --group=lint prek run --all-files
 
-  test:
+  typing:
     runs-on: ubuntu-latest
-    # The suite runs testcontainers for PostgreSQL and Kafka and has grown
-    # past 14 minutes of pytest on its own, so 15 minutes left no headroom.
-    timeout-minutes: 25
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v7
@@ -50,9 +50,57 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Run nox
-        run: uv run --group=nox nox -s typing test-coverage
+        run: uv run --group=nox nox -s typing
+
+  test-unit:
+    runs-on: ubuntu-latest
+    # Unit tests run without testcontainers and finish in seconds; the
+    # timeout only needs to cover dependency installation.
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Run nox
+        run: uv run --group=nox nox -s test-unit
+
+  test:
+    runs-on: ubuntu-latest
+    # Each shard runs roughly half of the container-backed suite plus about
+    # a minute of testcontainer startup, so 20 minutes leaves headroom.
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1", "2"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Run nox
+        # Coverage output is per-shard and informational only (there is no
+        # coverage threshold or upload); shard membership is defined by
+        # INFRA_TEST_SHARDS in noxfile.py.
+        run: uv run --group=nox nox -s test-shard -- ${{ matrix.shard }}
 
   docs:
     runs-on: ubuntu-latest
@@ -68,6 +116,8 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Run nox
         run: uv run --group=nox nox -s docs
@@ -93,7 +143,11 @@ jobs:
     concurrency:
       group: docker
       queue: max
-    needs: [test]
+    # Gating on typing and both test jobs preserves the old semantics, where
+    # the single test job ran mypy and the full suite before build started.
+    # typing and test-unit finish well before the test shards, so they do
+    # not extend the critical path.
+    needs: [typing, test-unit, test]
     secrets: inherit
     uses: lsst-sqre/multiplatform-build-and-push/.github/workflows/build.yaml@v4
     with:

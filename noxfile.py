@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from time import sleep
 from typing import TYPE_CHECKING
@@ -15,6 +16,8 @@ import sqlalchemy
 from nox_uv import session
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from testcontainers.postgres import PostgresContainer
 
 # Default sessions
@@ -23,6 +26,57 @@ nox.options.sessions = ["lint", "typing", "test", "docs"]
 # Other nox defaults
 nox.options.default_venv_backend = "uv"
 nox.options.reuse_existing_virtualenvs = True
+
+# Test paths that require the Postgres and Kafka testcontainers. Every other
+# path under tests/ is treated as a pure unit test and runs in the
+# "test-unit" session without starting any containers. A new test directory
+# is picked up by test-unit automatically; if its tests actually need the
+# database or Kafka they fail immediately there (connection refused against
+# the unreachable placeholder servers below) until the path is added here.
+INFRA_TEST_PATHS = (
+    "tests/cli",
+    "tests/dbschema_test.py",
+    "tests/handlers",
+    "tests/migrations",
+    "tests/services",
+    "tests/storage",
+)
+
+# CI shards over INFRA_TEST_PATHS, used by the test-shard session so pytest
+# time can be split across parallel CI jobs. Rebalance by moving paths
+# between shards (balance by runtime, not test count).
+INFRA_TEST_SHARDS = {
+    "1": (
+        "tests/handlers",
+        "tests/cli",
+        "tests/migrations",
+        "tests/dbschema_test.py",
+    ),
+    "2": (
+        "tests/services",
+        "tests/storage",
+    ),
+}
+
+# Fail loudly (on any nox invocation) if the shards do not exactly cover
+# INFRA_TEST_PATHS, so a path added to one list but not the other cannot
+# silently drop tests from CI.
+_shard_union = {path for shard in INFRA_TEST_SHARDS.values() for path in shard}
+if _shard_union != set(INFRA_TEST_PATHS):
+    _missing = set(INFRA_TEST_PATHS) - _shard_union
+    _extra = _shard_union - set(INFRA_TEST_PATHS)
+    raise RuntimeError(
+        "INFRA_TEST_SHARDS must exactly cover INFRA_TEST_PATHS. "
+        f"Missing from shards: {sorted(_missing)}; "
+        f"not in INFRA_TEST_PATHS: {sorted(_extra)}"
+    )
+
+# Placeholder connection targets for the test-unit session. Nothing listens
+# on port 1, so any test that reaches for the database or Kafka fails
+# immediately with a connection error instead of hanging or silently using
+# real infrastructure.
+UNREACHABLE_DATABASE_URL = "postgresql+asyncpg://ook@127.0.0.1:1/ook"
+UNREACHABLE_KAFKA_BOOTSTRAP = "127.0.0.1:1"
 
 
 @session(uv_only_groups=["lint"], uv_no_install_project=True)
@@ -37,9 +91,11 @@ def typing(session: nox.Session) -> None:
     session.run("mypy", "noxfile.py", "src", "tests")
 
 
-@session(uv_groups=["dev"])
-def test(session: nox.Session) -> None:
-    """Run pytest without coverage reporting."""
+@contextmanager
+def _test_containers() -> Iterator[dict[str, str]]:
+    """Start the Kafka and Postgres testcontainers used by the test
+    sessions and yield the environment variables for pytest.
+    """
     _setup_testcontainers_logging()
     _setup_testcontainers_env()
 
@@ -51,7 +107,7 @@ def test(session: nox.Session) -> None:
         with PostgresContainer("postgres:16") as postgres:
             _install_postgres_extensions(postgres)
 
-            env_vars = _make_env_vars(
+            yield _make_env_vars(
                 {
                     "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
                     "OOK_DATABASE_URL": postgres.get_connection_url(
@@ -60,43 +116,95 @@ def test(session: nox.Session) -> None:
                     "OOK_DATABASE_PASSWORD": postgres.password,
                 }
             )
-            session.run(
-                "pytest",
-                *session.posargs,
-                env=env_vars,
-            )
+
+
+@session(uv_groups=["dev"])
+def test(session: nox.Session) -> None:
+    """Run pytest without coverage reporting."""
+    with _test_containers() as env_vars:
+        session.run(
+            "pytest",
+            *session.posargs,
+            env=env_vars,
+        )
 
 
 @session(name="test-coverage", uv_groups=["dev"])
 def test_coverage(session: nox.Session) -> None:
     """Run pytest with coverage reporting."""
-    _setup_testcontainers_logging()
-    _setup_testcontainers_env()
+    with _test_containers() as env_vars:
+        session.run(
+            "pytest",
+            "--cov=ook",
+            "--cov-branch",
+            *session.posargs,
+            env=env_vars,
+        )
 
-    # Import after setting environment variables so config is read correctly
-    from testcontainers.kafka import KafkaContainer  # noqa: PLC0415
-    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
 
-    with KafkaContainer().with_kraft() as kafka:
-        with PostgresContainer("postgres:16") as postgres:
-            _install_postgres_extensions(postgres)
+@session(name="test-unit", uv_groups=["dev"])
+def test_unit(session: nox.Session) -> None:
+    """Run the unit tests that need no testcontainers.
 
-            env_vars = _make_env_vars(
-                {
-                    "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
-                    "OOK_DATABASE_URL": postgres.get_connection_url(
-                        driver="asyncpg"
-                    ),
-                    "OOK_DATABASE_PASSWORD": postgres.password,
-                }
-            )
-            session.run(
-                "pytest",
-                "--cov=ook",
-                "--cov-branch",
-                *session.posargs,
-                env=env_vars,
-            )
+    Runs everything under tests/ except INFRA_TEST_PATHS, without starting
+    the Kafka or Postgres containers. The database and Kafka environment
+    variables point at unreachable placeholder servers, so a test that is
+    misclassified as a unit test (that is, one that actually touches the
+    database or Kafka) fails immediately with a connection error.
+
+    Positional arguments replace the default test selection (for example
+    ``nox -s test-unit -- tests/domain/base32id_test.py``); the
+    unreachable-infrastructure environment still applies.
+    """
+    env_vars = _make_env_vars(
+        {
+            "KAFKA_BOOTSTRAP_SERVERS": UNREACHABLE_KAFKA_BOOTSTRAP,
+            "OOK_DATABASE_URL": UNREACHABLE_DATABASE_URL,
+            "OOK_DATABASE_PASSWORD": "unreachable",
+        }
+    )
+    if session.posargs:
+        pytest_args = list(session.posargs)
+    else:
+        pytest_args = ["tests"] + [
+            f"--ignore={path}" for path in INFRA_TEST_PATHS
+        ]
+    session.run(
+        "pytest",
+        *pytest_args,
+        env=env_vars,
+    )
+
+
+@session(name="test-shard", uv_groups=["dev"])
+def test_shard(session: nox.Session) -> None:
+    """Run one CI shard of the container-backed tests, with coverage.
+
+    The first positional argument selects the shard from
+    INFRA_TEST_SHARDS (for example ``nox -s test-shard -- 1``); any
+    further positional arguments are passed to pytest. Coverage output is
+    per-shard and informational only.
+    """
+    if not session.posargs:
+        session.error(
+            "Pass a shard id, e.g. 'nox -s test-shard -- 1'. Available "
+            f"shards: {', '.join(sorted(INFRA_TEST_SHARDS))}"
+        )
+    shard_id = session.posargs[0]
+    if shard_id not in INFRA_TEST_SHARDS:
+        session.error(
+            f"Unknown shard {shard_id!r}. Available shards: "
+            f"{', '.join(sorted(INFRA_TEST_SHARDS))}"
+        )
+    with _test_containers() as env_vars:
+        session.run(
+            "pytest",
+            "--cov=ook",
+            "--cov-branch",
+            *INFRA_TEST_SHARDS[shard_id],
+            *session.posargs[1:],
+            env=env_vars,
+        )
 
 
 @session(name="dump-db-schema")
