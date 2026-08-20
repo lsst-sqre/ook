@@ -10,20 +10,16 @@ import structlog
 from asgi_lifespan import LifespanManager
 from faststream_fastapi import FastStreamAPI
 from httpx import ASGITransport, AsyncClient
-from safir.database import (
-    create_database_engine,
-    initialize_database,
-    stamp_database_async,
-)
+from safir.database import create_database_engine
 
 from ook import main
 from ook.config import config
-from ook.dbschema import Base
 from ook.factory import Factory
 from ook.services import intersphinx as intersphinx_service
 from ook.services.linkcheck import _urlchecker
 
 from .support.algoliasearch import MockSearchClient, patch_algoliasearch
+from .support.database import reset_database_for_test
 from .support.github import GitHubMocker
 
 
@@ -79,12 +75,10 @@ async def app(
     Wraps the application in a lifespan manager so that startup and shutdown
     events are sent during test execution.
     """
-    logger = structlog.get_logger("ook")
     engine = create_database_engine(
         config.database_url, config.database_password
     )
-    await initialize_database(engine, logger, schema=Base.metadata, reset=True)
-    await stamp_database_async(engine)
+    await reset_database_for_test(engine)
     await engine.dispose()
     # FastStreamAPI starts the broker before entering the app's own
     # lifespan and stops it after exit, so every test gets a freshly
@@ -112,7 +106,7 @@ async def factory(
     engine = create_database_engine(
         config.database_url, config.database_password
     )
-    await initialize_database(engine, logger, schema=Base.metadata, reset=True)
+    await reset_database_for_test(engine)
     async with Factory.create_standalone(
         logger=logger, engine=engine
     ) as factory:
