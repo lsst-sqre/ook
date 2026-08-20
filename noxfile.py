@@ -894,6 +894,7 @@ def _make_env_vars(
         "ALGOLIA_API_KEY": "test",
         "OOK_GITHUB_APP_ID": "1234",
         "OOK_GITHUB_APP_PRIVATE_KEY": TEST_GITHUB_APP_PRIVATE_KEY,
+        "OOK_OIDC_AUDIENCE": "https://test.example.com/ook",
     }
     if overrides:
         env_vars.update(overrides)
