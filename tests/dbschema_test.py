@@ -1,4 +1,9 @@
-"""Test the database schema."""
+"""Test the database schema.
+
+Every test here runs DDL, so they all use the dedicated DDL database rather
+than the one the session-scoped application's connection pool is attached to.
+See ``tests.support.database.ddl_database_url``.
+"""
 
 import os
 import subprocess
@@ -12,14 +17,19 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from ook.config import config
 from ook.dbschema import Base
 
-from .support.database import reset_database_for_test
+from .support.database import ddl_database_url, reset_database_for_test
+
+
+async def _create_ddl_engine() -> AsyncEngine:
+    """Return an engine onto this process's DDL database."""
+    return create_database_engine(
+        await ddl_database_url(), config.database_password
+    )
 
 
 async def _init_database() -> AsyncEngine:
-    """Return an engine onto a fresh, empty schema."""
-    engine = create_database_engine(
-        config.database_url, config.database_password
-    )
+    """Return an engine onto a fresh, empty schema in the DDL database."""
+    engine = await _create_ddl_engine()
     await reset_database_for_test(engine)
     return engine
 
@@ -206,11 +216,15 @@ async def test_duplicate_external_reference_url_rejected() -> None:
 
 @pytest.mark.asyncio
 async def test_schema() -> None:
-    engine = create_database_engine(
-        config.database_url, config.database_password
-    )
+    database_url = await ddl_database_url()
+    engine = create_database_engine(database_url, config.database_password)
     await drop_database(engine, Base.metadata)
     await engine.dispose()
+
+    # alembic/env.py imports ook.config in the child process, so point that
+    # fresh Configuration at the DDL database through the child's environment
+    # rather than mutating this process's environment.
+    env = {**os.environ, "OOK_DATABASE_URL": database_url}
 
     # Run alembic upgrade
     result = subprocess.run(  # noqa: ASYNC221
@@ -218,7 +232,7 @@ async def test_schema() -> None:
         check=False,
         capture_output=True,
         text=True,
-        env=os.environ,
+        env=env,
     )
     if result.returncode != 0:
         print(f"alembic upgrade failed with return code {result.returncode}")
@@ -234,7 +248,7 @@ async def test_schema() -> None:
         check=False,
         capture_output=True,
         text=True,
-        env=os.environ,
+        env=env,
     )
     if result.returncode != 0:
         print(f"alembic check failed with return code {result.returncode}")

@@ -183,6 +183,12 @@ async def app(
 
     The application (broker, database pool, HTTP clients) is shared across
     the session; each test starts from an empty, Alembic-stamped database.
+
+    Because the broker is never stopped between tests, a Kafka handler left
+    over from an earlier test can still hold a transaction open when the reset
+    runs. The reset therefore truncates under a short ``lock_timeout`` with a
+    bounded retry rather than waiting indefinitely; see
+    ``tests.support.database``.
     """
     engine = create_database_engine(
         config.database_url, config.database_password

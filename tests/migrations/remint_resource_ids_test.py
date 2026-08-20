@@ -1,4 +1,10 @@
-"""Integration test for the one-time resource-ID re-mint migration."""
+"""Integration test for the one-time resource-ID re-mint migration.
+
+The migration drops and recreates foreign keys, so it runs against the
+dedicated DDL database rather than the one the session-scoped application's
+connection pool is attached to. See
+``tests.support.database.ddl_database_url``.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from ook.config import config
 from ook.domain.base32id import RESOURCE_ID_EPOCH, RESOURCE_ID_RANDOM_BITS
 
-from ..support.database import reset_database_for_test
+from ..support.database import ddl_database_url, reset_database_for_test
 
 _MIGRATION_GLOB = "alembic/versions/*_remint_resource_ids_time_ordered.py"
 
@@ -142,7 +148,7 @@ async def _seed(engine: AsyncEngine) -> dict[str, int]:
 async def test_remint_reorders_ids_and_preserves_fks() -> None:
     """Re-mint IDs in date_created order while keeping FKs intact."""
     engine = create_database_engine(
-        config.database_url, config.database_password
+        await ddl_database_url(), config.database_password
     )
     await reset_database_for_test(engine)
 
