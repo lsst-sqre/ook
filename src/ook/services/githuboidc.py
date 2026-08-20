@@ -99,6 +99,12 @@ class GitHubOidcVerifier:
         Rotation is also handled off this schedule — see `verify` — so this
         governs how quickly a *withdrawn* key stops verifying tokens, which
         needs no urgency.
+    jwks_kid_miss_cooldown
+        Minimum interval between the off-schedule refetches that a token
+        naming an unknown key ID triggers. It is what stops that path
+        amplifying a stream of tokens carrying invented key IDs into a
+        stream of requests to GitHub; it costs a genuinely rotated-in key
+        at most this long to start verifying.
     issuer
         The issuer a token must name. Injectable for tests; there is one
         real value.
@@ -118,6 +124,7 @@ class GitHubOidcVerifier:
         audience: str,
         logger: BoundLogger,
         jwks_ttl: timedelta = timedelta(hours=1),
+        jwks_kid_miss_cooldown: timedelta = timedelta(seconds=60),
         issuer: str = GITHUB_OIDC_ISSUER,
         jwks_url: str = GITHUB_OIDC_JWKS_URL,
         request_timeout: timedelta = timedelta(seconds=10),
@@ -126,23 +133,30 @@ class GitHubOidcVerifier:
         self._audience = audience
         self._logger = logger
         self._jwks_ttl = jwks_ttl.total_seconds()
+        self._kid_miss_cooldown = jwks_kid_miss_cooldown.total_seconds()
         self._issuer = issuer
         self._jwks_url = jwks_url
         self._request_timeout = request_timeout.total_seconds()
         self._jwks: PyJWKSet | None = None
         self._jwks_fetched_at = 0.0
+        self._kid_miss_refreshed_at: float | None = None
         self._lock = asyncio.Lock()
 
     async def verify(self, token: str) -> GitHubOidcClaims:
         """Verify an id-token and return the provenance it attests to.
 
-        A token whose key ID is not in the cached JWKS triggers exactly one
-        refetch before the token is rejected. That is what makes a GitHub
-        key rotation invisible to clients: a token signed by a key minted
-        since the last fetch verifies on the retry rather than failing for
-        the rest of the TTL. It is bounded at one refetch so a stream of
-        forged tokens carrying random key IDs cannot turn into a stream of
-        requests to GitHub.
+        A token whose key ID is not in the cached JWKS triggers a refetch
+        before the token is rejected. That is what makes a GitHub key
+        rotation invisible to clients: a token signed by a key minted since
+        the last fetch verifies on the retry rather than failing for the
+        rest of the TTL.
+
+        That refetch fires at most once per ``jwks_kid_miss_cooldown``, and
+        a token arriving inside the window is judged against the keys
+        already in hand. A stream of forged tokens carrying invented key
+        IDs therefore collapses to one request to GitHub per window instead
+        of one per token, while a genuinely rotated-in key is still picked
+        up by the first miss after the window ends.
 
         Parameters
         ----------
@@ -242,10 +256,27 @@ class GitHubOidcVerifier:
         same reason, so its result is the fresh copy this one wanted, and
         fetching again would let concurrent unknown-kid tokens multiply
         into concurrent requests to GitHub.
+
+        Skips it too when this path already refetched within the cooldown,
+        which is what bounds the *serial* case the lock cannot see: without
+        it, tokens naming invented key IDs arriving one after another each
+        buy their own request to GitHub.
+
+        The window is marked spent before the fetch rather than after, so a
+        fetch that fails still costs the caller the window. The point is to
+        bound requests to GitHub, and a failing endpoint is precisely when
+        retrying per token is worst.
         """
         async with self._lock:
             if self._jwks is not None and self._jwks is not stale:
                 return self._jwks
+            if self._is_in_kid_miss_cooldown():
+                self._logger.debug(
+                    "Skipped a JWKS refetch for an unknown key ID",
+                    jwks_url=self._jwks_url,
+                )
+                return stale
+            self._kid_miss_refreshed_at = time.monotonic()
             return await self._fetch_jwks()
 
     async def _fetch_jwks(self) -> PyJWKSet:
@@ -294,6 +325,19 @@ class GitHubOidcVerifier:
     def _is_expired(self) -> bool:
         """Whether the cached key set has outlived its TTL."""
         return time.monotonic() - self._jwks_fetched_at >= self._jwks_ttl
+
+    def _is_in_kid_miss_cooldown(self) -> bool:
+        """Whether an unknown key ID refetched too recently to do it again.
+
+        The mark starts unset rather than at zero because `time.monotonic`
+        counts from an arbitrary origin: a process that starts less than a
+        cooldown after that origin would otherwise begin life with its
+        first refetch already suppressed, and a rotation invisible to it.
+        """
+        if self._kid_miss_refreshed_at is None:
+            return False
+        elapsed = time.monotonic() - self._kid_miss_refreshed_at
+        return elapsed < self._kid_miss_cooldown
 
 
 def _parse_jwks(response: httpx.Response) -> PyJWKSet:

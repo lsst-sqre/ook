@@ -21,6 +21,9 @@ from ..support.githuboidc import TEST_AUDIENCE, GitHubOidcSigningKey, JwksMock
 _TINY_TTL = timedelta(milliseconds=1)
 """A JWKS TTL short enough that a brief sleep expires the cached copy."""
 
+_TINY_COOLDOWN = timedelta(milliseconds=1)
+"""An unknown-key-ID cooldown short enough that a brief sleep ends it."""
+
 
 def _make_verifier(
     http_client: AsyncClient, **overrides: Any
@@ -214,6 +217,30 @@ async def test_unknown_key_id_refetches_once_then_fails(
 
 
 @pytest.mark.asyncio
+async def test_unknown_key_ids_share_one_refetch_per_cooldown(
+    http_client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """Serial unknown key IDs cost one refetch, not one refetch each.
+
+    Without the cooldown a stream of tokens naming keys GitHub never
+    published would turn into a stream of requests to GitHub, one per
+    token, which is exactly the amplification the refresh path must not
+    hand to a caller.
+    """
+    key = GitHubOidcSigningKey()
+    jwks = JwksMock(respx_mock, [key])
+    verifier = _make_verifier(http_client)
+
+    for _ in range(2):
+        with pytest.raises(InvalidOidcTokenError):
+            await verifier.verify(key.mint(kid="a-key-github-never-published"))
+
+    # The cold fetch plus the window's one refetch, and nothing more.
+    assert jwks.call_count == 2
+
+
+@pytest.mark.asyncio
 async def test_rotated_key_is_picked_up_by_the_refetch(
     http_client: AsyncClient,
     respx_mock: respx.Router,
@@ -237,6 +264,38 @@ async def test_rotated_key_is_picked_up_by_the_refetch(
 
     assert claims.repository == "org/rotated"
     assert jwks.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_rotated_key_is_picked_up_after_the_cooldown(
+    http_client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The cooldown delays the rotation refetch rather than cancelling it.
+
+    A caller presenting invented key IDs can spend the window's one
+    refetch, but only that window's: the next miss after it ends refetches
+    again, so a key GitHub rotated in still starts verifying without
+    waiting out the whole JWKS TTL.
+    """
+    old_key = GitHubOidcSigningKey("github-oidc-key-1")
+    new_key = GitHubOidcSigningKey("github-oidc-key-2")
+    jwks = JwksMock(respx_mock, [old_key])
+    verifier = _make_verifier(
+        http_client, jwks_kid_miss_cooldown=_TINY_COOLDOWN
+    )
+
+    # Spend the window on a token naming a key that will never exist.
+    with pytest.raises(InvalidOidcTokenError):
+        await verifier.verify(old_key.mint(kid="a-key-github-never-published"))
+    assert jwks.call_count == 2
+
+    jwks.keys.append(new_key)
+    await asyncio.sleep(0.01)
+    claims = await verifier.verify(new_key.mint(repository="org/rotated"))
+
+    assert claims.repository == "org/rotated"
+    assert jwks.call_count == 3
 
 
 @pytest.mark.asyncio
