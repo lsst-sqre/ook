@@ -32,7 +32,7 @@ from ook.exceptions import LinkCheckTooManyUrlsError
 from ook.storage.linkcheckstore import DueUrl
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from safir.database import CountedPaginatedList
     from structlog.stdlib import BoundLogger
@@ -408,13 +408,19 @@ class LinkCheckService:
             return None
 
         now = datetime.now(tz=UTC)
+        members = {url.url for url in record.urls}
+        # The check record establishes membership only; blocked-ness is
+        # judged from these state rows, which are also what each write
+        # advances. Reading them once means a URL a concurrent server
+        # check resolves in between cannot be judged eligible from one
+        # snapshot and then written from another.
+        states = await self._store.get_url_states(
+            self._contribution_candidates(results, members=members)
+        )
         eligible, rejected = self._partition_contributions(
-            results, members={url.url: url for url in record.urls}
+            results, members=members, states=states
         )
 
-        states = await self._store.get_url_states(
-            [result.url for result in eligible]
-        )
         accepted: list[AcceptedContribution] = []
         for result in eligible:
             state = evaluate_outcome(
@@ -461,11 +467,31 @@ class LinkCheckService:
             rejected=rejected,
         )
 
+    @staticmethod
+    def _contribution_candidates(
+        results: Sequence[ContributedResult], *, members: set[str]
+    ) -> list[str]:
+        """List the canonical member URLs a batch could contribute to.
+
+        No other URL's state can affect the batch, so scoping the state
+        read to these keeps it bounded by the batch rather than by the
+        number of URLs in the check.
+        """
+        candidates: set[str] = set()
+        for result in results:
+            if not is_supported_url(result.url):
+                continue
+            url = canonicalize_url(result.url)
+            if url in members:
+                candidates.add(url)
+        return sorted(candidates)
+
     def _partition_contributions(
         self,
         results: Sequence[ContributedResult],
         *,
-        members: dict[str, CheckUrlRecord],
+        members: set[str],
+        states: Mapping[str, LinkState],
     ) -> tuple[list[ContributedResult], list[RejectedContribution]]:
         """Split contributed results into the eligible and the rejected.
 
@@ -474,6 +500,11 @@ class LinkCheckService:
         earlier in the same batch. Eligible results come back
         canonicalized, so downstream lookups and writes key on the same URL
         the check's membership does.
+
+        Blocked-ness is judged from ``states``, the same rows that become
+        each accepted result's prior state, so the judgement and the write
+        it authorizes see one snapshot. A member URL absent from
+        ``states`` has never been checked, which is pending, not blocked.
         """
         eligible: list[ContributedResult] = []
         seen: set[str] = set()
@@ -496,17 +527,17 @@ class LinkCheckService:
                 )
                 continue
             url = canonicalize_url(result.url)
-            member = members.get(url)
-            if member is None:
+            state = states.get(url)
+            if url not in members:
                 reject(
                     result.url,
                     ContributionRejectionReason.not_a_member,
                     "The URL is not one of this check's submitted URLs.",
                 )
-            elif member.status is not LinkStatus.blocked:
+            elif state is None or state.status is not LinkStatus.blocked:
                 status = (
-                    member.status.value
-                    if member.status is not None
+                    state.status.value
+                    if state is not None
                     else CheckUrlStatus.pending.value
                 )
                 reject(

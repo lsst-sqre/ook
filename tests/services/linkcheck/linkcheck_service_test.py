@@ -8,22 +8,39 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 import structlog
+from safir.database import create_async_session, create_database_engine
 
 from ook.config import config
 from ook.domain.linkcheck import (
     CheckRunStatus,
     CheckUrlStatus,
+    ContributedResult,
+    ContributionProvenance,
+    ContributionProvider,
+    ContributionRejectionReason,
     LinkState,
     LinkStatus,
+    ResultSource,
     RetryLadderConfig,
     SubmittedUrl,
     UrlOccurrence,
 )
 from ook.factory import Factory
 from ook.services.linkcheck import HostResolver, LinkCheckService, UrlChecker
+from ook.storage.linkcheckstore import LinkCheckStore
 
 PUBLIC_IP = "93.184.216.34"
 """A public (globally-routable) IPv4 address for fake DNS resolution."""
+
+PROVENANCE = ContributionProvenance(
+    provider=ContributionProvider.github_actions,
+    repository="lsst-sqre/documenteer",
+    run_id="42",
+    workflow_ref=(
+        "lsst-sqre/documenteer/.github/workflows/linkcheck.yaml@refs/heads/main"
+    ),
+)
+"""The attested provenance the contribution tests submit under."""
 
 
 async def _resolve_public(host: str) -> Sequence[str]:
@@ -36,9 +53,13 @@ def make_service(
     http_client: httpx.AsyncClient,
     *,
     resolve_host: HostResolver = _resolve_public,
+    store: LinkCheckStore | None = None,
 ) -> LinkCheckService:
     """Create a LinkCheckService whose UrlChecker uses the given client
     and a fake DNS resolver, so tests never touch the network.
+
+    Pass ``store`` to hold a reference to the store the service reads and
+    writes through; by default the service gets its own.
     """
     logger = structlog.get_logger("test")
     checker = UrlChecker(
@@ -51,7 +72,7 @@ def make_service(
         resolve_host=resolve_host,
     )
     return LinkCheckService(
-        linkcheck_store=factory.create_linkcheck_store(),
+        linkcheck_store=store or factory.create_linkcheck_store(),
         logger=logger,
         freshness_ttl=config.linkcheck_freshness_ttl,
         max_urls_per_check=config.linkcheck_max_urls_per_check,
@@ -59,6 +80,25 @@ def make_service(
         retry_ladder=RetryLadderConfig(),
         check_retention=config.linkcheck_check_retention,
     )
+
+
+async def _commit_url_state(state: LinkState) -> None:
+    """Write a URL state from a separate connection and commit it.
+
+    This is how a test stands in for a concurrent server check: the write
+    lands outside the transaction under test, so the code under test sees
+    it only on its next read.
+    """
+    logger = structlog.get_logger("test")
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    session = await create_async_session(engine)
+    store = LinkCheckStore(session=session, logger=logger)
+    async with session.begin():
+        await store.upsert_url_state(state)
+    await session.close()
+    await engine.dispose()
 
 
 def mock_transport(
@@ -761,6 +801,130 @@ async def test_list_due_recheck_urls_referenced_only(
             assert [d.url for d in due] == [
                 "https://example.com/referenced-stale"
             ]
+
+
+@pytest.mark.asyncio
+async def test_contribution_rejects_url_a_concurrent_check_resolved(
+    factory: Factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A URL a concurrent server check resolves between the check read
+    and the state read is rejected, not overwritten.
+
+    Blocked-ness is judged from the same state rows that become each
+    write's prior state, so a stale blocked snapshot cannot authorize a
+    contribution over a newer server result.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    url = "https://example.com/guarded"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        store = factory.create_linkcheck_store()
+        service = make_service(factory, hc, store=store)
+        async with factory.db_session.begin():
+            await store.upsert_url_state(
+                LinkState(
+                    url=url,
+                    status=LinkStatus.blocked,
+                    checked_at=now,
+                    consecutive_blocked_count=1,
+                    status_code=403,
+                    error="HTTP 403 (likely blocked by bot protection)",
+                    next_check_at=now + timedelta(hours=1),
+                )
+            )
+            submission = await service.submit_check(
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
+                urls=[SubmittedUrl(url=url, origin_paths=["a"])],
+            )
+
+        # A server recheck resolves the URL from another connection in the
+        # window between the two reads.
+        read_states = store.get_url_states
+
+        async def racing_get_url_states(
+            urls: Sequence[str],
+        ) -> dict[str, LinkState]:
+            await _commit_url_state(
+                LinkState(
+                    url=url,
+                    status=LinkStatus.ok,
+                    checked_at=now + timedelta(minutes=1),
+                    last_ok_at=now + timedelta(minutes=1),
+                    status_code=200,
+                )
+            )
+            return await read_states(urls)
+
+        monkeypatch.setattr(store, "get_url_states", racing_get_url_states)
+
+        async with factory.db_session.begin():
+            report = await service.contribute_results(
+                check_id=submission.check_id,
+                provenance=PROVENANCE,
+                results=[
+                    ContributedResult(url=url, status_code=200, checked_at=now)
+                ],
+            )
+
+        assert report is not None
+        assert report.accepted == []
+        assert [(entry.url, entry.reason) for entry in report.rejected] == [
+            (url, ContributionRejectionReason.not_blocked)
+        ]
+
+        monkeypatch.undo()
+        async with factory.db_session.begin():
+            state = await store.get_url_state(url)
+        assert state is not None
+        assert state.status is LinkStatus.ok
+        assert state.result_source is ResultSource.server
+
+
+@pytest.mark.asyncio
+async def test_contribution_to_never_checked_member_is_rejected(
+    factory: Factory,
+) -> None:
+    """A member URL with no state row has never been checked, so it is
+    pending rather than blocked and accepts no contribution.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    url = "https://example.com/unchecked"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            submission = await service.submit_check(
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
+                urls=[SubmittedUrl(url=url, origin_paths=["a"])],
+            )
+
+            report = await service.contribute_results(
+                check_id=submission.check_id,
+                provenance=PROVENANCE,
+                results=[
+                    ContributedResult(url=url, status_code=200, checked_at=now)
+                ],
+            )
+
+            assert report is not None
+            assert report.accepted == []
+            (rejected,) = report.rejected
+            assert rejected.url == url
+            assert rejected.reason is ContributionRejectionReason.not_blocked
+            assert "pending" in rejected.message
+            # The contribution neither resolved the URL nor invented a
+            # state for it.
+            assert await store.get_url_state(url) is None
 
 
 @pytest.mark.asyncio
