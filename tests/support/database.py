@@ -30,7 +30,11 @@ Tests that run DDL (``tests/dbschema_test.py`` and ``tests/migrations``) must
 not do so against the database the session-scoped application's connection
 pool is attached to, because their ``DROP``/``CREATE`` statements contend for
 the same table locks. They use a dedicated database instead; see
-`ddl_database_url`.
+`ddl_database_url`. Those tests also leave that database's schema dropped or
+structurally different from the one ``create_all`` builds, so they request the
+``_rebuild_ddl_schema_after_test`` fixture, which calls `invalidate_schema` on
+teardown; `reset_database_for_test` then rebuilds instead of truncating
+whatever they left behind.
 """
 
 from __future__ import annotations
@@ -51,12 +55,16 @@ from ook.dbschema import Base
 __all__ = [
     "TruncateLockError",
     "ddl_database_url",
+    "invalidate_schema",
     "reset_database_for_test",
     "truncate_all_tables",
 ]
 
 _LOCK_NOT_AVAILABLE = "55P03"
 """PostgreSQL SQLSTATE for ``canceling statement due to lock timeout``."""
+
+_UNDEFINED_TABLE = "42P01"
+"""PostgreSQL SQLSTATE for ``relation ... does not exist``."""
 
 TRUNCATE_LOCK_TIMEOUT = "3s"
 """How long one truncate attempt waits for its ``ACCESS EXCLUSIVE`` locks."""
@@ -134,6 +142,29 @@ async def ddl_database_url() -> str:
     return _ddl_database_url
 
 
+def invalidate_schema(url: str) -> None:
+    """Forget that this process built the schema in a database.
+
+    Call this from any test that drops the database or structurally mutates
+    its schema -- an Alembic rebuild, a data migration that recreates foreign
+    keys -- so the next `reset_database_for_test` rebuilds the canonical
+    ``create_all`` schema instead of truncating whatever the test left behind.
+    Without it a failed rebuild leaves the database empty but still marked
+    ready, and every later test on it dies in `truncate_all_tables` with
+    ``UndefinedTable``, burying the real failure.
+
+    Invalidating a database this process never built is a no-op, so a fixture
+    can invalidate on teardown without caring whether the test it wraps got
+    far enough to create anything.
+
+    Parameters
+    ----------
+    url
+        Database URL, as returned by `ddl_database_url`.
+    """
+    _schema_ready.discard(urlsplit(url).path.lstrip("/"))
+
+
 async def reset_database_for_test(engine: AsyncEngine) -> None:
     """Give the current test an empty, Alembic-stamped database.
 
@@ -142,6 +173,13 @@ async def reset_database_for_test(engine: AsyncEngine) -> None:
     version. Subsequent calls truncate all schema tables (restarting identity
     sequences) instead, which is much faster and equivalent for test
     isolation.
+
+    A test that drops or rebuilds the database is expected to call
+    `invalidate_schema` so the next call here rebuilds the canonical schema.
+    If one does not -- or fails partway through its own rebuild -- the
+    truncate finds no tables; rather than propagate that ``UndefinedTable``
+    (and the cascade of misleading failures it causes in every later test on
+    this database), the schema is rebuilt and a warning is logged.
 
     Parameters
     ----------
@@ -156,16 +194,21 @@ async def reset_database_for_test(engine: AsyncEngine) -> None:
     """
     database = engine.url.database
     assert database is not None
-    if database not in _schema_ready:
-        logger = structlog.get_logger("ook")
-        await initialize_database(
-            engine, logger, schema=Base.metadata, reset=True
+    logger = structlog.get_logger("ook")
+    if database in _schema_ready:
+        if await _truncate_unless_schema_missing(engine):
+            return
+        logger.warning(
+            "Test database schema is gone despite being marked ready;"
+            " rebuilding it. A test that drops or rebuilds this database"
+            " should call tests.support.database.invalidate_schema.",
+            database=database,
         )
-        await stamp_database_async(engine)
-        _schema_ready.add(database)
-        return
+        _schema_ready.discard(database)
 
-    await truncate_all_tables(engine)
+    await initialize_database(engine, logger, schema=Base.metadata, reset=True)
+    await stamp_database_async(engine)
+    _schema_ready.add(database)
 
 
 async def truncate_all_tables(
@@ -213,6 +256,25 @@ async def truncate_all_tables(
         await asyncio.sleep(retry_delay)
 
 
+async def _truncate_unless_schema_missing(engine: AsyncEngine) -> bool:
+    """Truncate every table, reporting whether the schema was still there.
+
+    Returns
+    -------
+    bool
+        `True` if the truncate succeeded, `False` if the schema's tables no
+        longer exist. Every other database error, including a lock timeout
+        that exhausted its retries, propagates.
+    """
+    try:
+        await truncate_all_tables(engine)
+    except DBAPIError as exc:
+        if not _is_undefined_table(exc):
+            raise
+        return False
+    return True
+
+
 async def _attempt_truncate(
     engine: AsyncEngine, statement: TextClause, lock_timeout: str
 ) -> DBAPIError | None:
@@ -234,18 +296,39 @@ async def _attempt_truncate(
     return None
 
 
-def _is_lock_timeout(exc: DBAPIError) -> bool:
-    """Return whether a database error is a ``lock_timeout`` cancellation."""
+def _has_sqlstate(exc: DBAPIError, sqlstate: str) -> bool:
+    """Return whether a database error carries a given PostgreSQL SQLSTATE.
+
+    Depending on how deeply SQLAlchemy wrapped the asyncpg exception, the code
+    may live on ``orig`` or on the exception that caused it, and may be spelled
+    either ``sqlstate`` (asyncpg) or ``pgcode`` (SQLAlchemy's translation).
+    """
     candidates = [exc.orig, getattr(exc.orig, "__cause__", None)]
     for candidate in candidates:
         if candidate is None:
             continue
-        sqlstate = getattr(candidate, "sqlstate", None) or getattr(
+        code = getattr(candidate, "sqlstate", None) or getattr(
             candidate, "pgcode", None
         )
-        if sqlstate == _LOCK_NOT_AVAILABLE:
+        if code == sqlstate:
             return True
+    return False
+
+
+def _is_lock_timeout(exc: DBAPIError) -> bool:
+    """Return whether a database error is a ``lock_timeout`` cancellation."""
+    if _has_sqlstate(exc, _LOCK_NOT_AVAILABLE):
+        return True
     return "due to lock timeout" in str(exc)
+
+
+def _is_undefined_table(exc: DBAPIError) -> bool:
+    """Return whether a database error is a missing-relation error.
+
+    Only the SQLSTATE is consulted: PostgreSQL says "does not exist" about
+    many other objects too, so matching on the message would misclassify them.
+    """
+    return _has_sqlstate(exc, _UNDEFINED_TABLE)
 
 
 async def _describe_other_sessions(engine: AsyncEngine) -> str:

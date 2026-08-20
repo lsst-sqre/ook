@@ -145,8 +145,14 @@ async def _seed(engine: AsyncEngine) -> dict[str, int]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_rebuild_ddl_schema_after_test")
 async def test_remint_reorders_ids_and_preserves_fks() -> None:
-    """Re-mint IDs in date_created order while keeping FKs intact."""
+    """Re-mint IDs in date_created order while keeping FKs intact.
+
+    The migration drops and recreates foreign keys, so the fixture forces the
+    DDL database's schema to be rebuilt afterwards rather than leaving later
+    tests to truncate the migration's handiwork.
+    """
     engine = create_database_engine(
         await ddl_database_url(), config.database_password
     )

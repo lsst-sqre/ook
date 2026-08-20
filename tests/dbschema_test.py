@@ -215,7 +215,15 @@ async def test_duplicate_external_reference_url_rejected() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_rebuild_ddl_schema_after_test")
 async def test_schema() -> None:
+    """Alembic's migrations build the same schema the ORM metadata declares.
+
+    The fixture is what keeps a failure here from cascading: this test drops
+    the DDL database, so without the rebuild it forces on teardown, every
+    later test on that database would fail in the truncate with
+    ``UndefinedTable`` and bury this failure.
+    """
     database_url = await ddl_database_url()
     engine = create_database_engine(database_url, config.database_password)
     await drop_database(engine, Base.metadata)

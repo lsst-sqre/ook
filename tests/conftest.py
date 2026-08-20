@@ -98,7 +98,11 @@ from ook.services import intersphinx as intersphinx_service
 from ook.services.linkcheck import _urlchecker
 
 from .support.algoliasearch import MockSearchClient, patch_algoliasearch
-from .support.database import reset_database_for_test
+from .support.database import (
+    ddl_database_url,
+    invalidate_schema,
+    reset_database_for_test,
+)
 from .support.github import GitHubMocker
 from .support.kafka import kafka_work_tracker, running_subscriptions
 
@@ -145,6 +149,24 @@ def mock_github() -> Iterator[GitHubMocker]:
     github_mocker = GitHubMocker()
     with github_mocker.router:
         yield github_mocker
+
+
+@pytest_asyncio.fixture
+async def _rebuild_ddl_schema_after_test() -> AsyncIterator[None]:
+    """Rebuild the DDL database's schema after this test, pass or fail.
+
+    Request this from any test that drops the DDL database or structurally
+    mutates its schema -- an Alembic rebuild, a data migration that recreates
+    foreign keys. Without it the next `tests.support.database.
+    reset_database_for_test` truncates whatever the test left behind: an
+    Alembic-built or migration-mutated schema on success, and nothing at all
+    when the test failed partway through its own rebuild. The teardown here
+    runs either way, so the next DDL test sees the canonical ``create_all``
+    schema regardless of the order the two ran in.
+    """
+    url = await ddl_database_url()
+    yield
+    invalidate_schema(url)
 
 
 @pytest_asyncio.fixture
