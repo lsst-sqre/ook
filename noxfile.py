@@ -37,6 +37,23 @@ def typing(session: nox.Session) -> None:
     session.run("mypy", "noxfile.py", "src", "tests")
 
 
+def _xdist_args(posargs: list[str]) -> list[str]:
+    """Return default pytest-xdist arguments for a pytest invocation.
+
+    The suite runs under pytest-xdist with 4 workers by default (matching
+    the 4 vCPUs of GitHub Actions ubuntu-latest runners); each worker gets
+    its own PostgreSQL database and Kafka topic namespace via the worker
+    isolation shim in tests/conftest.py. Pass your own ``-n`` in posargs
+    (e.g. ``-n 0`` for a serial run) to override.
+    """
+    if any(
+        arg == "-n" or arg.startswith(("-n", "--numprocesses"))
+        for arg in posargs
+    ):
+        return []
+    return ["-n", "4"]
+
+
 @session(uv_groups=["dev"])
 def test(session: nox.Session) -> None:
     """Run pytest without coverage reporting."""
@@ -62,6 +79,7 @@ def test(session: nox.Session) -> None:
             )
             session.run(
                 "pytest",
+                *_xdist_args(session.posargs),
                 *session.posargs,
                 env=env_vars,
             )
@@ -94,6 +112,7 @@ def test_coverage(session: nox.Session) -> None:
                 "pytest",
                 "--cov=ook",
                 "--cov-branch",
+                *_xdist_args(session.posargs),
                 *session.posargs,
                 env=env_vars,
             )
