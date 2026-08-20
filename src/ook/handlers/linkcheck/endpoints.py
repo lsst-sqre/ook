@@ -13,10 +13,13 @@ from ook.domain.kafka import CheckLinksMessageV1
 from ook.domain.linkcheck import (
     CheckRunStatus,
     CheckUrlStatus,
-    ContributionProvenance,
     normalize_origin_base_url,
 )
-from ook.exceptions import InvalidOidcTokenError, NotFoundError
+from ook.exceptions import (
+    InvalidOidcTokenError,
+    LinkCheckTooManyUrlsError,
+    NotFoundError,
+)
 from ook.storage.linkcheckstore import OriginLinksCursor
 
 from .models import (
@@ -158,13 +161,16 @@ async def get_linkcheck_check(
         " carry a GitHub Actions OIDC id-token minted for this deployment's"
         " audience: its ``repository``, ``run_id``, and ``workflow_ref``"
         " claims are the recorded provenance, and the ``environment`` block"
-        " is advisory. Like the check submission endpoint, this endpoint is"
-        " write-protected by Gafaelfawr at the ingress."
+        " is advisory. A batch carries at most as many results as a check"
+        " submission carries URLs. Like the check submission endpoint, this"
+        " endpoint is write-protected by Gafaelfawr at the ingress."
     ),
     responses={
         404: {"description": "Not found", "model": ErrorModel},
         422: {
-            "description": "Invalid submission or id-token",
+            "description": (
+                "Invalid submission, oversized batch, or invalid id-token"
+            ),
             "model": ErrorModel,
         },
         502: {
@@ -191,6 +197,19 @@ async def post_linkcheck_contributions(
     context: Annotated[RequestContext, Depends(context_dependency)],
 ) -> LinkCheckContributionReport:
     """Apply client-contributed results to a check's blocked URLs."""
+    # Enforced here rather than as a Field constraint because a pydantic
+    # constraint is fixed when the class is defined and cannot follow the
+    # setting, and checked before verification so an oversized batch does
+    # not first cost a round trip to GitHub's JWKS.
+    max_results = config.linkcheck_max_urls_per_check
+    if len(contribution.results) > max_results:
+        raise LinkCheckTooManyUrlsError(
+            f"Link-check contribution has {len(contribution.results)}"
+            f" results, which exceeds the per-check limit of"
+            f" {max_results}.",
+            ErrorLocation.body,
+            ["results"],
+        )
     try:
         claims = await context.factory.github_oidc_verifier.verify(
             contribution.id_token
@@ -210,14 +229,7 @@ async def post_linkcheck_contributions(
             attested_repository=claims.repository,
             reported_repository=environment.repository,
         )
-    provenance = ContributionProvenance(
-        provider=environment.provider,
-        repository=claims.repository,
-        run_id=claims.run_id,
-        workflow_ref=claims.workflow_ref,
-        run_url=environment.run_url,
-        checker_version=environment.checker_version,
-    )
+    provenance = environment.to_domain(claims)
     context.logger.info(
         "Received link-check contribution",
         check_id=check_id,

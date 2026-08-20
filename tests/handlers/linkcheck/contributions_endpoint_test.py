@@ -592,3 +592,159 @@ async def test_contribution_is_recorded_with_its_provenance(
     )
     assert stored.provenance.checker_version == "documenteer 2.1.0"
     assert stored.date_received is not None
+
+
+@pytest.mark.asyncio
+async def test_run_url_round_trips_as_a_string(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """The run URL is parsed as a URL on the way in but stays text
+    everywhere after: it comes back from the response and the contribution
+    row as a normalized string.
+    """
+    key = GitHubOidcSigningKey()
+    JwksMock(respx_mock, [key])
+    url = "https://example.com/guarded"
+    await _seed_blocked_url(url)
+    check_id, _ = await _submit_check(client, [url])
+    body = _body(key, [_result(url, status_code=200)])
+    # A bare host, which parsing normalizes with a trailing slash.
+    body["environment"]["run_url"] = "https://ci.example.com"
+
+    response = await client.post(
+        f"/ook/linkcheck/checks/{check_id}/contributions", json=body
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["provenance"]["run_url"] == (
+        "https://ci.example.com/"
+    )
+
+    contributions = await _get_contributions(validate_base32_id(check_id))
+    assert contributions[0].provenance.run_url == "https://ci.example.com/"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scheme_url", ["javascript:alert(1)", "data:,x"])
+async def test_non_http_run_url_applies_nothing(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+    scheme_url: str,
+) -> None:
+    """The advisory run URL is only ever displayed, so it must be a URL a
+    report can safely link: a non-http(s) scheme is rejected at parse time
+    with nothing applied.
+    """
+    key = GitHubOidcSigningKey()
+    JwksMock(respx_mock, [key])
+    url = "https://example.com/guarded"
+    await _seed_blocked_url(url)
+    check_id, location = await _submit_check(client, [url])
+    body = _body(key, [_result(url, status_code=200)])
+    body["environment"]["run_url"] = scheme_url
+
+    response = await client.post(
+        f"/ook/linkcheck/checks/{check_id}/contributions", json=body
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == [
+        "body",
+        "environment",
+        "run_url",
+    ]
+
+    poll = await client.get(location)
+    result = {entry["url"]: entry for entry in poll.json()["urls"]}[url]
+    assert result["status"] == "blocked"
+    assert result["result_source"] == "server"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("run_url", "https://example.com/" + "x" * 4000),
+        ("checker_version", "v" * 4000),
+        ("repository", "lsst-sqre/" + "r" * 4000),
+    ],
+)
+async def test_over_length_environment_field_applies_nothing(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+    field: str,
+    value: str,
+) -> None:
+    """The environment block's text fields are persisted on every
+    contribution row, so each is capped: an over-length value is rejected at
+    parse time rather than written.
+    """
+    key = GitHubOidcSigningKey()
+    JwksMock(respx_mock, [key])
+    url = "https://example.com/guarded"
+    await _seed_blocked_url(url)
+    check_id, location = await _submit_check(client, [url])
+    body = _body(key, [_result(url, status_code=200)])
+    body["environment"][field] = value
+
+    response = await client.post(
+        f"/ook/linkcheck/checks/{check_id}/contributions", json=body
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == [
+        "body",
+        "environment",
+        field,
+    ]
+
+    poll = await client.get(location)
+    result = {entry["url"]: entry for entry in poll.json()["urls"]}[url]
+    assert result["result_source"] == "server"
+
+
+@pytest.mark.asyncio
+async def test_result_cap_rejected(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A contributed batch is capped by the same per-check URL limit as a
+    check submission, so the two write endpoints agree on how much a client
+    may send at once.
+    """
+    key = GitHubOidcSigningKey()
+    JwksMock(respx_mock, [key])
+    urls = [f"https://example.com/guarded-{i}" for i in range(3)]
+    for url in urls:
+        await _seed_blocked_url(url)
+    check_id, location = await _submit_check(client, urls)
+    # Lowered only after the check exists, since the submission endpoint
+    # enforces the same cap.
+    monkeypatch.setattr(config, "linkcheck_max_urls_per_check", 2)
+
+    response = await client.post(
+        f"/ook/linkcheck/checks/{check_id}/contributions",
+        json=_body(key, [_result(url, status_code=200) for url in urls]),
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"][0]
+    assert detail["type"] == "too_many_urls"
+    assert "exceeds the per-check limit of 2" in detail["msg"]
+    assert detail["loc"] == ["body", "results"]
+
+    poll = await client.get(location)
+    results = {entry["url"]: entry for entry in poll.json()["urls"]}
+    assert all(results[url]["result_source"] == "server" for url in urls), (
+        "an over-cap batch must apply nothing"
+    )
+
+    # A batch at the cap is accepted.
+    response = await client.post(
+        f"/ook/linkcheck/checks/{check_id}/contributions",
+        json=_body(key, [_result(url, status_code=200) for url in urls[:2]]),
+    )
+    assert response.status_code == 200, response.text
+    assert len(response.json()["accepted"]) == 2

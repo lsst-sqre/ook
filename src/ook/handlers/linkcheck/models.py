@@ -7,9 +7,10 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import Request
-from pydantic import AfterValidator, BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field, HttpUrl
 
 from ook.domain.base32id import Base32Id, serialize_ook_base32_id
+from ook.domain.githuboidc import GitHubOidcClaims
 from ook.domain.linkcheck import (
     AcceptedContribution as AcceptedContributionDomain,
 )
@@ -655,6 +656,11 @@ class ContributionEnvironment(BaseModel):
     Every field here is advisory: the identity a contribution is recorded
     under comes from the verified OIDC token, never from the body. A
     ``repository`` that disagrees with the token's claim is ignored.
+
+    Advisory does not mean unconstrained: the descriptive fields are
+    persisted verbatim on every contribution row and rendered in reports,
+    so each is bounded in length and ``run_url`` must be a URL a report can
+    safely link.
     """
 
     provider: Annotated[
@@ -677,18 +683,23 @@ class ContributionEnvironment(BaseModel):
                 " provenance is the one the id-token attests to."
             ),
             examples=["lsst-sqre/documenteer"],
+            max_length=255,
         ),
     ] = None
 
     run_url: Annotated[
-        str | None,
+        HttpUrl | None,
         Field(
             description=(
-                "A URL to the workflow run, recorded for display in reports."
+                "A URL to the workflow run, recorded for display in"
+                " reports. Must be an http(s) URL: it is rendered as a"
+                " link, so a scheme a report could execute is rejected"
+                " rather than stored."
             ),
             examples=[
                 "https://github.com/lsst-sqre/documenteer/actions/runs/42"
             ],
+            max_length=2048,
         ),
     ] = None
 
@@ -700,8 +711,28 @@ class ContributionEnvironment(BaseModel):
                 " recorded for display in reports."
             ),
             examples=["documenteer 2.1.0"],
+            max_length=128,
         ),
     ] = None
+
+    def to_domain(self, claims: GitHubOidcClaims) -> ProvenanceDomain:
+        """Combine the attested claims with this advisory environment into
+        the domain provenance model.
+
+        The identifying fields come from ``claims`` — the environment block
+        never gets to name the repository a contribution is recorded under.
+        This is also the one place ``run_url`` crosses from a parsed URL
+        back to text, so the domain model, the store column, and the
+        response field all keep it as a string.
+        """
+        return ProvenanceDomain(
+            provider=self.provider,
+            repository=claims.repository,
+            run_id=claims.run_id,
+            workflow_ref=claims.workflow_ref,
+            run_url=None if self.run_url is None else str(self.run_url),
+            checker_version=self.checker_version,
+        )
 
 
 class ContributedResultModel(BaseModel):
@@ -808,7 +839,10 @@ class LinkCheckContributionRequest(BaseModel):
             description=(
                 "The per-URL results the client observed. Entries that are"
                 " not eligible are rejected individually; the rest still"
-                " apply."
+                " apply. A batch may carry at most as many results as a"
+                " check submission may carry URLs"
+                " (``OOK_LINKCHECK_MAX_URLS_PER_CHECK``); a larger one is"
+                " rejected whole."
             ),
             min_length=1,
         ),
