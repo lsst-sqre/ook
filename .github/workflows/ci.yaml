@@ -39,7 +39,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The suite runs testcontainers for PostgreSQL and Kafka and has grown
+    # past 14 minutes of pytest on its own, so 15 minutes left no headroom.
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v7
@@ -66,12 +68,6 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           version: ${{ env.UV_VERSION }}
-
-      - name: Update package lists
-        run: sudo apt-get update
-
-      - name: Install extra packages
-        run: sudo apt install -y graphviz
 
       - name: Run nox
         run: uv run --group=nox nox -s docs
