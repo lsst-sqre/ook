@@ -27,6 +27,7 @@ from .base import Base
 __all__ = [
     "SqlCheckedUrl",
     "SqlLinkCheck",
+    "SqlLinkCheckContribution",
     "SqlLinkCheckUrl",
     "SqlUrlOccurrence",
 ]
@@ -79,6 +80,28 @@ class SqlCheckedUrl(Base):
 
     error: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
     """A description of the failure from the most recent check."""
+
+    result_source: Mapped[str] = mapped_column(
+        UnicodeText, nullable=False, default="server"
+    )
+    """Where the most recent result was observed from
+    (`ook.domain.linkcheck.ResultSource` value).
+
+    ``server`` for Ook's own checks (the default, including for a URL that
+    has never been checked) and ``contribution`` for a result contributed
+    by a client that checked the URL from its own vantage point.
+    """
+
+    contributed_by: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True
+    )
+    """The ``owner/name`` of the repository whose CI contributed the most
+    recent result, or null when Ook checked the URL itself.
+
+    Denormalized from the contribution row that produced the result so a
+    check report can attribute it without joining the contribution
+    history, which outlives any single result.
+    """
 
     last_checked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
@@ -280,3 +303,100 @@ class SqlLinkCheckUrl(Base):
 
     checked_url: Mapped[SqlCheckedUrl] = relationship("SqlCheckedUrl")
     """The checked URL."""
+
+
+class SqlLinkCheckContribution(Base):
+    """A SQLAlchemy model for a per-URL result contributed by a client
+    that checked the URL from its own vantage point.
+
+    A contribution is an append-only record of what a client reported and
+    who reported it. The URL's resulting state lives on ``checked_url``
+    (which records the source and contributing repository); these rows are
+    the provenance trail behind it, retained with their check rather than
+    forever.
+    """
+
+    __tablename__ = "linkcheck_contribution"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    """The primary key."""
+
+    check_id: Mapped[int] = mapped_column(
+        ForeignKey("linkcheck_check.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    """The check the result was contributed against.
+
+    Contributions are scoped to a check because eligibility is: only a
+    check's own blocked member URLs may be contributed for.
+    """
+
+    checked_url_id: Mapped[int] = mapped_column(
+        ForeignKey("checked_url.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    """The checked URL the result is for."""
+
+    provider: Mapped[str] = mapped_column(UnicodeText, nullable=False)
+    """The kind of client environment the result was observed from
+    (`ook.domain.linkcheck.ContributionProvider` value).
+    """
+
+    repository: Mapped[str] = mapped_column(UnicodeText, nullable=False)
+    """The ``owner/name`` of the repository whose CI observed the result,
+    from the verified OIDC token rather than the request body.
+    """
+
+    run_id: Mapped[str] = mapped_column(UnicodeText, nullable=False)
+    """The identifier of the workflow run that observed the result, from
+    the verified OIDC token.
+    """
+
+    workflow_ref: Mapped[str] = mapped_column(UnicodeText, nullable=False)
+    """The fully-qualified reference of the workflow that observed the
+    result, from the verified OIDC token.
+    """
+
+    run_url: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
+    """A URL to the workflow run, as reported by the client."""
+
+    checker_version: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True
+    )
+    """The version of the client that performed the check, as reported by
+    the client.
+    """
+
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    """The final HTTP status code the client observed."""
+
+    redirect_url: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True
+    )
+    """The final resolved location, if the client observed a redirect."""
+
+    redirect_status_code: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    """The HTTP status code of the redirect the client observed."""
+
+    error: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
+    """A description of the failure the client observed."""
+
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    """The time the client reports it performed the check.
+
+    Advisory only: a client's clock is not Ook's, so freshness and the
+    retry ladder are measured from ``date_received``.
+    """
+
+    date_received: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    """The time Ook received the contribution."""

@@ -15,6 +15,7 @@ from ook.domain.linkcheck import (
     CheckRunStatus,
     CheckUrlStatus,
     LinkCheckReport,
+    ResultSource,
     SubmittedUrl,
     normalize_origin_base_url,
 )
@@ -156,6 +157,31 @@ class CheckedUrl(BaseModel):
         ),
     ] = None
 
+    result_source: Annotated[
+        ResultSource,
+        Field(
+            description=(
+                "Where this result was observed from: ``server`` for"
+                " Ook's own check, ``contribution`` for a result"
+                " contributed by a client that checked the URL from its"
+                " own vantage point. Pending URLs report ``server``,"
+                " having no result yet."
+            )
+        ),
+    ] = ResultSource.server
+
+    contributed_by: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The ``owner/name`` of the repository whose CI"
+                " contributed this result, or null when Ook checked the"
+                " URL itself."
+            ),
+            examples=["lsst-sqre/documenteer"],
+        ),
+    ] = None
+
     origin_paths: Annotated[
         list[str],
         Field(
@@ -178,6 +204,8 @@ class CheckedUrl(BaseModel):
             redirect_url=report.redirect_url,
             error=report.error,
             checked_at=report.checked_at,
+            result_source=report.result_source,
+            contributed_by=report.contributed_by,
             origin_paths=report.origin_paths,
         )
 
@@ -367,6 +395,31 @@ class UrlRecord(BaseModel):
         Field(description="Time the URL's record was created."),
     ]
 
+    result_source: Annotated[
+        ResultSource,
+        Field(
+            description=(
+                "Where the most recent result was observed from:"
+                " ``server`` for Ook's own check, ``contribution`` for a"
+                " result contributed by a client that checked the URL"
+                " from its own vantage point. Never-checked URLs report"
+                " ``server``."
+            )
+        ),
+    ] = ResultSource.server
+
+    contributed_by: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The ``owner/name`` of the repository whose CI"
+                " contributed the most recent result, or null when Ook"
+                " checked the URL itself."
+            ),
+            examples=["lsst-sqre/documenteer"],
+        ),
+    ] = None
+
     occurrences: Annotated[
         list[OriginPage],
         Field(
@@ -393,6 +446,8 @@ class UrlRecord(BaseModel):
             failure_count=record.failure_count,
             next_check_at=record.next_check_at,
             date_created=record.date_created,
+            result_source=record.result_source,
+            contributed_by=record.contributed_by,
             occurrences=[
                 OriginPage.from_domain(page) for page in record.occurrences
             ],

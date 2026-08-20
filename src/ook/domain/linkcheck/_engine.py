@@ -18,6 +18,7 @@ from ._models import (
     LinkCheckOutcome,
     LinkState,
     LinkStatus,
+    ResultSource,
     RetryLadderConfig,
 )
 
@@ -192,6 +193,15 @@ def evaluate_outcome(
     LinkState
         The link's next state.
     """
+    # The vantage point the outcome came from travels through every
+    # transition path unchanged: a contributed outcome is evaluated exactly
+    # like a server one, and only the attribution differs.
+    result_source = (
+        ResultSource.server
+        if outcome.contributed_by is None
+        else ResultSource.contribution
+    )
+
     if outcome.result is CheckResult.unsupported:
         # Unsupported URLs are never checked again by the ladder; they
         # only change status if the URL itself changes.
@@ -208,6 +218,8 @@ def evaluate_outcome(
             redirect_url=None,
             error=outcome.error,
             next_check_at=None,
+            result_source=result_source,
+            contributed_by=outcome.contributed_by,
         )
 
     if outcome.result is CheckResult.success:
@@ -231,6 +243,8 @@ def evaluate_outcome(
             redirect_url=outcome.redirect_url,
             error=None,
             next_check_at=None,
+            result_source=result_source,
+            contributed_by=outcome.contributed_by,
         )
 
     if outcome.is_bot_blocked or outcome.is_transient:
@@ -264,6 +278,8 @@ def evaluate_outcome(
                 outcome.checked_at
                 + _blocked_recheck_delay(ladder, blocked_count)
             ),
+            result_source=result_source,
+            contributed_by=outcome.contributed_by,
         )
 
     # Failure path: extend (or start) the consecutive-failure streak.
@@ -314,4 +330,6 @@ def evaluate_outcome(
         redirect_url=None,
         error=outcome.error,
         next_check_at=next_check_at,
+        result_source=result_source,
+        contributed_by=outcome.contributed_by,
     )

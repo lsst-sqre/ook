@@ -20,6 +20,7 @@ from structlog.stdlib import BoundLogger
 from ook.dbschema.linkcheck import (
     SqlCheckedUrl,
     SqlLinkCheck,
+    SqlLinkCheckContribution,
     SqlLinkCheckUrl,
     SqlUrlOccurrence,
 )
@@ -27,15 +28,21 @@ from ook.domain.base32id import generate_base32_id, validate_base32_id
 from ook.domain.linkcheck import (
     CheckRunStatus,
     CheckUrlStatus,
+    ContributedResult,
+    ContributionProvenance,
+    ContributionProvider,
+    LinkContribution,
     LinkState,
     LinkStatus,
     OriginLink,
     OriginPage,
+    ResultSource,
     UrlOccurrence,
     UrlRecord,
 )
 
 from ._query import (
+    create_check_contributions_stmt,
     create_check_urls_stmt,
     create_checked_url_ids_stmt,
     create_due_urls_stmt,
@@ -89,6 +96,14 @@ class CheckUrlRecord:
 
     error: str | None
     """A description of the failure from the most recent check."""
+
+    result_source: ResultSource
+    """Where the URL's most recent result was observed from."""
+
+    contributed_by: str | None
+    """The repository whose CI contributed the most recent result, or
+    None when Ook checked the URL itself.
+    """
 
     origin_paths: list[str]
     """The origin page paths this URL was submitted with in this check,
@@ -201,6 +216,8 @@ class LinkCheckStore:
             "redirect_url": state.redirect_url,
             "error": state.error,
             "next_check_at": state.next_check_at,
+            "result_source": state.result_source.value,
+            "contributed_by": state.contributed_by,
         }
         insert_stmt = pg_insert(SqlCheckedUrl).values(
             url=state.url, date_created=now, **state_columns
@@ -297,6 +314,8 @@ class LinkCheckStore:
             failure_count=row.failure_count,
             next_check_at=row.next_check_at,
             date_created=row.date_created,
+            result_source=ResultSource(row.result_source),
+            contributed_by=row.contributed_by,
             occurrences=[
                 OriginPage(
                     origin_base_url=occ.origin_base_url,
@@ -516,11 +535,145 @@ class LinkCheckStore:
                     redirect_status_code=row.redirect_status_code,
                     redirect_url=row.redirect_url,
                     error=row.error,
+                    result_source=ResultSource(row.result_source),
+                    contributed_by=row.contributed_by,
                     origin_paths=list(row.origin_paths),
                 )
                 for row in url_rows
             ],
         )
+
+    async def add_contributions(
+        self,
+        *,
+        check_id: int,
+        provenance: ContributionProvenance,
+        results: Sequence[ContributedResult],
+        now: datetime | None = None,
+    ) -> None:
+        """Record contributed per-URL results with their provenance.
+
+        The rows are the append-only provenance trail behind whatever the
+        contributed results do to the URLs' states; writing the states
+        themselves is the caller's job.
+
+        Parameters
+        ----------
+        check_id
+            The check the results were contributed against.
+        provenance
+            Where the results were observed from. The identifying claims
+            come from a verified OIDC token, not the request body.
+        results
+            The per-URL results the client observed. Their URLs must
+            already have ``checked_url`` records.
+        now
+            The receipt time stamped on the rows. Defaults to the current
+            time.
+
+        Raises
+        ------
+        ValueError
+            Raised if any result's URL has no ``checked_url`` record.
+            Callers validate check membership first, so this is a
+            programming error rather than a client one.
+        """
+        if not results:
+            return
+        if now is None:
+            now = datetime.now(tz=UTC)
+
+        urls = [result.url for result in results]
+        url_ids = {
+            row.url: row.id
+            for row in (
+                await self._session.execute(
+                    create_checked_url_ids_stmt(list(dict.fromkeys(urls)))
+                )
+            ).all()
+        }
+        unknown = sorted(set(urls) - set(url_ids))
+        if unknown:
+            raise ValueError(
+                "Cannot contribute results for URLs with no checked-URL"
+                f" record: {', '.join(unknown)}"
+            )
+
+        await self._session.execute(
+            pg_insert(SqlLinkCheckContribution).values(
+                [
+                    {
+                        "check_id": check_id,
+                        "checked_url_id": url_ids[result.url],
+                        "provider": provenance.provider.value,
+                        "repository": provenance.repository,
+                        "run_id": provenance.run_id,
+                        "workflow_ref": provenance.workflow_ref,
+                        "run_url": provenance.run_url,
+                        "checker_version": provenance.checker_version,
+                        "status_code": result.status_code,
+                        "redirect_url": result.redirect_url,
+                        "redirect_status_code": result.redirect_status_code,
+                        "error": result.error,
+                        "checked_at": result.checked_at,
+                        "date_received": now,
+                    }
+                    for result in results
+                ]
+            )
+        )
+        await self._session.flush()
+
+        self._logger.debug(
+            "Recorded link-check contributions",
+            check_id=check_id,
+            repository=provenance.repository,
+            url_count=len(results),
+        )
+
+    async def get_contributions(self, check_id: int) -> list[LinkContribution]:
+        """Get the results contributed against a check.
+
+        Parameters
+        ----------
+        check_id
+            The primary key of the check.
+
+        Returns
+        -------
+        list of LinkContribution
+            The contributed results with their provenance, ordered by URL
+            and then by receipt order. Empty if the check is unknown or
+            has no contributions.
+        """
+        rows = (
+            await self._session.execute(
+                create_check_contributions_stmt(check_id)
+            )
+        ).all()
+        return [
+            LinkContribution(
+                check_id=row.check_id,
+                result=ContributedResult(
+                    url=row.url,
+                    status_code=row.status_code,
+                    redirect_status_code=row.redirect_status_code,
+                    redirect_url=row.redirect_url,
+                    error=row.error,
+                    checked_at=row.checked_at,
+                ),
+                provenance=ContributionProvenance(
+                    provider=ContributionProvider(row.provider),
+                    repository=row.repository,
+                    run_id=row.run_id,
+                    workflow_ref=row.workflow_ref,
+                    run_url=row.run_url,
+                    checker_version=row.checker_version,
+                ),
+                date_received=row.date_received,
+            )
+            for row in rows
+        ]
 
     async def replace_origin_occurrences(
         self,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -15,8 +16,12 @@ from ook.dbschema.linkcheck import (
 )
 from ook.domain.linkcheck import (
     CheckRunStatus,
+    ContributedResult,
+    ContributionProvenance,
+    ContributionProvider,
     LinkState,
     LinkStatus,
+    ResultSource,
     UrlOccurrence,
 )
 from ook.factory import Factory
@@ -141,6 +146,58 @@ async def test_url_state_roundtrip(factory: Factory) -> None:
         )
         await store.upsert_url_state(new_state)
         assert await store.get_url_state(new_url) == new_state
+
+
+@pytest.mark.asyncio
+async def test_url_state_roundtrips_result_source(factory: Factory) -> None:
+    """A state's result source round-trips, and a later server check
+    clears the contributing repository.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://example.com/blocked"
+
+        # A server check defaults to the ``server`` source.
+        server_state = LinkState(
+            url=url,
+            status=LinkStatus.blocked,
+            checked_at=now,
+            status_code=403,
+            consecutive_blocked_count=1,
+        )
+        await store.upsert_url_state(server_state)
+        stored = await store.get_url_state(url)
+        assert stored is not None
+        assert stored.result_source is ResultSource.server
+        assert stored.contributed_by is None
+
+        # A contributed result records the contributing repository.
+        contributed_state = LinkState(
+            url=url,
+            status=LinkStatus.ok,
+            checked_at=now + timedelta(hours=1),
+            last_ok_at=now + timedelta(hours=1),
+            status_code=200,
+            result_source=ResultSource.contribution,
+            contributed_by="lsst-sqre/documenteer",
+        )
+        await store.upsert_url_state(contributed_state)
+        assert await store.get_url_state(url) == contributed_state
+
+        # A later server check takes the state back over: the source
+        # reverts and the repository attribution is cleared, rather than
+        # sticking to the URL forever.
+        later_server_state = LinkState(
+            url=url,
+            status=LinkStatus.blocked,
+            checked_at=now + timedelta(hours=2),
+            last_ok_at=now + timedelta(hours=1),
+            status_code=403,
+            consecutive_blocked_count=1,
+        )
+        await store.upsert_url_state(later_server_state)
+        assert await store.get_url_state(url) == later_server_state
 
 
 @pytest.mark.asyncio
@@ -680,3 +737,161 @@ async def test_get_urls_by_ids(factory: Factory) -> None:
         ]
 
         assert await store.get_urls_by_ids([]) == []
+
+
+PROVENANCE = ContributionProvenance(
+    provider=ContributionProvider.github_actions,
+    repository="lsst-sqre/documenteer",
+    run_id="17012345678",
+    run_url=(
+        "https://github.com/lsst-sqre/documenteer/actions/runs/17012345678"
+    ),
+    workflow_ref=(
+        "lsst-sqre/documenteer/.github/workflows/ci.yaml@refs/heads/main"
+    ),
+    checker_version="documenteer 2.1.0",
+)
+"""Provenance for a contribution from a documenteer CI run."""
+
+
+async def _create_check_with_urls(
+    factory: Factory, urls: list[str], *, now: datetime
+) -> int:
+    """Create a check whose members are the given URLs."""
+    store = factory.create_linkcheck_store()
+    ids = await store.upsert_checked_urls(urls, now=now)
+    return await store.create_check(
+        origin_base_url="https://sqr-000.lsst.io",
+        is_default_version=False,
+        checked_url_ids=[ids[url] for url in urls],
+        now=now,
+    )
+
+
+@pytest.mark.asyncio
+async def test_contributions_roundtrip(factory: Factory) -> None:
+    """Contributed results persist with their provenance and round-trip
+    through the store, ordered by URL.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        urls = ["https://example.com/a", "https://example.com/b"]
+        check_id = await _create_check_with_urls(factory, urls, now=now)
+
+        results = [
+            ContributedResult(
+                url="https://example.com/a",
+                status_code=200,
+                checked_at=now - timedelta(minutes=5),
+            ),
+            ContributedResult(
+                url="https://example.com/b",
+                status_code=404,
+                error="404 Not Found",
+                checked_at=now - timedelta(minutes=4),
+            ),
+        ]
+        await store.add_contributions(
+            check_id=check_id,
+            provenance=PROVENANCE,
+            results=results,
+            now=now,
+        )
+
+        stored = await store.get_contributions(check_id)
+        assert [c.result for c in stored] == results
+        assert [c.provenance for c in stored] == [PROVENANCE, PROVENANCE]
+        assert [c.check_id for c in stored] == [check_id, check_id]
+        # The client's checked_at is advisory; the server stamps receipt.
+        assert [c.date_received for c in stored] == [now, now]
+
+
+@pytest.mark.asyncio
+async def test_contributions_record_redirect_metadata(
+    factory: Factory,
+) -> None:
+    """A contributed redirect round-trips its location and status code,
+    so the engine can classify it the way it classifies a server one.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://example.com/moved"
+        check_id = await _create_check_with_urls(factory, [url], now=now)
+
+        result = ContributedResult(
+            url=url,
+            status_code=200,
+            redirect_status_code=301,
+            redirect_url="https://example.com/new-location",
+            checked_at=now,
+        )
+        await store.add_contributions(
+            check_id=check_id,
+            provenance=PROVENANCE,
+            results=[result],
+            now=now,
+        )
+
+        stored = await store.get_contributions(check_id)
+        assert [c.result for c in stored] == [result]
+
+
+@pytest.mark.asyncio
+async def test_contribution_for_unknown_url_rejected(
+    factory: Factory,
+) -> None:
+    """Contributing a result for a URL with no record is a programming
+    error: the endpoint validates check membership first.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        check_id = await _create_check_with_urls(
+            factory, ["https://example.com/a"], now=now
+        )
+
+        with pytest.raises(
+            ValueError, match=re.escape("https://example.com/unknown")
+        ):
+            await store.add_contributions(
+                check_id=check_id,
+                provenance=PROVENANCE,
+                results=[
+                    ContributedResult(
+                        url="https://example.com/unknown", checked_at=now
+                    )
+                ],
+                now=now,
+            )
+
+
+@pytest.mark.asyncio
+async def test_purging_a_check_deletes_its_contributions(
+    factory: Factory,
+) -> None:
+    """Contribution rows are retained only as long as their check, so
+    the expiry purge is not blocked by contributed history.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        url = "https://example.com/a"
+        check_id = await _create_check_with_urls(
+            factory, [url], now=now - timedelta(days=31)
+        )
+        await store.add_contributions(
+            check_id=check_id,
+            provenance=PROVENANCE,
+            results=[ContributedResult(url=url, checked_at=now)],
+            now=now,
+        )
+
+        assert (
+            await store.purge_expired_checks(
+                now=now, retention=timedelta(days=30)
+            )
+            == 1
+        )
+        assert await store.get_contributions(check_id) == []

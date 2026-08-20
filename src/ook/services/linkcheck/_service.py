@@ -531,4 +531,6 @@ class LinkCheckService:
             error=url_record.error,
             checked_at=checked_at,
             origin_paths=url_record.origin_paths,
+            result_source=url_record.result_source,
+            contributed_by=url_record.contributed_by,
         )

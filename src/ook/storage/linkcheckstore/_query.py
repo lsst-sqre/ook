@@ -10,6 +10,7 @@ from sqlalchemy.orm import aliased
 
 from ook.dbschema.linkcheck import (
     SqlCheckedUrl,
+    SqlLinkCheckContribution,
     SqlLinkCheckUrl,
     SqlUrlOccurrence,
 )
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
     from datetime import datetime, timedelta
 
 __all__ = [
+    "create_check_contributions_stmt",
     "create_check_urls_stmt",
     "create_checked_url_ids_stmt",
     "create_due_urls_stmt",
@@ -77,6 +79,8 @@ def create_url_states_stmt(urls: Sequence[str]) -> Select:
         SqlCheckedUrl.redirect_url,
         SqlCheckedUrl.error,
         SqlCheckedUrl.next_check_at,
+        SqlCheckedUrl.result_source,
+        SqlCheckedUrl.contributed_by,
     ).where(SqlCheckedUrl.url.in_(urls))
 
 
@@ -103,6 +107,8 @@ def create_check_urls_stmt(check_id: int) -> Select:
             SqlCheckedUrl.redirect_status_code,
             SqlCheckedUrl.redirect_url,
             SqlCheckedUrl.error,
+            SqlCheckedUrl.result_source,
+            SqlCheckedUrl.contributed_by,
             SqlLinkCheckUrl.origin_paths,
         )
         .join(
@@ -111,6 +117,46 @@ def create_check_urls_stmt(check_id: int) -> Select:
         )
         .where(SqlLinkCheckUrl.check_id == check_id)
         .order_by(SqlCheckedUrl.url.asc())
+    )
+
+
+def create_check_contributions_stmt(check_id: int) -> Select:
+    """Create a select statement for a check's contributed results.
+
+    Parameters
+    ----------
+    check_id
+        The primary key of the check.
+
+    Returns
+    -------
+    Select
+        A statement selecting each contribution's result and provenance
+        columns with its URL, ordered by URL and then by receipt order.
+    """
+    return (
+        select(
+            SqlLinkCheckContribution.check_id,
+            SqlCheckedUrl.url,
+            SqlLinkCheckContribution.provider,
+            SqlLinkCheckContribution.repository,
+            SqlLinkCheckContribution.run_id,
+            SqlLinkCheckContribution.workflow_ref,
+            SqlLinkCheckContribution.run_url,
+            SqlLinkCheckContribution.checker_version,
+            SqlLinkCheckContribution.status_code,
+            SqlLinkCheckContribution.redirect_status_code,
+            SqlLinkCheckContribution.redirect_url,
+            SqlLinkCheckContribution.error,
+            SqlLinkCheckContribution.checked_at,
+            SqlLinkCheckContribution.date_received,
+        )
+        .join(
+            SqlCheckedUrl,
+            SqlCheckedUrl.id == SqlLinkCheckContribution.checked_url_id,
+        )
+        .where(SqlLinkCheckContribution.check_id == check_id)
+        .order_by(SqlCheckedUrl.url.asc(), SqlLinkCheckContribution.id.asc())
     )
 
 
@@ -140,6 +186,8 @@ def create_url_record_stmt(url: str) -> Select:
         SqlCheckedUrl.failure_count,
         SqlCheckedUrl.next_check_at,
         SqlCheckedUrl.date_created,
+        SqlCheckedUrl.result_source,
+        SqlCheckedUrl.contributed_by,
     ).where(SqlCheckedUrl.url == url)
 
 

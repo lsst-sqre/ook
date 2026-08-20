@@ -15,7 +15,12 @@ from sqlalchemy import select
 from ook.config import config
 from ook.dbschema.linkcheck import SqlCheckedUrl, SqlUrlOccurrence
 from ook.domain.base32id import serialize_ook_base32_id, validate_base32_id
-from ook.domain.linkcheck import LinkState, LinkStatus, RetryLadderConfig
+from ook.domain.linkcheck import (
+    LinkState,
+    LinkStatus,
+    ResultSource,
+    RetryLadderConfig,
+)
 from ook.services.linkcheck import LinkCheckService, UrlChecker
 from ook.storage.linkcheckstore import LinkCheckStore
 
@@ -771,6 +776,82 @@ async def test_get_url_record(client: AsyncClient) -> None:
         {"origin_base_url": ORIGIN, "origin_path": "guide"},
         {"origin_base_url": ORIGIN, "origin_path": "index"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_contributed_result_reports_its_source(
+    client: AsyncClient,
+) -> None:
+    """A URL whose current result was contributed reports the
+    contribution source and repository in both the check poll response
+    and the URL read endpoint, so a report can render "externally
+    verified by <repository> CI".
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_url_state(
+        LinkState(
+            url="https://example.com/contributed",
+            status=LinkStatus.ok,
+            checked_at=now,
+            last_ok_at=now,
+            status_code=200,
+            result_source=ResultSource.contribution,
+            contributed_by="lsst-sqre/documenteer",
+        )
+    )
+    # A second URL that Ook checked itself, for contrast.
+    await _seed_url_state(
+        LinkState(
+            url="https://example.com/server-checked",
+            status=LinkStatus.ok,
+            checked_at=now,
+            last_ok_at=now,
+            status_code=200,
+        )
+    )
+
+    response = await client.post(
+        "/ook/linkcheck/checks",
+        json={
+            "origin_base_url": ORIGIN,
+            "is_default_version": True,
+            "urls": [
+                {
+                    "url": "https://example.com/contributed",
+                    "origin_paths": ["index"],
+                },
+                {
+                    "url": "https://example.com/server-checked",
+                    "origin_paths": ["index"],
+                },
+            ],
+        },
+    )
+    assert response.status_code == 200
+    results = {u["url"]: u for u in response.json()["urls"]}
+    contributed = results["https://example.com/contributed"]
+    assert contributed["result_source"] == "contribution"
+    assert contributed["contributed_by"] == "lsst-sqre/documenteer"
+    server_checked = results["https://example.com/server-checked"]
+    assert server_checked["result_source"] == "server"
+    assert server_checked["contributed_by"] is None
+
+    # The URL read endpoint carries the same attribution.
+    url_response = await client.get(
+        "/ook/linkcheck/urls",
+        params={"url": "https://example.com/contributed"},
+    )
+    assert url_response.status_code == 200
+    assert url_response.json()["result_source"] == "contribution"
+    assert url_response.json()["contributed_by"] == "lsst-sqre/documenteer"
+
+    server_response = await client.get(
+        "/ook/linkcheck/urls",
+        params={"url": "https://example.com/server-checked"},
+    )
+    assert server_response.status_code == 200
+    assert server_response.json()["result_source"] == "server"
+    assert server_response.json()["contributed_by"] is None
 
 
 async def _seed_origin_links(client: AsyncClient) -> None:

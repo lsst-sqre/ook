@@ -11,6 +11,7 @@ from ook.domain.linkcheck import (
     LinkCheckOutcome,
     LinkState,
     LinkStatus,
+    ResultSource,
     RetryLadderConfig,
     evaluate_outcome,
 )
@@ -555,3 +556,76 @@ def test_unsupported_outcome_is_unsupported() -> None:
     assert state.failing_since is None
     assert state.next_check_at is None
     assert state.error == "Unsupported URL scheme"
+
+
+def test_server_outcome_is_sourced_to_the_server() -> None:
+    """An outcome with no contributing repository is Ook's own check, so
+    the resulting state reports the ``server`` source and no repository.
+    """
+    outcome = LinkCheckOutcome(
+        checked_at=T0, result=CheckResult.success, status_code=200
+    )
+    state = evaluate_outcome(
+        url=URL, prior=None, outcome=outcome, ladder=LADDER
+    )
+    assert state.result_source is ResultSource.server
+    assert state.contributed_by is None
+
+
+def test_contributed_outcome_is_sourced_to_the_repository() -> None:
+    """An outcome carrying a contributing repository stamps the state
+    with the ``contribution`` source and that repository, so a report can
+    render "externally verified by <repository> CI".
+    """
+    outcome = LinkCheckOutcome(
+        checked_at=T0,
+        result=CheckResult.success,
+        status_code=200,
+        contributed_by="lsst-sqre/documenteer",
+    )
+    state = evaluate_outcome(
+        url=URL, prior=None, outcome=outcome, ladder=LADDER
+    )
+    assert state.status is LinkStatus.ok
+    assert state.result_source is ResultSource.contribution
+    assert state.contributed_by == "lsst-sqre/documenteer"
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        LinkCheckOutcome(
+            checked_at=T0,
+            result=CheckResult.failure,
+            status_code=404,
+            error="404 Not Found",
+            contributed_by="lsst-sqre/documenteer",
+        ),
+        LinkCheckOutcome(
+            checked_at=T0,
+            result=CheckResult.failure,
+            status_code=403,
+            error="403 Forbidden",
+            is_bot_blocked=True,
+            contributed_by="lsst-sqre/documenteer",
+        ),
+        LinkCheckOutcome(
+            checked_at=T0,
+            result=CheckResult.unsupported,
+            error="Unsupported URL scheme",
+            contributed_by="lsst-sqre/documenteer",
+        ),
+    ],
+    ids=["failure", "blocked", "unsupported"],
+)
+def test_contributed_source_is_stamped_on_every_path(
+    outcome: LinkCheckOutcome,
+) -> None:
+    """Every transition path stamps the contribution source, not just the
+    success path, so a contributed failure is still attributed.
+    """
+    state = evaluate_outcome(
+        url=URL, prior=make_ok_state(T0), outcome=outcome, ladder=LADDER
+    )
+    assert state.result_source is ResultSource.contribution
+    assert state.contributed_by == "lsst-sqre/documenteer"

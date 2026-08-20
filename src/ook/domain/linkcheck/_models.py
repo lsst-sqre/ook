@@ -14,12 +14,17 @@ __all__ = [
     "CheckRunStatus",
     "CheckUrlStatus",
     "CheckedUrlReport",
+    "ContributedResult",
+    "ContributionProvenance",
+    "ContributionProvider",
     "LinkCheckOutcome",
     "LinkCheckReport",
+    "LinkContribution",
     "LinkState",
     "LinkStatus",
     "OriginLink",
     "OriginPage",
+    "ResultSource",
     "RetryLadderConfig",
     "SubmittedUrl",
     "UrlOccurrence",
@@ -66,6 +71,25 @@ class LinkStatus(StrEnum):
 
     unsupported = "unsupported"
     """The URL cannot be checked (non-http(s) scheme or malformed)."""
+
+
+class ResultSource(StrEnum):
+    """Where a URL's current result was observed from.
+
+    URL state is global across origins and vantage points: whichever check
+    last resolved a URL owns its state. This records which vantage point
+    that was, so a report can say a result Ook could not obtain itself was
+    externally verified.
+    """
+
+    server = "server"
+    """Ook checked the URL itself."""
+
+    contribution = "contribution"
+    """The result was contributed by a client that checked the URL from
+    its own vantage point (e.g. a GitHub Actions run re-checking a URL
+    that Ook's egress is bot-blocked from).
+    """
 
 
 class CheckResult(StrEnum):
@@ -198,6 +222,18 @@ class LinkCheckOutcome(BaseModel):
         ),
     )
 
+    contributed_by: str | None = Field(
+        None,
+        description=(
+            "The ``owner/name`` of the repository whose CI observed this"
+            " outcome, if it was contributed rather than checked by Ook"
+            " itself. None for Ook's own checks. A contributed outcome"
+            " runs through the engine exactly like a server one; the"
+            " repository only travels through to the resulting state so"
+            " reports can attribute the result."
+        ),
+    )
+
 
 class LinkState(BaseModel):
     """The health state of a link, as tracked across checks.
@@ -286,6 +322,139 @@ class LinkState(BaseModel):
             "Time of the next scheduled recheck on the retry ladder,"
             " or None if the link is not on the ladder."
         ),
+    )
+
+    result_source: ResultSource = Field(
+        ResultSource.server,
+        description=(
+            "Where the most recent result was observed from: Ook's own"
+            " check, or a client's contribution."
+        ),
+    )
+
+    contributed_by: str | None = Field(
+        None,
+        description=(
+            "The ``owner/name`` of the repository whose CI contributed"
+            " the most recent result, or None when Ook checked the URL"
+            " itself."
+        ),
+    )
+
+
+class ContributionProvider(StrEnum):
+    """The kind of client environment a contribution was observed from."""
+
+    github_actions = "github_actions"
+    """A GitHub Actions workflow run, attested by an Actions OIDC
+    id-token.
+    """
+
+
+class ContributionProvenance(BaseModel):
+    """Where a batch of contributed results was observed from.
+
+    The identifying fields (`repository`, `run_id`, `workflow_ref`) come
+    from a verified GitHub Actions OIDC id-token, not from the request
+    body: they are attestation. The descriptive fields (`run_url`,
+    `checker_version`) are client-supplied and only ever displayed.
+    """
+
+    provider: ContributionProvider = Field(
+        description="The kind of client environment the results came from."
+    )
+
+    repository: str = Field(
+        description=(
+            "The ``owner/name`` of the repository whose CI observed the"
+            " results, from the attested token."
+        )
+    )
+
+    run_id: str = Field(
+        description=(
+            "The identifier of the workflow run that observed the"
+            " results, from the attested token."
+        )
+    )
+
+    workflow_ref: str = Field(
+        description=(
+            "The fully-qualified reference of the workflow that observed"
+            " the results, from the attested token."
+        )
+    )
+
+    run_url: str | None = Field(
+        None,
+        description=(
+            "A URL to the workflow run, as reported by the client, or"
+            " None if it did not report one."
+        ),
+    )
+
+    checker_version: str | None = Field(
+        None,
+        description=(
+            "The version of the client that performed the checks, as"
+            " reported by the client, or None if it did not report one."
+        ),
+    )
+
+
+class ContributedResult(BaseModel):
+    """One URL's result as observed and submitted by a client."""
+
+    url: str = Field(
+        description="The canonical (fragment-stripped) URL that was checked."
+    )
+
+    status_code: int | None = Field(
+        None,
+        description="Final HTTP status code, if a response was received.",
+    )
+
+    redirect_status_code: int | None = Field(
+        None,
+        description="HTTP status code of the redirect, if the URL redirected.",
+    )
+
+    redirect_url: str | None = Field(
+        None,
+        description="Final resolved location, if the URL redirected.",
+    )
+
+    error: str | None = Field(
+        None,
+        description="Description of the failure, if the check failed.",
+    )
+
+    checked_at: datetime = Field(
+        description=(
+            "Time the client performed the check. Advisory: the server"
+            " stamps its own receipt time, which is what freshness and"
+            " the retry ladder are measured from."
+        )
+    )
+
+
+class LinkContribution(BaseModel):
+    """A stored contributed result with the provenance it arrived with."""
+
+    check_id: int = Field(
+        description="The check the result was contributed against."
+    )
+
+    result: ContributedResult = Field(
+        description="The result the client observed."
+    )
+
+    provenance: ContributionProvenance = Field(
+        description="Where the result was observed from."
+    )
+
+    date_received: datetime = Field(
+        description="Time the server received the contribution."
     )
 
 
@@ -397,6 +566,22 @@ class CheckedUrlReport(BaseModel):
         ),
     )
 
+    result_source: ResultSource = Field(
+        ResultSource.server,
+        description=(
+            "Where this result was observed from. Pending URLs carry the"
+            " default (``server``) since they have no result yet."
+        ),
+    )
+
+    contributed_by: str | None = Field(
+        None,
+        description=(
+            "The ``owner/name`` of the repository whose CI contributed"
+            " this result, or None when Ook checked the URL itself."
+        ),
+    )
+
 
 class OriginPage(BaseModel):
     """A page of an origin website where a URL occurs."""
@@ -492,6 +677,23 @@ class UrlRecord(BaseModel):
 
     date_created: datetime = Field(
         description="Time the URL's record was created."
+    )
+
+    result_source: ResultSource = Field(
+        ResultSource.server,
+        description=(
+            "Where the most recent result was observed from. Never-checked"
+            " URLs carry the default (``server``)."
+        ),
+    )
+
+    contributed_by: str | None = Field(
+        None,
+        description=(
+            "The ``owner/name`` of the repository whose CI contributed"
+            " the most recent result, or None when Ook checked the URL"
+            " itself."
+        ),
     )
 
     occurrences: list[OriginPage] = Field(
