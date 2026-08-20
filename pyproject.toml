@@ -117,6 +117,12 @@ exclude_lines = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
+# Run all async tests and fixtures on one session-scoped event loop so the
+# session-scoped application lifespan (Kafka broker, database pool, HTTP
+# clients) can be shared across tests. aiokafka/asyncpg objects are bound to
+# the loop they were created on, so a shared app requires a shared loop.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 # The python_files setting is not for test detection (pytest will pick up any
 # test files named *_test.py without this setting) but to enable special
 # assert processing in any non-test supporting files under tests.  We

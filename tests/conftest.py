@@ -23,8 +23,8 @@ from .support.database import reset_database_for_test
 from .support.github import GitHubMocker
 
 
-@pytest.fixture(autouse=True)
-def _patched_ssrf_guard_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture(autouse=True, scope="session")
+def _patched_ssrf_guard_dns() -> Iterator[None]:
     """Resolve every hostname to a public address so the SSRF guards in the
     link-check URL checker and the intersphinx cache never perform real DNS
     lookups.
@@ -35,7 +35,13 @@ def _patched_ssrf_guard_dns(monkeypatch: pytest.MonkeyPatch) -> None:
     or rejected, by respx) regardless of network availability. The
     intersphinx cache's guard likewise resolves origin hosts before a
     cold-miss fetch, so it must resolve deterministically too.
+
+    This is session-scoped because the ``UrlChecker`` singleton captures
+    ``_default_resolve_host`` when the shared application lifespan
+    constructs the process context, so the patch must be in place before
+    the session-scoped app starts and stay in place for the whole session.
     """
+    monkeypatch = pytest.MonkeyPatch()
 
     async def resolve_host(host: str) -> Sequence[str]:
         return ["93.184.216.34"]
@@ -44,6 +50,8 @@ def _patched_ssrf_guard_dns(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         intersphinx_service, "_default_resolve_host", resolve_host
     )
+    yield
+    monkeypatch.undo()
 
 
 @pytest.fixture
@@ -65,26 +73,45 @@ async def http_client() -> AsyncIterator[AsyncClient]:
         yield client
 
 
-@pytest_asyncio.fixture
-async def app(
-    mock_algoliasearch: MockSearchClient,
-    mock_github: GitHubMocker,
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def _app_lifespan(
+    _patched_ssrf_guard_dns: None,
 ) -> AsyncIterator[FastStreamAPI]:
-    """Return a configured test application.
+    """Start the test application once per pytest session.
 
-    Wraps the application in a lifespan manager so that startup and shutdown
-    events are sent during test execution.
+    FastStreamAPI starts the Kafka broker (producer plus consumer-group
+    join) before entering the app's own lifespan; that hand-shake costs
+    seconds, so it is paid once per session rather than once per test.
+    Test isolation comes from the per-test database reset in the ``app``
+    fixture, and per-test HTTP mocking (respx) intercepts at the transport
+    layer so it works with the long-lived clients created here.
     """
     engine = create_database_engine(
         config.database_url, config.database_password
     )
     await reset_database_for_test(engine)
     await engine.dispose()
-    # FastStreamAPI starts the broker before entering the app's own
-    # lifespan and stops it after exit, so every test gets a freshly
-    # started broker for publishers and subscribers.
     async with LifespanManager(main.app):
         yield main.app
+
+
+@pytest_asyncio.fixture
+async def app(
+    _app_lifespan: FastStreamAPI,
+    mock_algoliasearch: MockSearchClient,
+    mock_github: GitHubMocker,
+) -> AsyncIterator[FastStreamAPI]:
+    """Return the running test application with an empty database.
+
+    The application (broker, database pool, HTTP clients) is shared across
+    the session; each test starts from an empty, Alembic-stamped database.
+    """
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    await reset_database_for_test(engine)
+    await engine.dispose()
+    yield _app_lifespan
 
 
 @pytest_asyncio.fixture
