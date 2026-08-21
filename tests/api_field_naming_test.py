@@ -1,8 +1,9 @@
-"""Guard Ook's ``date_`` prefix convention for datetime-valued API fields.
+"""Guard Ook's ``date_`` prefix convention for date-valued API fields.
 
-Ook names every datetime-valued field of its HTTP API with a ``date_``
+Ook names every date-valued field of its HTTP API with a ``date_``
 prefix -- ``date_created``, ``date_checked``, ``date_next_check`` -- and
 this module fails the build when a handler model gains one that does not.
+Both timestamps and bare calendar dates are in scope.
 The convention is written up in the style guide in
 :file:`docs/dev/development.rst`; this is the test that keeps it true.
 
@@ -16,7 +17,7 @@ from __future__ import annotations
 import importlib
 import pkgutil
 from collections.abc import Iterable, Iterator
-from datetime import datetime
+from datetime import date, datetime
 from types import ModuleType
 from typing import Annotated, Any, get_args, get_origin
 
@@ -25,7 +26,7 @@ from pydantic import BaseModel, Field
 import ook.handlers
 
 DATE_PREFIX = "date_"
-"""The prefix every datetime-valued API field name must carry."""
+"""The prefix every date-valued API field name must carry."""
 
 
 def _iter_handler_modules() -> Iterator[ModuleType]:
@@ -72,27 +73,32 @@ def handler_api_models() -> list[type[BaseModel]]:
     return [models[key] for key in sorted(models)]
 
 
-def _is_datetime_valued(annotation: Any) -> bool:
-    """Report whether ``annotation`` can carry a `~datetime.datetime`.
+def _is_date_valued(annotation: Any) -> bool:
+    """Report whether ``annotation`` can carry a `~datetime.date`.
 
     Unwraps the wrappers Ook's API models actually use -- ``Annotated[...]``
     metadata, ``X | None`` unions, and container generics such as
     ``list[...]`` -- so an optional or annotated timestamp is not silently
     skipped. Origins are tested before the bare-class case so a
     parameterized generic is never handed to `issubclass`.
+
+    The check is against `~datetime.date` rather than
+    `~datetime.datetime` because the convention governs calendar dates as
+    well as timestamps. `~datetime.datetime` is a subclass of
+    `~datetime.date`, so the single check covers both.
     """
     origin = get_origin(annotation)
     if origin is Annotated:
-        return _is_datetime_valued(get_args(annotation)[0])
+        return _is_date_valued(get_args(annotation)[0])
     if origin is not None:
-        return any(_is_datetime_valued(arg) for arg in get_args(annotation))
-    return isinstance(annotation, type) and issubclass(annotation, datetime)
+        return any(_is_date_valued(arg) for arg in get_args(annotation))
+    return isinstance(annotation, type) and issubclass(annotation, date)
 
 
-def datetime_fields_missing_date_prefix(
+def date_fields_missing_date_prefix(
     models: Iterable[type[BaseModel]],
 ) -> list[str]:
-    """Return a label per datetime field whose name lacks ``date_``.
+    """Return a label per date-valued field whose name lacks ``date_``.
 
     Parameters
     ----------
@@ -109,7 +115,7 @@ def datetime_fields_missing_date_prefix(
         for name, field in model.model_fields.items():
             if name.startswith(DATE_PREFIX):
                 continue
-            if _is_datetime_valued(field.annotation):
+            if _is_date_valued(field.annotation):
                 violations.append(
                     f"{model.__module__}.{model.__name__}.{name}"
                 )
@@ -120,7 +126,7 @@ def test_datetime_field_without_the_prefix_is_reported() -> None:
     class Offender(BaseModel):
         checked_at: datetime
 
-    assert datetime_fields_missing_date_prefix([Offender]) == [
+    assert date_fields_missing_date_prefix([Offender]) == [
         f"{__name__}.Offender.checked_at"
     ]
 
@@ -133,10 +139,24 @@ def test_optional_and_annotated_datetimes_are_resolved() -> None:
         next_check_at: datetime | None = None
         observed_at: list[Annotated[datetime, Field()]] = []
 
-    assert datetime_fields_missing_date_prefix([Offender]) == [
+    assert date_fields_missing_date_prefix([Offender]) == [
         f"{__name__}.Offender.failing_since",
         f"{__name__}.Offender.next_check_at",
         f"{__name__}.Offender.observed_at",
+    ]
+
+
+def test_bare_calendar_dates_are_reported() -> None:
+    # A field holding a calendar date carries no time, but it is still a
+    # date-valued field and the convention governs it. ``datetime``
+    # subclasses ``date``, so the one check covers both.
+    class Offender(BaseModel):
+        published_on: date
+        embargoed_until: date | None = None
+
+    assert date_fields_missing_date_prefix([Offender]) == [
+        f"{__name__}.Offender.embargoed_until",
+        f"{__name__}.Offender.published_on",
     ]
 
 
@@ -149,7 +169,7 @@ def test_conforming_and_non_datetime_fields_are_not_reported() -> None:
         # is, so the guard never sees it.
         last_modified: str | None = None
 
-    assert datetime_fields_missing_date_prefix([Conforming]) == []
+    assert date_fields_missing_date_prefix([Conforming]) == []
 
 
 def test_discovery_reaches_handler_models_with_timestamps() -> None:
@@ -159,18 +179,18 @@ def test_discovery_reaches_handler_models_with_timestamps() -> None:
         f"{model.__name__}.{name}"
         for model in handler_api_models()
         for name, field in model.model_fields.items()
-        if _is_datetime_valued(field.annotation)
+        if _is_date_valued(field.annotation)
     }
     assert "UrlRecord.date_last_checked" in dated_fields
     assert "ResourceMetadata.date_created" in dated_fields
     assert "DocumentRequest.date_resource_published" in dated_fields
 
 
-def test_handler_datetime_fields_use_the_date_prefix() -> None:
-    violations = datetime_fields_missing_date_prefix(handler_api_models())
+def test_handler_date_fields_use_the_date_prefix() -> None:
+    violations = date_fields_missing_date_prefix(handler_api_models())
     listing = "\n".join(f"  - {violation}" for violation in violations)
     assert not violations, (
-        "Ook names every datetime-valued API field with a date_ prefix"
+        "Ook names every date-valued API field with a date_ prefix"
         " (date_created, date_checked, date_next_check); see the style"
         f" guide in docs/dev/development.rst. Rename:\n{listing}"
     )

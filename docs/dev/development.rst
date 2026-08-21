@@ -253,9 +253,10 @@ Code
 HTTP API
 --------
 
-- Name every datetime-valued field in a request or response body with a ``date_`` prefix.
+- Name every date-valued field in a request or response body with a ``date_`` prefix.
   Examples across Ook's API are ``date_created``, ``date_checked``, ``date_next_check``, and ``date_fetched``.
   Prefer a specific suffix (``date_next_check``) over a bare ``date``, and do not use an ``_at`` or ``_timestamp`` suffix instead.
+  This covers bare calendar dates (:py:class:`datetime.date`) as well as timestamps (:py:class:`datetime.datetime`), since the distinction is one of precision rather than of kind.
 
 - Response headers Ook defines follow the same convention, written as a capitalized segment.
   The intersphinx inventory endpoint, for example, reports the age of its cached copy in ``X-Ook-Inventory-Date-Fetched``.
@@ -265,7 +266,7 @@ HTTP API
   The intersphinx domain's ``last_modified`` is the standing example: it holds the upstream ``Last-Modified`` header exactly as received, so that Ook can echo it back in a conditional ``If-Modified-Since`` revalidation.
 
 The field-name half of this convention is enforced by :file:`tests/api_field_naming_test.py`.
-That test introspects every Pydantic model defined under :file:`src/ook/handlers`, resolving ``Annotated[...]`` wrappers and optional unions, and fails with the offending model and field name when a datetime-valued field lacks the prefix.
+That test introspects every Pydantic model defined under :file:`src/ook/handlers`, resolving ``Annotated[...]`` wrappers and optional unions, and fails with the offending model and field name when a date-valued field lacks the prefix.
 It is pure introspection, so it needs no database or application fixture and runs in the containers-free ``test-unit`` session.
 
 Documentation
