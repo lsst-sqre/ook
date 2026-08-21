@@ -6,7 +6,8 @@ import logging
 import os
 import re
 import subprocess
-from pathlib import Path
+from collections.abc import Sequence
+from pathlib import Path, PurePosixPath
 from time import sleep
 from typing import TYPE_CHECKING
 
@@ -166,6 +167,117 @@ def test_coverage(session: nox.Session) -> None:
             )
 
 
+# Pytest options that take their value as a separate argument. The argument
+# after one of these is that option's value, never a test path: ``-k tests``
+# is a keyword expression, not a request to collect the tests directory.
+PYTEST_VALUE_OPTIONS = frozenset(
+    {
+        "-c",
+        "--config-file",
+        "--deselect",
+        "--dist",
+        "-k",
+        "-m",
+        "--ignore",
+        "--ignore-glob",
+        "--maxfail",
+        "-n",
+        "--numprocesses",
+        "-o",
+        "--override-ini",
+        "-p",
+        "--rootdir",
+    }
+)
+
+
+def _path_selections(posargs: Sequence[str]) -> list[str]:
+    """Return the posargs that select tests by path.
+
+    A posarg selects tests when it is neither an option nor an option's
+    value and it names a file or directory that exists, once any ``::``
+    node identifier is stripped. Everything else -- ``-x``, ``-k expr``,
+    ``-n 2`` -- is a way of running the selection, not a selection.
+    """
+    selections: list[str] = []
+    skip_value = False
+    for arg in posargs:
+        if skip_value:
+            skip_value = False
+        elif arg.startswith("-"):
+            skip_value = arg in PYTEST_VALUE_OPTIONS
+        elif Path(arg.split("::", 1)[0]).exists():
+            selections.append(arg)
+    return selections
+
+
+def _infra_path_for(selection: str) -> str | None:
+    """Return the INFRA_TEST_PATHS entry covering ``selection``, if any."""
+    path = Path(selection.split("::", 1)[0])
+    if path.is_absolute():
+        try:
+            path = path.relative_to(Path.cwd())
+        except ValueError:
+            return None
+    relative = PurePosixPath(path.as_posix())
+    for infra_path in INFRA_TEST_PATHS:
+        infra = PurePosixPath(infra_path)
+        if relative == infra or infra in relative.parents:
+            return infra_path
+    return None
+
+
+def _requested_xdist_workers(posargs: Sequence[str]) -> str | None:
+    """Return the worker count ``posargs`` asks pytest-xdist for, if any."""
+    for index, arg in enumerate(posargs):
+        if arg in {"-n", "--numprocesses"}:
+            return posargs[index + 1] if index + 1 < len(posargs) else ""
+        if arg.startswith("--numprocesses="):
+            return arg.removeprefix("--numprocesses=")
+        if arg.startswith("-n") and arg != "-n":
+            return arg.removeprefix("-n")
+    return None
+
+
+def _unit_test_args(posargs: Sequence[str]) -> list[str]:
+    """Compose the pytest arguments for the test-unit session.
+
+    The INFRA_TEST_PATHS ignore flags always apply, so an invocation that
+    only passes options (``nox -s test-unit -- -x``) still runs the whole
+    infrastructure-free selection rather than the entire suite against the
+    unreachable placeholder servers. A posarg that names a path replaces
+    the default ``tests`` selection instead of adding to it.
+
+    Raises
+    ------
+    ValueError
+        Raised if a posarg names a path this session ignores, which would
+        otherwise collect nothing at all, or asks for pytest-xdist workers,
+        which this session has no database to give them.
+    """
+    workers = _requested_xdist_workers(posargs)
+    if workers is not None and workers != "0":
+        raise ValueError(
+            "this session cannot run under pytest-xdist, because the"
+            " worker isolation shim gives each worker its own database"
+            " and this session starts no database at all. It runs the"
+            " whole unit selection serially in about a second"
+        )
+    selections = _path_selections(posargs)
+    for selection in selections:
+        infra_path = _infra_path_for(selection)
+        if infra_path is not None:
+            raise ValueError(
+                f"{selection} is under {infra_path}, which needs the Kafka"
+                " and PostgreSQL containers that this session does not"
+                f" start. Run 'nox -s test -- {selection}' instead"
+            )
+    ignore_flags = [f"--ignore={path}" for path in INFRA_TEST_PATHS]
+    if selections:
+        return [*posargs, *ignore_flags]
+    return ["tests", *posargs, *ignore_flags]
+
+
 @session(name="test-unit", uv_groups=["dev"])
 def test_unit(session: nox.Session) -> None:
     """Run the unit tests that need no testcontainers.
@@ -178,9 +290,15 @@ def test_unit(session: nox.Session) -> None:
 
     The session runs serially: it takes about a second, so the xdist
     worker startup that the container-backed sessions need would be pure
-    overhead. Positional arguments replace the default test selection (for
-    example ``nox -s test-unit -- tests/domain/base32id_test.py``); the
-    unreachable-infrastructure environment still applies.
+    overhead, and each worker would want a database of its own that this
+    session never starts. Asking for workers is therefore an error.
+
+    Positional arguments go to pytest with the ignore list still applied:
+    options alone (``nox -s test-unit -- -x``) narrow how the unit
+    selection runs, while a path (``nox -s test-unit --
+    tests/domain/base32id_test.py``) narrows what it selects. Naming a
+    path that needs the containers is an error pointing at ``nox -s
+    test``.
     """
     env_vars = _make_env_vars(
         {
@@ -189,10 +307,10 @@ def test_unit(session: nox.Session) -> None:
             "OOK_DATABASE_PASSWORD": "unreachable",
         }
     )
-    if session.posargs:
-        pytest_args = list(session.posargs)
-    else:
-        pytest_args = ["tests", *(f"--ignore={p}" for p in INFRA_TEST_PATHS)]
+    try:
+        pytest_args = _unit_test_args(session.posargs)
+    except ValueError as e:
+        session.error(str(e))
     session.run(
         "pytest",
         *pytest_args,
