@@ -1,11 +1,13 @@
-"""Tests for the pytest arguments the nox sessions compose.
+"""Tests for the pytest arguments and environment the nox sessions compose.
 
 The ``test`` session hands pytest a default worker count that an
 invocation can turn down, and the ``test-unit`` session runs the
 infrastructure-free part of the suite against unreachable placeholder
 servers -- which only holds while the ``--ignore`` flags for
-`INFRA_TEST_PATHS` survive whatever posargs a developer passes. These
-tests load ``noxfile.py`` and pin both compositions down.
+`INFRA_TEST_PATHS` survive whatever posargs a developer passes. The
+sessions also split their environment in two: settings a real run can live
+with, and settings only a pytest run may have. These tests load
+``noxfile.py`` and pin all three compositions down.
 
 Nox itself is not installed in the test environment -- it lives in the
 ``nox`` dependency group, which bootstraps the sessions from outside -- so
@@ -15,10 +17,11 @@ it is loaded.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 import types
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +36,15 @@ PytestArgs = Callable[[Sequence[str]], list[str]]
 
 SessionEnv = Callable[[], dict[str, str]]
 """The signature of the noxfile's environment composer."""
+
+EnvComposer = Callable[..., dict[str, str]]
+"""The signature of the noxfile's layered environment composers."""
+
+HOST_INTERVAL_ENV = "OOK_LINKCHECK_HOST_INTERVAL"
+"""Setting that spaces the link checker's requests to one host apart."""
+
+TEST_ENV_COMPOSER = "_test_env_vars"
+"""The noxfile helper that adds the pytest-only environment."""
 
 
 def _session_decorator_stub(*args: Any, **kwargs: Any) -> Any:
@@ -86,6 +98,16 @@ def unit_test_args(noxfile: Any) -> PytestArgs:
 @pytest.fixture(scope="module")
 def unit_test_env(noxfile: Any) -> SessionEnv:
     return noxfile._unit_test_env
+
+
+@pytest.fixture(scope="module")
+def base_env_vars(noxfile: Any) -> EnvComposer:
+    return noxfile._make_env_vars
+
+
+@pytest.fixture(scope="module")
+def suite_env_vars(noxfile: Any) -> EnvComposer:
+    return noxfile._test_env_vars
 
 
 @pytest.fixture(scope="module")
@@ -318,3 +340,111 @@ def test_the_unit_session_keeps_the_placeholder_servers(
     assert (
         env["KAFKA_BOOTSTRAP_SERVERS"] == noxfile.UNREACHABLE_KAFKA_BOOTSTRAP
     )
+
+
+def test_the_base_environment_keeps_the_politeness_delay(
+    base_env_vars: EnvComposer,
+) -> None:
+    """Sessions that reach real hosts get the application's own default.
+
+    ``nox -s run`` and ``nox -s cli`` check links on the live internet, with
+    real credentials in the CLI's case. Turning the per-host delay off there
+    is exactly the behavior the link checker's Cloudflare bot-block handling
+    exists to avoid, so the setting must not live in the shared base.
+    """
+    assert HOST_INTERVAL_ENV not in base_env_vars()
+
+
+def test_the_test_environment_drops_the_politeness_delay(
+    suite_env_vars: EnvComposer,
+) -> None:
+    """The whole pytest session shares one UrlChecker.
+
+    Its host schedule would otherwise space every check of example.com a
+    second apart across the entire suite -- a delay the per-test Kafka drain
+    barrier would then have to wait out.
+    """
+    assert suite_env_vars()[HOST_INTERVAL_ENV] == "0s"
+
+
+def test_the_unit_session_drops_the_politeness_delay(
+    unit_test_env: SessionEnv,
+) -> None:
+    """The containers-free session composes the test environment too."""
+    assert unit_test_env()[HOST_INTERVAL_ENV] == "0s"
+
+
+@pytest.fixture(scope="module")
+def noxfile_tree() -> ast.Module:
+    """Parse ``noxfile.py`` for the static check below."""
+    return ast.parse((_REPO_ROOT / "noxfile.py").read_text())
+
+
+def _session_names(tree: ast.Module) -> set[str]:
+    """Return the name of every nox session the noxfile defines.
+
+    A session is a module-level function taking a ``nox.Session``. Reading
+    them off the source this way means a session added later is covered
+    without anyone remembering to list it here.
+    """
+    return {
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and any(
+            argument.annotation is not None
+            and ast.unparse(argument.annotation) == "nox.Session"
+            for argument in node.args.args
+        )
+    }
+
+
+def _call_graph(tree: ast.Module) -> dict[str, set[str]]:
+    """Map each module-level function to the bare names it calls."""
+    return {
+        node.name: {
+            call.func.id
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+        }
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+
+
+def _calls_transitively(
+    graph: Mapping[str, set[str]], start: str, target: str
+) -> bool:
+    """Report whether ``start`` reaches ``target`` through module calls."""
+    seen: set[str] = set()
+    pending = [start]
+    while pending:
+        name = pending.pop()
+        if name == target:
+            return True
+        if name in seen:
+            continue
+        seen.add(name)
+        pending.extend(graph.get(name, ()))
+    return False
+
+
+def test_only_the_test_sessions_compose_the_test_environment(
+    noxfile_tree: ast.Module,
+) -> None:
+    """Pin the sessions the pytest-only environment reaches.
+
+    Which sessions carry it is the whole point of splitting the environment
+    in two, and nothing about `_test_env_vars` stops a future session from
+    calling it. The delay was in the shared base once, which silently gave
+    ``run`` and ``cli`` an impolite link checker.
+    """
+    graph = _call_graph(noxfile_tree)
+
+    composing = {
+        name
+        for name in _session_names(noxfile_tree)
+        if _calls_transitively(graph, name, TEST_ENV_COMPOSER)
+    }
+
+    assert composing == {"test", "test_coverage", "test_unit"}

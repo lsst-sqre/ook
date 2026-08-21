@@ -168,7 +168,7 @@ def test(session: nox.Session) -> None:
         ) as postgres:
             _install_postgres_extensions(postgres)
 
-            env_vars = _make_env_vars(
+            env_vars = _test_env_vars(
                 {
                     "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
                     "OOK_DATABASE_URL": postgres.get_connection_url(
@@ -209,7 +209,7 @@ def test_coverage(session: nox.Session) -> None:
         ) as postgres:
             _install_postgres_extensions(postgres)
 
-            env_vars = _make_env_vars(
+            env_vars = _test_env_vars(
                 {
                     "KAFKA_BOOTSTRAP_SERVERS": kafka.get_bootstrap_server(),
                     "OOK_DATABASE_URL": postgres.get_connection_url(
@@ -339,7 +339,7 @@ def _unit_test_env() -> dict[str, str]:
     dict
         Environment variables for the session's pytest invocation.
     """
-    return _make_env_vars(
+    return _test_env_vars(
         {
             UNIT_SESSION_ENV_VAR: "1",
             "KAFKA_BOOTSTRAP_SERVERS": UNREACHABLE_KAFKA_BOOTSTRAP,
@@ -800,8 +800,13 @@ def _setup_testcontainers_env() -> None:
 def _make_env_vars(
     overrides: dict[str, str] | None = None, *, use_local_secrets: bool = False
 ) -> dict[str, str]:
-    """Create a environment variable dictionary for test sessions that enables
-    the app to start up.
+    """Create the base environment variable dictionary that lets the app
+    start up in a nox session.
+
+    Every session composes its environment from this one, so it holds only
+    settings a real run can also live with: the ``run`` and ``cli`` sessions
+    reach the live internet, the latter with real credentials. Settings that
+    only a pytest run may have belong in `_test_env_vars`.
     """
     env_vars = {
         "SAFIR_PROFILE": "development",
@@ -813,13 +818,6 @@ def _make_env_vars(
         "ALGOLIA_API_KEY": "test",
         "OOK_GITHUB_APP_ID": "1234",
         "OOK_GITHUB_APP_PRIVATE_KEY": TEST_GITHUB_APP_PRIVATE_KEY,
-        # Turn off the link checker's per-host politeness delay. The whole
-        # test session shares one UrlChecker, so its host schedule would
-        # space every check of example.com a second apart across the entire
-        # suite -- a delay the per-test Kafka drain barrier would then have
-        # to wait out. Politeness itself is covered by unit tests that build
-        # their own checker with an explicit interval.
-        "OOK_LINKCHECK_HOST_INTERVAL": "0s",
     }
     if overrides:
         env_vars.update(overrides)
@@ -839,6 +837,40 @@ def _make_env_vars(
         if algolia_api_key := os.getenv("ALGOLIA_API_KEY"):
             env_vars["ALGOLIA_API_KEY"] = algolia_api_key
     return env_vars
+
+
+def _test_env_vars(overrides: dict[str, str] | None = None) -> dict[str, str]:
+    """Create the environment variable dictionary for a pytest session.
+
+    Layers onto `_make_env_vars` the settings only a pytest run may have --
+    currently the link checker's per-host politeness delay, turned off
+    because the whole test session shares one UrlChecker: its host schedule
+    would otherwise space every check of example.com a second apart across
+    the entire suite, a delay the per-test Kafka drain barrier would then
+    have to wait out. Politeness itself is covered by unit tests that build
+    their own checker with an explicit interval.
+
+    Only the ``test``, ``test-coverage``, and ``test-unit`` sessions compose
+    their environment from here, and ``tests/noxfile_test.py`` pins that
+    down. The delay lived in the base environment once, which quietly gave
+    the ``run`` and ``cli`` sessions -- which check links on the live
+    internet -- the impolite link checker the Cloudflare bot-block handling
+    exists to avoid.
+
+    Parameters
+    ----------
+    overrides
+        Environment variables to set on top of the test environment. These
+        win over both layers below them.
+
+    Returns
+    -------
+    dict
+        Environment variables for the session's pytest invocation.
+    """
+    return _make_env_vars(
+        {"OOK_LINKCHECK_HOST_INTERVAL": "0s", **(overrides or {})}
+    )
 
 
 def _install_postgres_extensions(postgres: PostgresContainer) -> None:
