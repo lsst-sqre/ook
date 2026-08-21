@@ -108,6 +108,33 @@ XDIST_ATTACHED_WORKERS = re.compile(r"-n(?P<workers>\d+|auto|logical)")
 # debugger is already carrying --pdb or --trace.
 SERIAL_DEBUG_OPTIONS = frozenset({"--pdb", "--trace", "-s", "--capture=no"})
 
+# Ceiling on the worker count detected for pytest-xdist below.
+#
+# The workers themselves run on the host, but everything a worker drives
+# lives in the one Docker VM the PostgreSQL and Kafka containers share: a
+# database, an application lifespan, and a Kafka consumer join apiece,
+# against that single PostgreSQL and that single broker. Colima's default
+# profile gives the VM 8 CPUs, so on a wider host the extra workers only
+# queue against each other inside it.
+#
+# Measured there, 716 tests on a 24-core host: 4 workers ran the suite in
+# 80 s, 8 in 56 s, and 16 -- twice the cap, and twice the databases in the
+# same VM -- in 51 s. The returns flatten once the VM's CPUs run out, so
+# the cap sits at the VM's width rather than the host's.
+XDIST_WORKER_CAP = 8
+
+
+def _default_xdist_workers() -> int:
+    """Return the number of pytest-xdist workers to run by default.
+
+    One per usable CPU, capped at `XDIST_WORKER_CAP` because the workers
+    share the containers' Docker VM. ``os.process_cpu_count`` reports the
+    CPUs this process may actually use rather than the machine's total, so
+    an affinity-restricted or cgroup-limited runner is read correctly; it
+    returns `None` when it cannot tell, which is worth one worker.
+    """
+    return min(os.process_cpu_count() or 1, XDIST_WORKER_CAP)
+
 
 def _requested_xdist_workers(posargs: Sequence[str]) -> str | None:
     """Return the worker count ``posargs`` asks pytest-xdist for, if any.
@@ -142,11 +169,11 @@ def _wants_single_process(posargs: Sequence[str]) -> bool:
 def _xdist_args(posargs: Sequence[str]) -> list[str]:
     """Return default pytest-xdist arguments for a pytest invocation.
 
-    The suite runs under pytest-xdist with 4 workers by default (matching
-    the 4 vCPUs of GitHub Actions ubuntu-latest runners); each worker gets
-    its own PostgreSQL database and Kafka topic namespace via the worker
-    isolation shim in tests/support/xdist.py. Pass your own ``-n`` in
-    posargs (e.g. ``-n 0`` for a serial run) to override.
+    The suite runs under pytest-xdist by default, one worker per usable
+    CPU up to `XDIST_WORKER_CAP`; each worker gets its own PostgreSQL
+    database and Kafka topic namespace via the worker isolation shim in
+    tests/support/xdist.py. Pass your own ``-n`` in posargs (e.g. ``-n 0``
+    for a serial run) to override.
 
     Debugging invocations get the single process they need without asking:
     posargs carrying ``--pdb``, ``--trace``, ``-s``, or ``--capture=no``
@@ -158,7 +185,7 @@ def _xdist_args(posargs: Sequence[str]) -> list[str]:
         return []
     if _wants_single_process(posargs):
         return []
-    return ["-n", "4"]
+    return ["-n", str(_default_xdist_workers())]
 
 
 @session(uv_groups=["dev"])

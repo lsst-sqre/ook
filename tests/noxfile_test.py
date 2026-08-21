@@ -1,7 +1,7 @@
 """Tests for the pytest arguments and environment the nox sessions compose.
 
-The ``test`` session hands pytest a default worker count that an
-invocation can turn down, and the ``test-unit`` session runs the
+The ``test`` session detects a default worker count that an invocation
+can turn down, and the ``test-unit`` session runs the
 infrastructure-free part of the suite against unreachable placeholder
 servers -- which only holds while the ``--ignore`` flags for
 `INFRA_TEST_PATHS` survive whatever posargs a developer passes. The
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import os
 import sys
 import types
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -91,6 +92,11 @@ def xdist_args(noxfile: Any) -> PytestArgs:
 
 
 @pytest.fixture(scope="module")
+def default_workers(noxfile: Any) -> Callable[[], int]:
+    return noxfile._default_xdist_workers
+
+
+@pytest.fixture(scope="module")
 def unit_test_args(noxfile: Any) -> PytestArgs:
     return noxfile._unit_test_args
 
@@ -125,8 +131,72 @@ def _repo_root_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(_REPO_ROOT)
 
 
+@pytest.fixture(autouse=True)
+def _four_available_cpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Detect four usable CPUs, whatever machine the suite runs on.
+
+    The injected worker count is read off the host, so without this the
+    ``-n 4`` the injection tests below assert would be whatever the machine
+    at hand happens to have. Four is what a GitHub-hosted runner reports.
+    The detection itself is covered by the tests that patch over this.
+    """
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 4)
+
+
 def test_the_default_run_is_parallel(xdist_args: PytestArgs) -> None:
     assert xdist_args([]) == ["-n", "4"]
+
+
+def test_the_worker_count_follows_the_host(
+    default_workers: Callable[[], int],
+    xdist_args: PytestArgs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Below the cap, every usable CPU gets a worker.
+
+    A hard-coded four left the count matching GitHub's runners alone: a
+    developer machine with more cores ran the suite at a fraction of its
+    width, and one with fewer oversubscribed itself.
+    """
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 6)
+
+    assert default_workers() == 6
+    assert xdist_args([]) == ["-n", "6"]
+
+
+def test_the_worker_count_stops_at_the_cap(
+    noxfile: Any,
+    default_workers: Callable[[], int],
+    xdist_args: PytestArgs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wide host cannot buy more than the containers can feed.
+
+    The workers run on the host, but the PostgreSQL and Kafka containers
+    they drive share one small Docker VM, so past the cap the extra workers
+    only queue up against the same database.
+    """
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 64)
+    cap = noxfile.XDIST_WORKER_CAP
+
+    assert default_workers() == cap
+    assert xdist_args([]) == ["-n", str(cap)]
+
+
+def test_an_undetectable_cpu_count_runs_one_worker(
+    default_workers: Callable[[], int],
+    xdist_args: PytestArgs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``os.process_cpu_count`` may not know, and returns `None` if so.
+
+    One worker is slow but correct; passing the `None` through would hand
+    pytest-xdist a ``-n None`` it refuses, after the containers are up.
+    """
+    monkeypatch.setattr(os, "process_cpu_count", lambda: None)
+
+    assert default_workers() == 1
+    assert xdist_args([]) == ["-n", "1"]
 
 
 @pytest.mark.parametrize(
