@@ -162,6 +162,7 @@ def test_an_unrelated_single_dash_option_stays_parallel(
     "posargs",
     [
         pytest.param(["--pdb"], id="pdb"),
+        pytest.param(["--trace"], id="trace"),
         pytest.param(["-s"], id="output-passthrough"),
         pytest.param(["--capture=no"], id="capture-no"),
         pytest.param(["--capture", "no"], id="capture-no-separate-value"),
@@ -178,9 +179,34 @@ def test_debugging_posargs_run_single_process(
     Injecting them anyway made ``nox -s test -- --pdb`` start both
     containers and only then die on pytest-xdist's "--pdb is incompatible
     with distributing tests", with nothing naming the noxfile as the source
-    of the ``-n``.
+    of the ``-n``. ``--trace`` reaches the same end by a quieter route:
+    xdist's refusal only reads the option ``--pdb`` sets, so the workers are
+    created and then each dies as pdb reads EOF from a stdin nobody can type
+    into, failing every test it was given as a crash.
     """
     assert xdist_args(posargs) == []
+
+
+@pytest.mark.parametrize(
+    "posargs",
+    [
+        pytest.param(["--pdbcls=pdb:Pdb"], id="pdbcls-attached"),
+        pytest.param(["--pdbcls", "pdb:Pdb"], id="pdbcls-separate-value"),
+        pytest.param(["--trace-config"], id="trace-config"),
+    ],
+)
+def test_debugger_adjacent_posargs_stay_parallel(
+    xdist_args: PytestArgs, posargs: list[str]
+) -> None:
+    """Naming a debugger is not the same as starting one.
+
+    ``--pdbcls`` only picks the class ``--pdb``, ``--trace``, or
+    ``pytest.set_trace()`` would instantiate, and ``--trace-config`` traces
+    conftest loading rather than test execution. Probing pytest-xdist 3.8.0
+    ran both green under ``-n 2``, so dropping them to one process would
+    cost the suite its parallelism for nothing.
+    """
+    assert xdist_args(posargs) == ["-n", "4"]
 
 
 def test_other_capture_modes_stay_parallel(xdist_args: PytestArgs) -> None:

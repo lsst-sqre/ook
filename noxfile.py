@@ -89,7 +89,24 @@ XDIST_ATTACHED_WORKERS = re.compile(r"-n(?P<workers>\d+|auto|logical)")
 # and the workers swallow the output -s exists to show, so an invocation
 # carrying one of these runs in a single process. --capture also accepts
 # its value as the following posarg, which is handled separately.
-SERIAL_DEBUG_OPTIONS = frozenset({"--pdb", "-s", "--capture=no"})
+#
+# --trace belongs here for a worse reason than --pdb does. xdist's refusal
+# reads pytest's "usepdb" option, which only --pdb sets, so --trace gets no
+# refusal at all: probing pytest-xdist 3.8.0 under pytest 9.1.1 with
+# "-n 2 --trace" created the workers, and then every one of them died the
+# moment pdb read EOF from a worker stdin nobody can type into ("[gw0] node
+# down: keyboard-interrupt"), reporting each of its tests as a crash. That
+# is the start-the-containers-then-die failure this whole list exists to
+# avoid, only louder. Membership is by exact string, which is also what
+# keeps --trace-config -- an unrelated conftest-loading trace that workers
+# run fine -- out of it.
+#
+# --pdbcls is deliberately absent. It only names the class that --pdb,
+# --trace, or pytest.set_trace() would instantiate, so on its own it starts
+# no debugger and takes nothing away from the workers: the same probe ran
+# "-n 2 --pdbcls=pdb:Pdb" green. An invocation that pairs it with a
+# debugger is already carrying --pdb or --trace.
+SERIAL_DEBUG_OPTIONS = frozenset({"--pdb", "--trace", "-s", "--capture=no"})
 
 
 def _requested_xdist_workers(posargs: Sequence[str]) -> str | None:
@@ -132,10 +149,10 @@ def _xdist_args(posargs: Sequence[str]) -> list[str]:
     posargs (e.g. ``-n 0`` for a serial run) to override.
 
     Debugging invocations get the single process they need without asking:
-    posargs carrying ``--pdb``, ``-s``, or ``--capture=no`` suppress the
-    injection too, because the workers would otherwise refuse the debugger
-    or swallow the output -- after the containers have already started, and
-    with nothing to say the ``-n`` came from here.
+    posargs carrying ``--pdb``, ``--trace``, ``-s``, or ``--capture=no``
+    suppress the injection too, because the workers would otherwise refuse
+    the debugger, crash on it, or swallow the output -- after the containers
+    have already started, and with nothing to say the ``-n`` came from here.
     """
     if _requested_xdist_workers(posargs) is not None:
         return []
