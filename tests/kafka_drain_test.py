@@ -1,8 +1,11 @@
 """Tests for the per-test Kafka drain barrier in ``tests.support.kafka``.
 
-These exercise the tracker through the broker middleware it installs, so
-they need no Kafka: the middleware is driven directly with stand-in
-consumer records and publish commands.
+These need no Kafka. Most drive the tracker through the broker middleware
+it installs, with stand-in consumer records and publish commands, while
+``test_no_subscriber_replays_from_the_earliest_offset`` reads the real
+broker's subscriber configuration -- registered by the ``ook.main`` import
+in ``tests/conftest.py`` whether or not the application lifespan ever
+starts.
 """
 
 from __future__ import annotations
@@ -13,7 +16,13 @@ from typing import Any
 import pytest
 from faststream._internal.context.repository import ContextRepo
 
-from tests.support.kafka import KafkaDrainTimeoutError, KafkaWorkTracker
+from ook.kafkabroker import kafka_broker
+from tests.support.kafka import (
+    REQUIRED_AUTO_OFFSET_RESET,
+    KafkaDrainTimeoutError,
+    KafkaWorkTracker,
+    subscriber_offset_resets,
+)
 
 TOPIC = "ook.linkcheck"
 HANDLER = "handle_linkcheck_execution"
@@ -164,6 +173,43 @@ async def test_timeout_names_a_handler_that_is_still_executing() -> None:
     assert HANDLER in message
     assert TOPIC in message
     assert "42" in message
+
+
+def test_no_subscriber_replays_from_the_earliest_offset() -> None:
+    """The barrier's blind spot is safe only under ``'latest'``.
+
+    A pytest-xdist worker that never starts the application lifespan has no
+    subscriber to consume what its ``factory`` tests publish, so the barrier
+    cannot drain those messages -- see the module docstring of
+    `tests.support.kafka`. They stay harmless because the consumer group
+    that eventually joins is fresh and starts at the end of the log.
+    """
+    resets = subscriber_offset_resets(kafka_broker)
+
+    assert resets, (
+        "No FastStream subscribers were registered, so this test verified"
+        " nothing. tests/conftest.py imports ook.main, which imports"
+        " ook.handlers.kafka and registers them; check that chain."
+    )
+    replaying = {
+        handler: reset
+        for handler, reset in resets.items()
+        if reset != REQUIRED_AUTO_OFFSET_RESET
+    }
+
+    assert not replaying, (
+        "Every Kafka subscriber must leave auto_offset_reset at"
+        f" '{REQUIRED_AUTO_OFFSET_RESET}', but these do not: {replaying}."
+        " The drain barrier in tests/support/kafka.py has one blind spot:"
+        " on a pytest-xdist worker whose application lifespan never starts,"
+        " the messages its 'factory' tests publish are never consumed and"
+        " never drained. They stay harmless only because the consumer group"
+        " that joins later is fresh and skips to the end of the log. Under"
+        " 'earliest' they would instead replay into the first 'app' test on"
+        " that worker, hitting its respx routes and committing into its"
+        " freshly truncated database. Keep the subscriber on 'latest', or"
+        " extend the barrier to drain topics whose subscribers never ran."
+    )
 
 
 async def _succeed(cmd: Any) -> str:

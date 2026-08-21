@@ -29,6 +29,19 @@ was armed. A pytest-xdist worker that never runs a test needing the ``app``
 fixture never starts the application lifespan, so nothing in that process
 would ever consume what its ``factory`` tests publish; an unarmed tracker
 reports itself idle instead of hanging until the timeout.
+
+That last case is the barrier's one blind spot, and it is safe only because
+of a setting nothing else in the suite mentions: every subscriber in
+`ook.handlers.kafka` leaves aiokafka's ``auto_offset_reset`` at its
+``'latest'`` default (`REQUIRED_AUTO_OFFSET_RESET`). Each xdist worker gets
+its own consumer group id, so when a later ``app`` test finally starts the
+lifespan, that group has no committed offsets and resets to the *end* of
+the log -- skipping the messages the worker's earlier ``factory`` tests
+left behind. Under ``'earliest'`` it would replay them into that ``app``
+test instead, where they would hit its respx routers and commit into its
+freshly truncated database. Nothing in `ook.handlers.kafka` says that the
+barrier depends on this, so ``tests/kafka_drain_test.py`` pins it down in
+``test_no_subscriber_replays_from_the_earliest_offset``.
 """
 
 from __future__ import annotations
@@ -49,14 +62,24 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DRAIN_TIMEOUT",
+    "REQUIRED_AUTO_OFFSET_RESET",
     "KafkaDrainTimeoutError",
     "KafkaWorkTracker",
     "kafka_work_tracker",
     "running_subscriptions",
+    "subscriber_offset_resets",
 ]
 
 DRAIN_TIMEOUT = 30.0
 """Seconds the barrier waits for a test's Kafka work before giving up."""
+
+REQUIRED_AUTO_OFFSET_RESET = "latest"
+"""The ``auto_offset_reset`` every application subscriber must keep.
+
+The barrier cannot drain what a worker without a running lifespan
+publishes, and only this setting keeps that undrained backlog from
+replaying into a later test. See the module docstring.
+"""
 
 
 class KafkaDrainTimeoutError(RuntimeError):
@@ -323,6 +346,56 @@ def running_subscriptions(broker: KafkaBroker) -> dict[str, list[str]]:
         for topic in subscriber.topics:
             subscriptions.setdefault(topic, []).append(name)
     return subscriptions
+
+
+def subscriber_offset_resets(broker: KafkaBroker) -> dict[str, str]:
+    """Map each subscriber's handler name to its ``auto_offset_reset``.
+
+    Unlike `running_subscriptions` this reads the *declared* configuration,
+    so it works in any pytest process: registering the subscribers is what
+    importing `ook.handlers.kafka` does, and no broker connection or
+    application lifespan is involved.
+
+    Parameters
+    ----------
+    broker
+        Broker whose subscribers to inspect.
+
+    Returns
+    -------
+    dict
+        Handler function name to the ``auto_offset_reset`` its subscriber
+        passes to aiokafka, which is ``'latest'`` unless the subscriber
+        overrode it.
+
+    Raises
+    ------
+    RuntimeError
+        Raised if FastStream no longer keeps the consumer arguments where
+        this function looks for them, because the contract the value
+        underwrites (`REQUIRED_AUTO_OFFSET_RESET`) would otherwise go
+        unchecked from then on.
+    """
+    resets: dict[str, str] = {}
+    for base_subscriber in broker.subscribers:
+        subscriber = cast("_KafkaSubscriber", base_subscriber)
+        name: str = subscriber.specification.call_name
+        # FastStream exposes the consumer kwargs only on this private
+        # attribute; its specification object carries topics and docs, but
+        # nothing about offsets.
+        connection_args = getattr(base_subscriber, "_connection_args", {})
+        if "auto_offset_reset" not in connection_args:
+            raise RuntimeError(
+                f"Cannot read auto_offset_reset for subscriber {name!r}:"
+                " FastStream moved it out of the subscriber's"
+                " _connection_args. Find where it lives now and update"
+                " tests.support.kafka.subscriber_offset_resets, so the"
+                " drain barrier's dependency on"
+                f" auto_offset_reset='{REQUIRED_AUTO_OFFSET_RESET}' stays"
+                " checked."
+            )
+        resets[name] = str(connection_args["auto_offset_reset"])
+    return resets
 
 
 class _TrackingMiddleware(BaseMiddleware[Any, Any]):
