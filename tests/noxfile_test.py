@@ -1,9 +1,11 @@
-"""Tests for the arguments the ``test-unit`` nox session gives pytest.
+"""Tests for the pytest arguments the nox sessions compose.
 
-That session runs the infrastructure-free part of the suite against
-unreachable placeholder servers, which only holds while the ``--ignore``
-flags for `INFRA_TEST_PATHS` survive whatever posargs a developer passes.
-These tests load ``noxfile.py`` and pin that composition down.
+The ``test`` session hands pytest a default worker count that an
+invocation can turn down, and the ``test-unit`` session runs the
+infrastructure-free part of the suite against unreachable placeholder
+servers -- which only holds while the ``--ignore`` flags for
+`INFRA_TEST_PATHS` survive whatever posargs a developer passes. These
+tests load ``noxfile.py`` and pin both compositions down.
 
 Nox itself is not installed in the test environment -- it lives in the
 ``nox`` dependency group, which bootstraps the sessions from outside -- so
@@ -24,8 +26,8 @@ import pytest
 
 _REPO_ROOT = Path(__file__).parents[1]
 
-UnitTestArgs = Callable[[Sequence[str]], list[str]]
-"""The signature of the noxfile's argument composer."""
+PytestArgs = Callable[[Sequence[str]], list[str]]
+"""The signature of the noxfile's argument composers."""
 
 
 def _session_decorator_stub(*args: Any, **kwargs: Any) -> Any:
@@ -67,7 +69,12 @@ def noxfile() -> Iterator[Any]:
 
 
 @pytest.fixture(scope="module")
-def unit_test_args(noxfile: Any) -> UnitTestArgs:
+def xdist_args(noxfile: Any) -> PytestArgs:
+    return noxfile._xdist_args
+
+
+@pytest.fixture(scope="module")
+def unit_test_args(noxfile: Any) -> PytestArgs:
     return noxfile._unit_test_args
 
 
@@ -86,14 +93,80 @@ def _repo_root_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(_REPO_ROOT)
 
 
+def test_the_default_run_is_parallel(xdist_args: PytestArgs) -> None:
+    assert xdist_args([]) == ["-n", "4"]
+
+
+@pytest.mark.parametrize(
+    "posargs",
+    [
+        pytest.param(["-n", "2"], id="separate-value"),
+        pytest.param(["-n2"], id="attached-value"),
+        pytest.param(["-n", "0"], id="serial-run"),
+        pytest.param(["-nauto"], id="attached-auto"),
+        pytest.param(["--numprocesses", "2"], id="long-option-value"),
+        pytest.param(["--numprocesses=2"], id="long-option-attached"),
+        pytest.param(["-x", "-n0", "tests/domain"], id="among-other-posargs"),
+    ],
+)
+def test_an_explicit_worker_count_wins(
+    xdist_args: PytestArgs, posargs: list[str]
+) -> None:
+    assert xdist_args(posargs) == []
+
+
+def test_an_unrelated_single_dash_option_stays_parallel(
+    xdist_args: PytestArgs,
+) -> None:
+    """Only the ``-n`` spellings are worker counts, not every ``-n*`` arg.
+
+    Matching the bare ``-n`` prefix silently dropped the suite to one
+    process for any single-dash option that happens to start with an ``n``.
+    """
+    assert xdist_args(["-noflag"]) == ["-n", "4"]
+
+
+@pytest.mark.parametrize(
+    "posargs",
+    [
+        pytest.param(["--pdb"], id="pdb"),
+        pytest.param(["-s"], id="output-passthrough"),
+        pytest.param(["--capture=no"], id="capture-no"),
+        pytest.param(["--capture", "no"], id="capture-no-separate-value"),
+        pytest.param(
+            ["--pdb", "tests/config_test.py"], id="alongside-a-selection"
+        ),
+    ],
+)
+def test_debugging_posargs_run_single_process(
+    xdist_args: PytestArgs, posargs: list[str]
+) -> None:
+    """Workers defeat the debugger and swallow passthrough output.
+
+    Injecting them anyway made ``nox -s test -- --pdb`` start both
+    containers and only then die on pytest-xdist's "--pdb is incompatible
+    with distributing tests", with nothing naming the noxfile as the source
+    of the ``-n``.
+    """
+    assert xdist_args(posargs) == []
+
+
+def test_other_capture_modes_stay_parallel(xdist_args: PytestArgs) -> None:
+    """Only ``--capture=no`` needs the single process.
+
+    The ``fd`` and ``sys`` modes capture per worker just fine.
+    """
+    assert xdist_args(["--capture=fd"]) == ["-n", "4"]
+
+
 def test_bare_session_runs_the_unit_selection(
-    unit_test_args: UnitTestArgs, ignore_flags: list[str]
+    unit_test_args: PytestArgs, ignore_flags: list[str]
 ) -> None:
     assert unit_test_args([]) == ["tests", *ignore_flags]
 
 
 def test_option_posargs_keep_the_unit_selection(
-    unit_test_args: UnitTestArgs, ignore_flags: list[str]
+    unit_test_args: PytestArgs, ignore_flags: list[str]
 ) -> None:
     """``-x`` must not cost the ignore list.
 
@@ -112,7 +185,7 @@ def test_option_posargs_keep_the_unit_selection(
     ],
 )
 def test_an_option_value_is_not_a_path_selection(
-    unit_test_args: UnitTestArgs,
+    unit_test_args: PytestArgs,
     ignore_flags: list[str],
     posargs: list[str],
 ) -> None:
@@ -129,7 +202,7 @@ def test_an_option_value_is_not_a_path_selection(
     ],
 )
 def test_asking_for_xdist_workers_is_refused(
-    unit_test_args: UnitTestArgs, posargs: list[str]
+    unit_test_args: PytestArgs, posargs: list[str]
 ) -> None:
     """Workers would each want a database this session never starts.
 
@@ -140,8 +213,15 @@ def test_asking_for_xdist_workers_is_refused(
         unit_test_args(posargs)
 
 
+def test_an_unrelated_single_dash_option_is_not_a_worker_request(
+    unit_test_args: PytestArgs, ignore_flags: list[str]
+) -> None:
+    """The refusal keys on the ``-n`` spellings, not every ``-n*`` arg."""
+    assert unit_test_args(["-noflag"]) == ["tests", "-noflag", *ignore_flags]
+
+
 def test_a_path_posarg_replaces_the_default_selection(
-    unit_test_args: UnitTestArgs, ignore_flags: list[str]
+    unit_test_args: PytestArgs, ignore_flags: list[str]
 ) -> None:
     assert unit_test_args(["tests/config_test.py"]) == [
         "tests/config_test.py",
@@ -150,7 +230,7 @@ def test_a_path_posarg_replaces_the_default_selection(
 
 
 def test_a_node_id_posarg_replaces_the_default_selection(
-    unit_test_args: UnitTestArgs, ignore_flags: list[str]
+    unit_test_args: PytestArgs, ignore_flags: list[str]
 ) -> None:
     node_id = "tests/config_test.py::test_something"
 
@@ -158,7 +238,7 @@ def test_a_node_id_posarg_replaces_the_default_selection(
 
 
 def test_a_path_posarg_mixes_with_options(
-    unit_test_args: UnitTestArgs, ignore_flags: list[str]
+    unit_test_args: PytestArgs, ignore_flags: list[str]
 ) -> None:
     assert unit_test_args(["-x", "tests/domain"]) == [
         "-x",
@@ -168,7 +248,7 @@ def test_a_path_posarg_mixes_with_options(
 
 
 def test_selecting_the_tests_directory_keeps_the_ignore_list(
-    unit_test_args: UnitTestArgs, ignore_flags: list[str]
+    unit_test_args: PytestArgs, ignore_flags: list[str]
 ) -> None:
     assert unit_test_args(["tests"]) == ["tests", *ignore_flags]
 
@@ -184,7 +264,7 @@ def test_selecting_the_tests_directory_keeps_the_ignore_list(
     ],
 )
 def test_selecting_an_infrastructure_path_is_refused(
-    unit_test_args: UnitTestArgs, selection: str
+    unit_test_args: PytestArgs, selection: str
 ) -> None:
     """A path this session ignores must fail loudly, not collect nothing."""
     with pytest.raises(ValueError, match="nox -s test") as excinfo:
@@ -194,7 +274,7 @@ def test_selecting_an_infrastructure_path_is_refused(
 
 
 def test_an_absolute_infrastructure_path_is_refused(
-    unit_test_args: UnitTestArgs,
+    unit_test_args: PytestArgs,
 ) -> None:
     selection = str(_REPO_ROOT / "tests" / "services")
 

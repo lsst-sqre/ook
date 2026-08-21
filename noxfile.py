@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 from collections.abc import Sequence
+from itertools import pairwise
 from pathlib import Path, PurePosixPath
 from time import sleep
 from typing import TYPE_CHECKING
@@ -66,19 +67,68 @@ def typing(session: nox.Session) -> None:
     session.run("mypy", "noxfile.py", "src", "tests")
 
 
-def _xdist_args(posargs: list[str]) -> list[str]:
+# The attached spellings of pytest-xdist's short worker option: a count,
+# or one of the two names it derives a count from. Matching the bare "-n"
+# prefix instead would read any single-dash option starting with an "n" as
+# a worker request.
+XDIST_ATTACHED_WORKERS = re.compile(r"-n(?P<workers>\d+|auto|logical)")
+
+# Posargs that ask for something pytest-xdist workers take away. xdist
+# refuses --pdb outright ("--pdb is incompatible with distributing tests")
+# and the workers swallow the output -s exists to show, so an invocation
+# carrying one of these runs in a single process. --capture also accepts
+# its value as the following posarg, which is handled separately.
+SERIAL_DEBUG_OPTIONS = frozenset({"--pdb", "-s", "--capture=no"})
+
+
+def _requested_xdist_workers(posargs: Sequence[str]) -> str | None:
+    """Return the worker count ``posargs`` asks pytest-xdist for, if any.
+
+    Recognizes every spelling pytest-xdist accepts -- ``-n 4``, ``-n4``,
+    ``--numprocesses 4``, ``--numprocesses=4`` -- and returns the value as
+    written, or ``""`` for a trailing ``-n`` with no value at all. Anything
+    else, including an unrelated single-dash option that merely starts with
+    an ``n``, is not a worker request and returns `None`.
+    """
+    for index, arg in enumerate(posargs):
+        if arg in {"-n", "--numprocesses"}:
+            return posargs[index + 1] if index + 1 < len(posargs) else ""
+        if arg.startswith("--numprocesses="):
+            return arg.removeprefix("--numprocesses=")
+        attached = XDIST_ATTACHED_WORKERS.fullmatch(arg)
+        if attached is not None:
+            return attached["workers"]
+    return None
+
+
+def _wants_single_process(posargs: Sequence[str]) -> bool:
+    """Report whether ``posargs`` asks for something workers would defeat."""
+    if not SERIAL_DEBUG_OPTIONS.isdisjoint(posargs):
+        return True
+    return any(
+        arg == "--capture" and value == "no"
+        for arg, value in pairwise(posargs)
+    )
+
+
+def _xdist_args(posargs: Sequence[str]) -> list[str]:
     """Return default pytest-xdist arguments for a pytest invocation.
 
     The suite runs under pytest-xdist with 4 workers by default (matching
     the 4 vCPUs of GitHub Actions ubuntu-latest runners); each worker gets
     its own PostgreSQL database and Kafka topic namespace via the worker
-    isolation shim in tests/conftest.py. Pass your own ``-n`` in posargs
-    (e.g. ``-n 0`` for a serial run) to override.
+    isolation shim in tests/support/xdist.py. Pass your own ``-n`` in
+    posargs (e.g. ``-n 0`` for a serial run) to override.
+
+    Debugging invocations get the single process they need without asking:
+    posargs carrying ``--pdb``, ``-s``, or ``--capture=no`` suppress the
+    injection too, because the workers would otherwise refuse the debugger
+    or swallow the output -- after the containers have already started, and
+    with nothing to say the ``-n`` came from here.
     """
-    if any(
-        arg == "-n" or arg.startswith(("-n", "--numprocesses"))
-        for arg in posargs
-    ):
+    if _requested_xdist_workers(posargs) is not None:
+        return []
+    if _wants_single_process(posargs):
         return []
     return ["-n", "4"]
 
@@ -224,18 +274,6 @@ def _infra_path_for(selection: str) -> str | None:
         infra = PurePosixPath(infra_path)
         if relative == infra or infra in relative.parents:
             return infra_path
-    return None
-
-
-def _requested_xdist_workers(posargs: Sequence[str]) -> str | None:
-    """Return the worker count ``posargs`` asks pytest-xdist for, if any."""
-    for index, arg in enumerate(posargs):
-        if arg in {"-n", "--numprocesses"}:
-            return posargs[index + 1] if index + 1 < len(posargs) else ""
-        if arg.startswith("--numprocesses="):
-            return arg.removeprefix("--numprocesses=")
-        if arg.startswith("-n") and arg != "-n":
-            return arg.removeprefix("-n")
     return None
 
 
