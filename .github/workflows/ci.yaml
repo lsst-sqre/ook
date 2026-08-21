@@ -1,7 +1,7 @@
 name: CI
 
 env:
-  UV_VERSION: "0.12.4"
+  UV_VERSION: "0.12.5"
 
 "on":
   merge_group: {}
@@ -33,15 +33,15 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Run prek
         run: uv run --group=lint prek run --all-files
 
-  test:
+  typing:
     runs-on: ubuntu-latest
-    # The suite runs testcontainers for PostgreSQL and Kafka and has grown
-    # past 14 minutes of pytest on its own, so 15 minutes left no headroom.
-    timeout-minutes: 25
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v7
@@ -50,9 +50,49 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Run nox
-        run: uv run --group=nox nox -s typing test-coverage
+        run: uv run --group=nox nox -s typing
+
+  test-unit:
+    runs-on: ubuntu-latest
+    # The unit tests run without testcontainers and finish in seconds; the
+    # timeout only needs to cover dependency installation.
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Run nox
+        run: uv run --group=nox nox -s test-unit
+
+  test:
+    runs-on: ubuntu-latest
+    # The suite runs testcontainers for PostgreSQL and Kafka and takes a few
+    # minutes under pytest-xdist; 15 minutes leaves ample headroom.
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Run nox
+        run: uv run --group=nox nox -s test-coverage
 
   docs:
     runs-on: ubuntu-latest
@@ -68,6 +108,8 @@ jobs:
         uses: astral-sh/setup-uv@v10.0.1
         with:
           version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Run nox
         run: uv run --group=nox nox -s docs
@@ -93,7 +135,11 @@ jobs:
     concurrency:
       group: docker
       queue: max
-    needs: [test]
+    # Gating on typing and both test jobs preserves the old semantics, where
+    # the single test job ran mypy and the full suite before build started.
+    # typing and test-unit finish well before the container-backed suite, so
+    # they do not extend the critical path.
+    needs: [test, typing, test-unit]
     secrets: inherit
     uses: lsst-sqre/multiplatform-build-and-push/.github/workflows/build.yaml@v4
     with:

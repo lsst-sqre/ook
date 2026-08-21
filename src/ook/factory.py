@@ -48,6 +48,17 @@ from .storage.resourcestore import ResourceStore
 from .storage.sdmschemastore import SdmSchemasStore
 
 
+def _is_broker_active(broker: KafkaBroker) -> bool:
+    """Report whether something else already started or connected a broker.
+
+    FastStream sets ``running`` in ``KafkaBroker.start`` (what the FastStream
+    application's lifespan calls) and populates the private ``_connection``
+    in ``KafkaBroker.connect``. Either means another owner is holding the
+    broker's producer, and its subscribers, open.
+    """
+    return broker.running or broker._connection is not None  # noqa: SLF001
+
+
 @dataclass(kw_only=True, frozen=True, slots=True)
 class ProcessContext:
     """Holds singletons in the context of a Ook process, which might be a
@@ -179,17 +190,26 @@ class Factory:
             logger=logger, engine=engine, kafka_broker=kafka_broker
         )
         async with aclosing(factory):
-            # Manually connect the broker after the publishers are created
-            # so that the producer can be added to each publisher.
             broker = factory._process_context.kafka_broker  # noqa: SLF001
-            await broker.connect()
+            # Only manage the broker's lifecycle when this factory is its
+            # sole owner. The broker is usually the module-level singleton
+            # that the FastStream application also runs on, so stopping one
+            # that something else already started would close a producer and
+            # stop subscribers that are still in use.
+            owns_broker = not _is_broker_active(broker)
+            if owns_broker:
+                # Manually connect the broker after the publishers are
+                # created so that the producer can be added to each
+                # publisher.
+                await broker.connect()
             try:
                 yield factory
             finally:
-                # Stop the broker on the same event loop that connected it.
-                # The broker may be a module-level singleton (kafka_broker's),
-                # so leaving it connected leaks producers bound to this loop.
-                await broker.stop()
+                if owns_broker:
+                    # Stop the broker on the same event loop that connected
+                    # it; leaving a module-level singleton connected leaks
+                    # producers bound to this loop.
+                    await broker.stop()
 
     async def aclose(self) -> None:
         """Shut down the factory and the internal process context."""

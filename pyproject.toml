@@ -66,6 +66,8 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "pytest-cov",
+    "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
     "respx",
     "uv",
 ]
@@ -117,6 +119,22 @@ exclude_lines = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
+# Run all async tests and fixtures on one session-scoped event loop so the
+# session-scoped application lifespan (Kafka broker, database pool, HTTP
+# clients) can be shared across tests. aiokafka/asyncpg objects are bound to
+# the loop they were created on, so a shared app requires a shared loop.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+# Fail any test item (fixture setup included) that runs for five minutes. The
+# suite shares one application (and therefore one database pool and one Kafka
+# broker) across the session, so a stuck lock or an un-awaited background task
+# would otherwise surface in CI as total silence until the job timeout, with
+# nothing to diagnose. pytest-timeout's thread method dumps every thread's
+# stack and kills the worker, so xdist names the hung test ("worker crashed
+# while running ..."), restarts the worker, and the run completes with a real
+# failure instead of a cancelled job.
+timeout = 300
+timeout_method = "thread"
 # The python_files setting is not for test detection (pytest will pick up any
 # test files named *_test.py without this setting) but to enable special
 # assert processing in any non-test supporting files under tests.  We

@@ -1,4 +1,10 @@
-"""Integration test for the one-time resource-ID re-mint migration."""
+"""Integration test for the one-time resource-ID re-mint migration.
+
+The migration drops and recreates foreign keys, so it runs against the
+dedicated DDL database rather than the one the session-scoped application's
+connection pool is attached to. See
+``tests.support.database.ddl_database_url``.
+"""
 
 from __future__ import annotations
 
@@ -9,13 +15,13 @@ from types import ModuleType
 
 import pytest
 import sqlalchemy as sa
-import structlog
-from safir.database import create_database_engine, initialize_database
+from safir.database import create_database_engine
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ook.config import config
-from ook.dbschema import Base
 from ook.domain.base32id import RESOURCE_ID_EPOCH, RESOURCE_ID_RANDOM_BITS
+
+from ..support.database import ddl_database_url, reset_database_for_test
 
 _MIGRATION_GLOB = "alembic/versions/*_remint_resource_ids_time_ordered.py"
 
@@ -139,13 +145,18 @@ async def _seed(engine: AsyncEngine) -> dict[str, int]:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_rebuild_ddl_schema_after_test")
 async def test_remint_reorders_ids_and_preserves_fks() -> None:
-    """Re-mint IDs in date_created order while keeping FKs intact."""
+    """Re-mint IDs in date_created order while keeping FKs intact.
+
+    The migration drops and recreates foreign keys, so the fixture forces the
+    DDL database's schema to be rebuilt afterwards rather than leaving later
+    tests to truncate the migration's handiwork.
+    """
     engine = create_database_engine(
-        config.database_url, config.database_password
+        await ddl_database_url(), config.database_password
     )
-    logger = structlog.get_logger("ook")
-    await initialize_database(engine, logger, schema=Base.metadata, reset=True)
+    await reset_database_for_test(engine)
 
     old_ids = await _seed(engine)
     migration = _load_migration_module()
