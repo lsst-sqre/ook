@@ -194,8 +194,8 @@ async def test_post_check_all_fresh_returns_complete(
         LinkState(
             url="https://example.com/fresh",
             status=LinkStatus.ok,
-            checked_at=now,
-            last_ok_at=now,
+            date_checked=now,
+            date_last_ok=now,
             status_code=200,
         )
     )
@@ -243,8 +243,8 @@ async def test_check_poll_origin_paths_all_fresh(client: AsyncClient) -> None:
         LinkState(
             url="https://example.com/fresh",
             status=LinkStatus.ok,
-            checked_at=now,
-            last_ok_at=now,
+            date_checked=now,
+            date_last_ok=now,
             status_code=200,
         )
     )
@@ -400,8 +400,8 @@ async def test_submit_and_poll_mixed_urls(client: AsyncClient) -> None:
         LinkState(
             url="https://example.com/fresh",
             status=LinkStatus.ok,
-            checked_at=now,
-            last_ok_at=now,
+            date_checked=now,
+            date_last_ok=now,
             status_code=200,
         )
     )
@@ -453,11 +453,11 @@ async def test_submit_and_poll_mixed_urls(client: AsyncClient) -> None:
     fresh = results["https://example.com/fresh"]
     assert fresh["status"] == "ok"
     assert fresh["status_code"] == 200
-    assert fresh["checked_at"] is not None
+    assert fresh["date_checked"] is not None
     unknown = results["https://example.com/unknown"]
     assert unknown["status"] == "pending"
     assert unknown["status_code"] is None
-    assert unknown["checked_at"] is None
+    assert unknown["date_checked"] is None
     unsupported = results["mailto:someone@example.com"]
     assert unsupported["status"] == "unsupported"
     assert data["self_url"].endswith(f"/ook/linkcheck/checks/{data['id']}")
@@ -636,11 +636,11 @@ async def test_poll_after_execution_reflects_results(
     ok = results["https://example.com/ok"]
     assert ok["status"] == "ok"
     assert ok["status_code"] == 200
-    assert ok["checked_at"] is not None
+    assert ok["date_checked"] is not None
     gone = results["https://example.com/gone"]
     assert gone["status"] == "broken"
     assert gone["status_code"] == 404
-    assert gone["checked_at"] is not None
+    assert gone["date_checked"] is not None
 
 
 @pytest.mark.asyncio
@@ -735,8 +735,8 @@ async def test_get_url_record(client: AsyncClient) -> None:
         LinkState(
             url="https://example.com/moved",
             status=LinkStatus.redirected,
-            checked_at=now,
-            last_ok_at=now,
+            date_checked=now,
+            date_last_ok=now,
             status_code=200,
             redirect_status_code=301,
             redirect_url="https://example.com/new-location",
@@ -771,7 +771,7 @@ async def test_get_url_record(client: AsyncClient) -> None:
     assert data["redirect_status_code"] == 301
     assert data["redirect_url"] == "https://example.com/new-location"
     assert data["error"] is None
-    assert data["last_checked_at"] is not None
+    assert data["date_last_checked"] is not None
     assert data["occurrences"] == [
         {"origin_base_url": ORIGIN, "origin_path": "guide"},
         {"origin_base_url": ORIGIN, "origin_path": "index"},
@@ -792,8 +792,8 @@ async def test_contributed_result_reports_its_source(
         LinkState(
             url="https://example.com/contributed",
             status=LinkStatus.ok,
-            checked_at=now,
-            last_ok_at=now,
+            date_checked=now,
+            date_last_ok=now,
             status_code=200,
             result_source=ResultSource.contribution,
             contributed_by="lsst-sqre/documenteer",
@@ -804,8 +804,8 @@ async def test_contributed_result_reports_its_source(
         LinkState(
             url="https://example.com/server-checked",
             status=LinkStatus.ok,
-            checked_at=now,
-            last_ok_at=now,
+            date_checked=now,
+            date_last_ok=now,
             status_code=200,
         )
     )
@@ -863,8 +863,8 @@ async def _seed_origin_links(client: AsyncClient) -> None:
         LinkState(
             url="https://example.com/a-ok",
             status=LinkStatus.ok,
-            checked_at=now,
-            last_ok_at=now,
+            date_checked=now,
+            date_last_ok=now,
             status_code=200,
         )
     )
@@ -872,8 +872,8 @@ async def _seed_origin_links(client: AsyncClient) -> None:
         LinkState(
             url="https://example.com/b-moved",
             status=LinkStatus.redirected,
-            checked_at=now,
-            last_ok_at=now,
+            date_checked=now,
+            date_last_ok=now,
             status_code=200,
             redirect_status_code=301,
             redirect_url="https://example.com/new-location",
@@ -883,8 +883,8 @@ async def _seed_origin_links(client: AsyncClient) -> None:
         LinkState(
             url="https://example.com/c-gone",
             status=LinkStatus.broken,
-            checked_at=now,
-            failing_since=now,
+            date_checked=now,
+            date_failing_since=now,
             failure_count=1,
             status_code=404,
             error="HTTP status 404",

@@ -485,7 +485,7 @@ class UrlChecker:
         )
         if result.is_success:
             return LinkCheckOutcome(
-                checked_at=datetime.now(tz=UTC),
+                date_checked=datetime.now(tz=UTC),
                 result=CheckResult.success,
                 status_code=result.status_code,
                 redirect_status_code=redirect_status_code,
@@ -506,7 +506,7 @@ class UrlChecker:
         if detail_parts:
             error = f"{error} ({'; '.join(detail_parts)})"
         return LinkCheckOutcome(
-            checked_at=datetime.now(tz=UTC),
+            date_checked=datetime.now(tz=UTC),
             result=CheckResult.failure,
             status_code=result.status_code,
             redirect_status_code=redirect_status_code,
@@ -590,14 +590,14 @@ class UrlChecker:
 
     def _unsupported_outcome(self, error: str) -> LinkCheckOutcome:
         return LinkCheckOutcome(
-            checked_at=datetime.now(tz=UTC),
+            date_checked=datetime.now(tz=UTC),
             result=CheckResult.unsupported,
             error=error,
         )
 
     def _failure_outcome(self, error: str) -> LinkCheckOutcome:
         return LinkCheckOutcome(
-            checked_at=datetime.now(tz=UTC),
+            date_checked=datetime.now(tz=UTC),
             result=CheckResult.failure,
             error=error,
         )

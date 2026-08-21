@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict ug1MdNdhAkFmgUIBpnAQhQZY0xthVWKQhXJgYzpI4kX7hpe8DL42Bu1gxaSfaa0
+\restrict vwduItUFGAxoab63eaFOJCtC9q1jbp9nEh5zpaGiayqFidvk5PA4vga7SyKfloy
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -193,12 +193,12 @@ CREATE TABLE public.checked_url (
     error text,
     result_source text NOT NULL,
     contributed_by text,
-    last_checked_at timestamp with time zone,
-    last_ok_at timestamp with time zone,
-    failing_since timestamp with time zone,
+    date_last_checked timestamp with time zone,
+    date_last_ok timestamp with time zone,
+    date_failing_since timestamp with time zone,
     failure_count integer NOT NULL,
     consecutive_blocked_count integer NOT NULL,
-    next_check_at timestamp with time zone,
+    date_next_check timestamp with time zone,
     check_method text NOT NULL,
     date_created timestamp with time zone NOT NULL
 );
@@ -458,7 +458,7 @@ CREATE TABLE public.linkcheck_contribution (
     redirect_url text,
     redirect_status_code integer,
     error text,
-    checked_at timestamp with time zone NOT NULL,
+    date_checked timestamp with time zone NOT NULL,
     date_received timestamp with time zone NOT NULL
 );
 
@@ -905,7 +905,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-0bfe17a5f990
+f43554a10acb
 \.
 
 
@@ -937,7 +937,7 @@ COPY public.author_alias (id, internal_id, author_id, date_updated) FROM stdin;
 -- Data for Name: checked_url; Type: TABLE DATA; Schema: public; Owner: test
 --
 
-COPY public.checked_url (id, url, status, status_code, redirect_url, redirect_status_code, error, result_source, contributed_by, last_checked_at, last_ok_at, failing_since, failure_count, consecutive_blocked_count, next_check_at, check_method, date_created) FROM stdin;
+COPY public.checked_url (id, url, status, status_code, redirect_url, redirect_status_code, error, result_source, contributed_by, date_last_checked, date_last_ok, date_failing_since, failure_count, consecutive_blocked_count, date_next_check, check_method, date_created) FROM stdin;
 \.
 
 
@@ -1001,7 +1001,7 @@ COPY public.linkcheck_check_url (check_id, checked_url_id, origin_paths) FROM st
 -- Data for Name: linkcheck_contribution; Type: TABLE DATA; Schema: public; Owner: test
 --
 
-COPY public.linkcheck_contribution (id, check_id, checked_url_id, provider, repository, run_id, workflow_ref, run_url, checker_version, status_code, redirect_url, redirect_status_code, error, checked_at, date_received) FROM stdin;
+COPY public.linkcheck_contribution (id, check_id, checked_url_id, provider, repository, run_id, workflow_ref, run_url, checker_version, status_code, redirect_url, redirect_status_code, error, date_checked, date_received) FROM stdin;
 \.
 
 
@@ -1674,17 +1674,17 @@ CREATE INDEX ix_author_surname ON public.author USING btree (surname);
 
 
 --
--- Name: ix_checked_url_last_checked_at; Type: INDEX; Schema: public; Owner: test
+-- Name: ix_checked_url_date_last_checked; Type: INDEX; Schema: public; Owner: test
 --
 
-CREATE INDEX ix_checked_url_last_checked_at ON public.checked_url USING btree (last_checked_at);
+CREATE INDEX ix_checked_url_date_last_checked ON public.checked_url USING btree (date_last_checked);
 
 
 --
--- Name: ix_checked_url_next_check_at; Type: INDEX; Schema: public; Owner: test
+-- Name: ix_checked_url_date_next_check; Type: INDEX; Schema: public; Owner: test
 --
 
-CREATE INDEX ix_checked_url_next_check_at ON public.checked_url USING btree (next_check_at);
+CREATE INDEX ix_checked_url_date_next_check ON public.checked_url USING btree (date_next_check);
 
 
 --
@@ -2065,5 +2065,5 @@ ALTER TABLE ONLY public.url_occurrence
 -- PostgreSQL database dump complete
 --
 
-\unrestrict ug1MdNdhAkFmgUIBpnAQhQZY0xthVWKQhXJgYzpI4kX7hpe8DL42Bu1gxaSfaa0
+\unrestrict vwduItUFGAxoab63eaFOJCtC9q1jbp9nEh5zpaGiayqFidvk5PA4vga7SyKfloy
 

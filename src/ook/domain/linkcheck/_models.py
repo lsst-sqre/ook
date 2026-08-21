@@ -177,7 +177,7 @@ class LinkCheckOutcome(BaseModel):
     I/O) is the responsibility of a separate service.
     """
 
-    checked_at: datetime = Field(
+    date_checked: datetime = Field(
         description="Time when the check was performed."
     )
 
@@ -249,9 +249,11 @@ class LinkState(BaseModel):
 
     status: LinkStatus = Field(description="Current health status.")
 
-    checked_at: datetime = Field(description="Time of the most recent check.")
+    date_checked: datetime = Field(
+        description="Time of the most recent check."
+    )
 
-    last_ok_at: datetime | None = Field(
+    date_last_ok: datetime | None = Field(
         None,
         description=(
             "Time the link last resolved successfully, or None if it"
@@ -259,7 +261,7 @@ class LinkState(BaseModel):
         ),
     )
 
-    failing_since: datetime | None = Field(
+    date_failing_since: datetime | None = Field(
         None,
         description=(
             "Start of the current consecutive-failure streak, or None"
@@ -320,7 +322,7 @@ class LinkState(BaseModel):
         ),
     )
 
-    next_check_at: datetime | None = Field(
+    date_next_check: datetime | None = Field(
         None,
         description=(
             "Time of the next scheduled recheck on the retry ladder,"
@@ -433,7 +435,7 @@ class ContributedResult(BaseModel):
         description="Description of the failure, if the check failed.",
     )
 
-    checked_at: datetime = Field(
+    date_checked: datetime = Field(
         description=(
             "Time the client performed the check. Advisory: the server"
             " stamps its own receipt time, which is what freshness and"
@@ -650,7 +652,7 @@ class CheckedUrlReport(BaseModel):
         description="Description of the failure, if the check failed.",
     )
 
-    checked_at: datetime | None = Field(
+    date_checked: datetime | None = Field(
         None,
         description=(
             "Time of the check that produced this result, or None while"
@@ -736,14 +738,14 @@ class UrlRecord(BaseModel):
         ),
     )
 
-    last_checked_at: datetime | None = Field(
+    date_last_checked: datetime | None = Field(
         None,
         description=(
             "Time of the most recent check, or None if never checked."
         ),
     )
 
-    last_ok_at: datetime | None = Field(
+    date_last_ok: datetime | None = Field(
         None,
         description=(
             "Time the URL last resolved successfully, or None if it"
@@ -751,7 +753,7 @@ class UrlRecord(BaseModel):
         ),
     )
 
-    failing_since: datetime | None = Field(
+    date_failing_since: datetime | None = Field(
         None,
         description=(
             "Start of the current consecutive-failure streak, or None"
@@ -767,7 +769,7 @@ class UrlRecord(BaseModel):
         ),
     )
 
-    next_check_at: datetime | None = Field(
+    date_next_check: datetime | None = Field(
         None,
         description=(
             "Time of the next scheduled recheck on the retry ladder,"
@@ -849,7 +851,7 @@ class OriginLink(BaseModel):
         ),
     )
 
-    checked_at: datetime | None = Field(
+    date_checked: datetime | None = Field(
         None,
         description=(
             "Time of the most recent check, or None if never checked."

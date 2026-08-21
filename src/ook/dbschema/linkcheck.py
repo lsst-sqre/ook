@@ -103,17 +103,17 @@ class SqlCheckedUrl(Base):
     history, which outlives any single result.
     """
 
-    last_checked_at: Mapped[datetime | None] = mapped_column(
+    date_last_checked: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
     """The time of the most recent check, or null if never checked."""
 
-    last_ok_at: Mapped[datetime | None] = mapped_column(
+    date_last_ok: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     """The time the URL last resolved successfully."""
 
-    failing_since: Mapped[datetime | None] = mapped_column(
+    date_failing_since: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     """The start of the current consecutive-failure streak (the
@@ -133,7 +133,7 @@ class SqlCheckedUrl(Base):
     conclusive outcome; drives the blocked-recheck backoff.
     """
 
-    next_check_at: Mapped[datetime | None] = mapped_column(
+    date_next_check: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
     """The time of the next scheduled recheck on the retry ladder, or
@@ -387,7 +387,7 @@ class SqlLinkCheckContribution(Base):
     error: Mapped[str | None] = mapped_column(UnicodeText, nullable=True)
     """A description of the failure the client observed."""
 
-    checked_at: Mapped[datetime] = mapped_column(
+    date_checked: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
     """The time the client reports it performed the check.

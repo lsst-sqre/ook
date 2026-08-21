@@ -217,7 +217,7 @@ def contributed_outcome(
         state to the contributing vantage point.
     received_at
         The time the server received the contribution, which becomes the
-        outcome's check time. The client's own ``checked_at`` is advisory:
+        outcome's check time. The client's own ``date_checked`` is advisory:
         stamping the server's receipt time is what keeps freshness and the
         retry ladder measured on one clock a client cannot skew.
 
@@ -228,7 +228,7 @@ def contributed_outcome(
     """
     if result.status_code is not None and result.status_code in _SUCCESS_CODES:
         return LinkCheckOutcome(
-            checked_at=received_at,
+            date_checked=received_at,
             result=CheckResult.success,
             status_code=result.status_code,
             redirect_status_code=result.redirect_status_code,
@@ -245,7 +245,7 @@ def contributed_outcome(
     else:
         error = f"HTTP {result.status_code}"
     return LinkCheckOutcome(
-        checked_at=received_at,
+        date_checked=received_at,
         result=CheckResult.failure,
         status_code=result.status_code,
         redirect_status_code=result.redirect_status_code,
@@ -303,16 +303,16 @@ def evaluate_outcome(
         return LinkState(
             url=url,
             status=LinkStatus.unsupported,
-            checked_at=outcome.checked_at,
-            last_ok_at=prior.last_ok_at if prior is not None else None,
-            failing_since=None,
+            date_checked=outcome.date_checked,
+            date_last_ok=prior.date_last_ok if prior is not None else None,
+            date_failing_since=None,
             failure_count=0,
             consecutive_blocked_count=0,
             status_code=outcome.status_code,
             redirect_status_code=None,
             redirect_url=None,
             error=outcome.error,
-            next_check_at=None,
+            date_next_check=None,
             result_source=result_source,
             contributed_by=outcome.contributed_by,
         )
@@ -328,16 +328,16 @@ def evaluate_outcome(
         return LinkState(
             url=url,
             status=status,
-            checked_at=outcome.checked_at,
-            last_ok_at=outcome.checked_at,
-            failing_since=None,
+            date_checked=outcome.date_checked,
+            date_last_ok=outcome.date_checked,
+            date_failing_since=None,
             failure_count=0,
             consecutive_blocked_count=0,
             status_code=outcome.status_code,
             redirect_status_code=outcome.redirect_status_code,
             redirect_url=outcome.redirect_url,
             error=None,
-            next_check_at=None,
+            date_next_check=None,
             result_source=result_source,
             contributed_by=outcome.contributed_by,
         )
@@ -360,17 +360,19 @@ def evaluate_outcome(
         return LinkState(
             url=url,
             status=LinkStatus.blocked,
-            checked_at=outcome.checked_at,
-            last_ok_at=prior.last_ok_at if prior is not None else None,
-            failing_since=prior.failing_since if prior is not None else None,
+            date_checked=outcome.date_checked,
+            date_last_ok=prior.date_last_ok if prior is not None else None,
+            date_failing_since=prior.date_failing_since
+            if prior is not None
+            else None,
             failure_count=prior.failure_count if prior is not None else 0,
             consecutive_blocked_count=blocked_count,
             status_code=outcome.status_code,
             redirect_status_code=None,
             redirect_url=None,
             error=outcome.error,
-            next_check_at=(
-                outcome.checked_at
+            date_next_check=(
+                outcome.date_checked
                 + _blocked_recheck_delay(ladder, blocked_count)
             ),
             result_source=result_source,
@@ -378,53 +380,53 @@ def evaluate_outcome(
         )
 
     # Failure path: extend (or start) the consecutive-failure streak.
-    last_ok_at = prior.last_ok_at if prior is not None else None
-    if prior is not None and prior.failing_since is not None:
-        failing_since = prior.failing_since
+    date_last_ok = prior.date_last_ok if prior is not None else None
+    if prior is not None and prior.date_failing_since is not None:
+        date_failing_since = prior.date_failing_since
         failure_count = prior.failure_count + 1
     else:
-        failing_since = outcome.checked_at
+        date_failing_since = outcome.date_checked
         failure_count = 1
 
-    if last_ok_at is None:
+    if date_last_ok is None:
         # A link never seen OK is broken immediately: a brand-new
         # broken link is most likely an authoring error.
         status = LinkStatus.broken
     else:
-        streak_span = outcome.checked_at - failing_since
+        streak_span = outcome.date_checked - date_failing_since
         ladder_exhausted = (
             failure_count >= ladder.min_attempts
             and streak_span >= ladder.broken_threshold
         )
         status = LinkStatus.broken if ladder_exhausted else LinkStatus.failing
 
-    next_check_at: datetime | None = None
+    date_next_check: datetime | None = None
     if status is LinkStatus.failing:
         interval_index = min(
             failure_count - 1, len(ladder.recheck_intervals) - 1
         )
-        next_check_at = (
-            outcome.checked_at + ladder.recheck_intervals[interval_index]
+        date_next_check = (
+            outcome.date_checked + ladder.recheck_intervals[interval_index]
         )
     else:
         # Broken links are revisited at a slow cadence so a since-fixed
         # link heals back to ok/redirected via the success path without
         # waiting to be resubmitted.
-        next_check_at = outcome.checked_at + ladder.broken_recheck_interval
+        date_next_check = outcome.date_checked + ladder.broken_recheck_interval
 
     return LinkState(
         url=url,
         status=status,
-        checked_at=outcome.checked_at,
-        last_ok_at=last_ok_at,
-        failing_since=failing_since,
+        date_checked=outcome.date_checked,
+        date_last_ok=date_last_ok,
+        date_failing_since=date_failing_since,
         failure_count=failure_count,
         consecutive_blocked_count=0,
         status_code=outcome.status_code,
         redirect_status_code=None,
         redirect_url=None,
         error=outcome.error,
-        next_check_at=next_check_at,
+        date_next_check=date_next_check,
         result_source=result_source,
         contributed_by=outcome.contributed_by,
     )

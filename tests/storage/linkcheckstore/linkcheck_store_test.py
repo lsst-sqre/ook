@@ -90,15 +90,15 @@ async def test_url_state_roundtrip(factory: Factory) -> None:
         state = LinkState(
             url=url,
             status=LinkStatus.redirected,
-            checked_at=now,
-            last_ok_at=now,
-            failing_since=None,
+            date_checked=now,
+            date_last_ok=now,
+            date_failing_since=None,
             failure_count=0,
             status_code=200,
             redirect_status_code=301,
             redirect_url="https://example.com/new-location",
             error=None,
-            next_check_at=None,
+            date_next_check=None,
         )
         await store.upsert_url_state(state)
         assert await store.get_url_state(url) == state
@@ -107,15 +107,15 @@ async def test_url_state_roundtrip(factory: Factory) -> None:
         failing_state = LinkState(
             url=url,
             status=LinkStatus.failing,
-            checked_at=now + timedelta(hours=1),
-            last_ok_at=now,
-            failing_since=now + timedelta(hours=1),
+            date_checked=now + timedelta(hours=1),
+            date_last_ok=now,
+            date_failing_since=now + timedelta(hours=1),
             failure_count=1,
             status_code=503,
             redirect_status_code=None,
             redirect_url=None,
             error="503 Service Unavailable",
-            next_check_at=now + timedelta(hours=2),
+            date_next_check=now + timedelta(hours=2),
         )
         await store.upsert_url_state(failing_state)
         assert await store.get_url_state(url) == failing_state
@@ -124,14 +124,14 @@ async def test_url_state_roundtrip(factory: Factory) -> None:
         blocked_state = LinkState(
             url=url,
             status=LinkStatus.blocked,
-            checked_at=now + timedelta(hours=2),
-            last_ok_at=now,
-            failing_since=now + timedelta(hours=1),
+            date_checked=now + timedelta(hours=2),
+            date_last_ok=now,
+            date_failing_since=now + timedelta(hours=1),
             failure_count=1,
             consecutive_blocked_count=3,
             status_code=403,
             error="HTTP 403 (likely blocked by bot protection)",
-            next_check_at=now + timedelta(hours=6),
+            date_next_check=now + timedelta(hours=6),
         )
         await store.upsert_url_state(blocked_state)
         assert await store.get_url_state(url) == blocked_state
@@ -141,8 +141,8 @@ async def test_url_state_roundtrip(factory: Factory) -> None:
         new_state = LinkState(
             url=new_url,
             status=LinkStatus.ok,
-            checked_at=now,
-            last_ok_at=now,
+            date_checked=now,
+            date_last_ok=now,
         )
         await store.upsert_url_state(new_state)
         assert await store.get_url_state(new_url) == new_state
@@ -162,7 +162,7 @@ async def test_url_state_roundtrips_result_source(factory: Factory) -> None:
         server_state = LinkState(
             url=url,
             status=LinkStatus.blocked,
-            checked_at=now,
+            date_checked=now,
             status_code=403,
             consecutive_blocked_count=1,
         )
@@ -176,8 +176,8 @@ async def test_url_state_roundtrips_result_source(factory: Factory) -> None:
         contributed_state = LinkState(
             url=url,
             status=LinkStatus.ok,
-            checked_at=now + timedelta(hours=1),
-            last_ok_at=now + timedelta(hours=1),
+            date_checked=now + timedelta(hours=1),
+            date_last_ok=now + timedelta(hours=1),
             status_code=200,
             result_source=ResultSource.contribution,
             contributed_by="lsst-sqre/documenteer",
@@ -191,8 +191,8 @@ async def test_url_state_roundtrips_result_source(factory: Factory) -> None:
         later_server_state = LinkState(
             url=url,
             status=LinkStatus.blocked,
-            checked_at=now + timedelta(hours=2),
-            last_ok_at=now + timedelta(hours=1),
+            date_checked=now + timedelta(hours=2),
+            date_last_ok=now + timedelta(hours=1),
             status_code=403,
             consecutive_blocked_count=1,
         )
@@ -354,8 +354,8 @@ async def test_get_check(factory: Factory) -> None:
         checked_state = LinkState(
             url="https://example.com/checked",
             status=LinkStatus.redirected,
-            checked_at=now,
-            last_ok_at=now,
+            date_checked=now,
+            date_last_ok=now,
             status_code=200,
             redirect_status_code=301,
             redirect_url="https://example.com/new-location",
@@ -388,13 +388,13 @@ async def test_get_check(factory: Factory) -> None:
         ]
         checked, unchecked = record.urls
         assert checked.status is LinkStatus.redirected
-        assert checked.last_checked_at == now
+        assert checked.date_last_checked == now
         assert checked.status_code == 200
         assert checked.redirect_status_code == 301
         assert checked.redirect_url == "https://example.com/new-location"
         assert checked.error is None
         assert unchecked.status is None
-        assert unchecked.last_checked_at is None
+        assert unchecked.date_last_checked is None
 
 
 @pytest.mark.asyncio
@@ -407,8 +407,8 @@ async def test_get_url_states(factory: Factory) -> None:
         state = LinkState(
             url="https://example.com/checked",
             status=LinkStatus.ok,
-            checked_at=now,
-            last_ok_at=now,
+            date_checked=now,
+            date_last_ok=now,
         )
         await store.upsert_url_state(state, now=now)
         await store.upsert_checked_urls(
@@ -505,15 +505,15 @@ async def test_get_due_urls(factory: Factory) -> None:
         def make_state(
             url: str,
             status: LinkStatus,
-            checked_at: datetime,
-            next_check_at: datetime | None = None,
+            date_checked: datetime,
+            date_next_check: datetime | None = None,
         ) -> LinkState:
             return LinkState(
                 url=url,
                 status=status,
-                checked_at=checked_at,
-                last_ok_at=checked_at,
-                next_check_at=next_check_at,
+                date_checked=date_checked,
+                date_last_ok=date_checked,
+                date_next_check=date_next_check,
             )
 
         # Never checked: due.
@@ -524,7 +524,7 @@ async def test_get_due_urls(factory: Factory) -> None:
                 "https://due.example.com/ladder",
                 LinkStatus.failing,
                 now - timedelta(hours=2),
-                next_check_at=now - timedelta(hours=1),
+                date_next_check=now - timedelta(hours=1),
             )
         )
         # On the retry ladder with a recheck time in the future: not due.
@@ -533,7 +533,7 @@ async def test_get_due_urls(factory: Factory) -> None:
                 "https://fresh.example.com/ladder",
                 LinkStatus.failing,
                 now - timedelta(hours=1),
-                next_check_at=now + timedelta(hours=3),
+                date_next_check=now + timedelta(hours=3),
             )
         )
         # Checked within the freshness TTL: not due.
@@ -559,7 +559,7 @@ async def test_get_due_urls(factory: Factory) -> None:
                 "https://due.example.com/broken",
                 LinkStatus.broken,
                 now - timedelta(hours=2),
-                next_check_at=now - timedelta(hours=1),
+                date_next_check=now - timedelta(hours=1),
             )
         )
         # Unsupported URLs are never due, no matter how stale.
@@ -783,13 +783,13 @@ async def test_contributions_roundtrip(factory: Factory) -> None:
             ContributedResult(
                 url="https://example.com/a",
                 status_code=200,
-                checked_at=now - timedelta(minutes=5),
+                date_checked=now - timedelta(minutes=5),
             ),
             ContributedResult(
                 url="https://example.com/b",
                 status_code=404,
                 error="404 Not Found",
-                checked_at=now - timedelta(minutes=4),
+                date_checked=now - timedelta(minutes=4),
             ),
         ]
         await store.add_contributions(
@@ -803,7 +803,7 @@ async def test_contributions_roundtrip(factory: Factory) -> None:
         assert [c.result for c in stored] == results
         assert [c.provenance for c in stored] == [PROVENANCE, PROVENANCE]
         assert [c.check_id for c in stored] == [check_id, check_id]
-        # The client's checked_at is advisory; the server stamps receipt.
+        # The client's date_checked is advisory; the server stamps receipt.
         assert [c.date_received for c in stored] == [now, now]
 
 
@@ -825,7 +825,7 @@ async def test_contributions_record_redirect_metadata(
             status_code=200,
             redirect_status_code=301,
             redirect_url="https://example.com/new-location",
-            checked_at=now,
+            date_checked=now,
         )
         await store.add_contributions(
             check_id=check_id,
@@ -860,7 +860,7 @@ async def test_contribution_for_unknown_url_rejected(
                 provenance=PROVENANCE,
                 results=[
                     ContributedResult(
-                        url="https://example.com/unknown", checked_at=now
+                        url="https://example.com/unknown", date_checked=now
                     )
                 ],
                 now=now,
@@ -884,7 +884,7 @@ async def test_purging_a_check_deletes_its_contributions(
         await store.add_contributions(
             check_id=check_id,
             provenance=PROVENANCE,
-            results=[ContributedResult(url=url, checked_at=now)],
+            results=[ContributedResult(url=url, date_checked=now)],
             now=now,
         )
 

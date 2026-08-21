@@ -82,7 +82,7 @@ class CheckUrlRecord:
     status: LinkStatus | None
     """The URL's health status, or None if it has never been checked."""
 
-    last_checked_at: datetime | None
+    date_last_checked: datetime | None
     """The time of the most recent check, or None if never checked."""
 
     status_code: int | None
@@ -206,16 +206,16 @@ class LinkCheckStore:
 
         state_columns = {
             "status": state.status.value,
-            "last_checked_at": state.checked_at,
-            "last_ok_at": state.last_ok_at,
-            "failing_since": state.failing_since,
+            "date_last_checked": state.date_checked,
+            "date_last_ok": state.date_last_ok,
+            "date_failing_since": state.date_failing_since,
             "failure_count": state.failure_count,
             "consecutive_blocked_count": state.consecutive_blocked_count,
             "status_code": state.status_code,
             "redirect_status_code": state.redirect_status_code,
             "redirect_url": state.redirect_url,
             "error": state.error,
-            "next_check_at": state.next_check_at,
+            "date_next_check": state.date_next_check,
             "result_source": state.result_source.value,
             "contributed_by": state.contributed_by,
         }
@@ -308,11 +308,11 @@ class LinkCheckStore:
             redirect_status_code=row.redirect_status_code,
             redirect_url=row.redirect_url,
             error=row.error,
-            last_checked_at=row.last_checked_at,
-            last_ok_at=row.last_ok_at,
-            failing_since=row.failing_since,
+            date_last_checked=row.date_last_checked,
+            date_last_ok=row.date_last_ok,
+            date_failing_since=row.date_failing_since,
             failure_count=row.failure_count,
-            next_check_at=row.next_check_at,
+            date_next_check=row.date_next_check,
             date_created=row.date_created,
             result_source=ResultSource(row.result_source),
             contributed_by=row.contributed_by,
@@ -530,7 +530,7 @@ class LinkCheckStore:
                         if row.status is not None
                         else None
                     ),
-                    last_checked_at=row.last_checked_at,
+                    date_last_checked=row.date_last_checked,
                     status_code=row.status_code,
                     redirect_status_code=row.redirect_status_code,
                     redirect_url=row.redirect_url,
@@ -615,7 +615,7 @@ class LinkCheckStore:
                         "redirect_url": result.redirect_url,
                         "redirect_status_code": result.redirect_status_code,
                         "error": result.error,
-                        "checked_at": result.checked_at,
+                        "date_checked": result.date_checked,
                         "date_received": now,
                     }
                     for result in results
@@ -660,7 +660,7 @@ class LinkCheckStore:
                     redirect_status_code=row.redirect_status_code,
                     redirect_url=row.redirect_url,
                     error=row.error,
-                    checked_at=row.checked_at,
+                    date_checked=row.date_checked,
                 ),
                 provenance=ContributionProvenance(
                     provider=ContributionProvider(row.provider),

@@ -74,11 +74,11 @@ async def _seed_blocked_url(url: str, **overrides: Any) -> None:
         LinkState(
             url=url,
             status=LinkStatus.blocked,
-            checked_at=now,
+            date_checked=now,
             consecutive_blocked_count=1,
             status_code=403,
             error="HTTP 403 (likely blocked by bot protection)",
-            next_check_at=now + timedelta(hours=1),
+            date_next_check=now + timedelta(hours=1),
             **overrides,
         )
     )
@@ -91,8 +91,8 @@ async def _seed_ok_url(url: str) -> None:
         LinkState(
             url=url,
             status=LinkStatus.ok,
-            checked_at=now,
-            last_ok_at=now,
+            date_checked=now,
+            date_last_ok=now,
             status_code=200,
         )
     )
@@ -122,8 +122,8 @@ async def _submit_check(
 
 def _result(url: str, **fields: Any) -> dict[str, Any]:
     """Build one contributed per-URL result body."""
-    checked_at = datetime.now(tz=UTC) - timedelta(minutes=1)
-    return {"url": url, "checked_at": checked_at.isoformat(), **fields}
+    date_checked = datetime.now(tz=UTC) - timedelta(minutes=1)
+    return {"url": url, "date_checked": date_checked.isoformat(), **fields}
 
 
 def _body(
@@ -252,8 +252,8 @@ async def test_contributed_failure_advances_the_ladder(
     )
     await _seed_blocked_url(
         url,
-        last_ok_at=an_hour_ago,
-        failing_since=an_hour_ago,
+        date_last_ok=an_hour_ago,
+        date_failing_since=an_hour_ago,
         failure_count=1,
     )
     check_id, _ = await _submit_check(client, [url])
@@ -272,8 +272,8 @@ async def test_contributed_failure_advances_the_ladder(
     assert data["status"] == "failing"
     assert data["status_code"] == 404
     assert data["failure_count"] == 2
-    assert data["failing_since"] is not None
-    assert data["next_check_at"] is not None
+    assert data["date_failing_since"] is not None
+    assert data["date_next_check"] is not None
     assert data["result_source"] == "contribution"
     assert data["contributed_by"] == REPOSITORY
 
@@ -312,7 +312,7 @@ async def test_contributed_403_leaves_the_url_blocked(
     ).json()
     # The block never advances the failing-to-broken ladder.
     assert record["failure_count"] == 0
-    assert record["failing_since"] is None
+    assert record["date_failing_since"] is None
 
 
 @pytest.mark.asyncio
@@ -581,8 +581,8 @@ async def test_contribution_is_recorded_with_its_provenance(
     stored = contributions[0]
     assert stored.result.url == url
     assert stored.result.status_code == 200
-    assert stored.result.checked_at == datetime.fromisoformat(
-        result["checked_at"]
+    assert stored.result.date_checked == datetime.fromisoformat(
+        result["date_checked"]
     )
     assert stored.provenance.repository == REPOSITORY
     assert stored.provenance.run_id == RUN_ID

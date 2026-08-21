@@ -69,16 +69,16 @@ def create_url_states_stmt(urls: Sequence[str]) -> Select:
     return select(
         SqlCheckedUrl.url,
         SqlCheckedUrl.status,
-        SqlCheckedUrl.last_checked_at.label("checked_at"),
-        SqlCheckedUrl.last_ok_at,
-        SqlCheckedUrl.failing_since,
+        SqlCheckedUrl.date_last_checked.label("date_checked"),
+        SqlCheckedUrl.date_last_ok,
+        SqlCheckedUrl.date_failing_since,
         SqlCheckedUrl.failure_count,
         SqlCheckedUrl.consecutive_blocked_count,
         SqlCheckedUrl.status_code,
         SqlCheckedUrl.redirect_status_code,
         SqlCheckedUrl.redirect_url,
         SqlCheckedUrl.error,
-        SqlCheckedUrl.next_check_at,
+        SqlCheckedUrl.date_next_check,
         SqlCheckedUrl.result_source,
         SqlCheckedUrl.contributed_by,
     ).where(SqlCheckedUrl.url.in_(urls))
@@ -102,7 +102,7 @@ def create_check_urls_stmt(check_id: int) -> Select:
         select(
             SqlCheckedUrl.url,
             SqlCheckedUrl.status,
-            SqlCheckedUrl.last_checked_at,
+            SqlCheckedUrl.date_last_checked,
             SqlCheckedUrl.status_code,
             SqlCheckedUrl.redirect_status_code,
             SqlCheckedUrl.redirect_url,
@@ -148,7 +148,7 @@ def create_check_contributions_stmt(check_id: int) -> Select:
             SqlLinkCheckContribution.redirect_status_code,
             SqlLinkCheckContribution.redirect_url,
             SqlLinkCheckContribution.error,
-            SqlLinkCheckContribution.checked_at,
+            SqlLinkCheckContribution.date_checked,
             SqlLinkCheckContribution.date_received,
         )
         .join(
@@ -180,11 +180,11 @@ def create_url_record_stmt(url: str) -> Select:
         SqlCheckedUrl.redirect_status_code,
         SqlCheckedUrl.redirect_url,
         SqlCheckedUrl.error,
-        SqlCheckedUrl.last_checked_at,
-        SqlCheckedUrl.last_ok_at,
-        SqlCheckedUrl.failing_since,
+        SqlCheckedUrl.date_last_checked,
+        SqlCheckedUrl.date_last_ok,
+        SqlCheckedUrl.date_failing_since,
         SqlCheckedUrl.failure_count,
-        SqlCheckedUrl.next_check_at,
+        SqlCheckedUrl.date_next_check,
         SqlCheckedUrl.date_created,
         SqlCheckedUrl.result_source,
         SqlCheckedUrl.contributed_by,
@@ -263,7 +263,7 @@ def create_origin_links_stmt(
             SqlCheckedUrl.redirect_status_code,
             SqlCheckedUrl.redirect_url,
             SqlCheckedUrl.error,
-            SqlCheckedUrl.last_checked_at.label("checked_at"),
+            SqlCheckedUrl.date_last_checked.label("date_checked"),
             func.array_agg(
                 aggregate_order_by(
                     SqlUrlOccurrence.origin_path,
@@ -337,16 +337,16 @@ def create_due_urls_stmt(
         select(SqlCheckedUrl.id, SqlCheckedUrl.url)
         .where(
             or_(
-                SqlCheckedUrl.last_checked_at.is_(None),
-                SqlCheckedUrl.next_check_at <= now,
-                SqlCheckedUrl.last_checked_at <= now - ttl,
+                SqlCheckedUrl.date_last_checked.is_(None),
+                SqlCheckedUrl.date_next_check <= now,
+                SqlCheckedUrl.date_last_checked <= now - ttl,
             ),
             SqlCheckedUrl.status.is_distinct_from(
                 LinkStatus.unsupported.value
             ),
         )
         .order_by(
-            SqlCheckedUrl.last_checked_at.asc().nulls_first(),
+            SqlCheckedUrl.date_last_checked.asc().nulls_first(),
             SqlCheckedUrl.id.asc(),
         )
     )

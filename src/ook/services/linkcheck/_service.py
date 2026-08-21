@@ -197,7 +197,7 @@ class LinkCheckService:
                     LinkState(
                         url=url,
                         status=LinkStatus.unsupported,
-                        checked_at=now,
+                        date_checked=now,
                     ),
                     now=now,
                 )
@@ -699,9 +699,9 @@ class LinkCheckService:
             return True
         if state.status is LinkStatus.unsupported:
             return False
-        if state.next_check_at is not None and state.next_check_at <= now:
+        if state.date_next_check is not None and state.date_next_check <= now:
             return True
-        return state.checked_at <= now - self._freshness_ttl
+        return state.date_checked <= now - self._freshness_ttl
 
     def _report_url(
         self, url_record: CheckUrlRecord, submitted_at: datetime
@@ -713,11 +713,11 @@ class LinkCheckService:
         until execution refreshes it.
         """
         status = url_record.status
-        checked_at = url_record.last_checked_at
+        date_checked = url_record.date_last_checked
         if (
             status is None
-            or checked_at is None
-            or checked_at < submitted_at - self._freshness_ttl
+            or date_checked is None
+            or date_checked < submitted_at - self._freshness_ttl
         ):
             return CheckedUrlReport(
                 url=url_record.url,
@@ -731,7 +731,7 @@ class LinkCheckService:
             redirect_status_code=url_record.redirect_status_code,
             redirect_url=url_record.redirect_url,
             error=url_record.error,
-            checked_at=checked_at,
+            date_checked=date_checked,
             origin_paths=url_record.origin_paths,
             result_source=url_record.result_source,
             contributed_by=url_record.contributed_by,

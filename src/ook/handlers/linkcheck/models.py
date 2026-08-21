@@ -167,7 +167,7 @@ class CheckedUrl(BaseModel):
         Field(description="Description of the failure, if the check failed."),
     ] = None
 
-    checked_at: Annotated[
+    date_checked: Annotated[
         datetime | None,
         Field(
             description=(
@@ -223,7 +223,7 @@ class CheckedUrl(BaseModel):
             redirect_status_code=report.redirect_status_code,
             redirect_url=report.redirect_url,
             error=report.error,
-            checked_at=report.checked_at,
+            date_checked=report.date_checked,
             result_source=report.result_source,
             contributed_by=report.contributed_by,
             origin_paths=report.origin_paths,
@@ -362,7 +362,7 @@ class UrlRecord(BaseModel):
         ),
     ] = None
 
-    last_checked_at: Annotated[
+    date_last_checked: Annotated[
         datetime | None,
         Field(
             description=(
@@ -371,7 +371,7 @@ class UrlRecord(BaseModel):
         ),
     ] = None
 
-    last_ok_at: Annotated[
+    date_last_ok: Annotated[
         datetime | None,
         Field(
             description=(
@@ -381,7 +381,7 @@ class UrlRecord(BaseModel):
         ),
     ] = None
 
-    failing_since: Annotated[
+    date_failing_since: Annotated[
         datetime | None,
         Field(
             description=(
@@ -400,7 +400,7 @@ class UrlRecord(BaseModel):
         ),
     ] = 0
 
-    next_check_at: Annotated[
+    date_next_check: Annotated[
         datetime | None,
         Field(
             description=(
@@ -460,11 +460,11 @@ class UrlRecord(BaseModel):
             redirect_status_code=record.redirect_status_code,
             redirect_url=record.redirect_url,
             error=record.error,
-            last_checked_at=record.last_checked_at,
-            last_ok_at=record.last_ok_at,
-            failing_since=record.failing_since,
+            date_last_checked=record.date_last_checked,
+            date_last_ok=record.date_last_ok,
+            date_failing_since=record.date_failing_since,
             failure_count=record.failure_count,
-            next_check_at=record.next_check_at,
+            date_next_check=record.date_next_check,
             date_created=record.date_created,
             result_source=record.result_source,
             contributed_by=record.contributed_by,
@@ -535,7 +535,7 @@ class OriginLink(BaseModel):
         ),
     ] = None
 
-    checked_at: Annotated[
+    date_checked: Annotated[
         datetime | None,
         Field(
             description=(
@@ -565,7 +565,7 @@ class OriginLink(BaseModel):
             redirect_status_code=link.redirect_status_code,
             redirect_url=link.redirect_url,
             error=link.error,
-            checked_at=link.checked_at,
+            date_checked=link.date_checked,
             origin_paths=link.origin_paths,
         )
 
@@ -786,7 +786,7 @@ class ContributedResultModel(BaseModel):
         ),
     ] = None
 
-    checked_at: Annotated[
+    date_checked: Annotated[
         datetime,
         Field(
             description=(
@@ -806,7 +806,7 @@ class ContributedResultModel(BaseModel):
             redirect_status_code=self.redirect_status_code,
             redirect_url=self.redirect_url,
             error=self.error,
-            checked_at=self.checked_at,
+            date_checked=self.date_checked,
         )
 
 
