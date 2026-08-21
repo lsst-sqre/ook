@@ -224,6 +224,44 @@ def test_an_option_value_is_not_a_path_selection(
     assert unit_test_args(posargs) == ["tests", *posargs, *ignore_flags]
 
 
+def test_an_unknown_option_value_is_not_a_path_selection(
+    unit_test_args: PytestArgs, ignore_flags: list[str]
+) -> None:
+    """A selection is a path under ``tests/``, not any path that exists.
+
+    The separate-value option list is hand-curated, so an option missing
+    from it -- ``--cov-config`` here, and whatever pytest or its plugins
+    grow next -- had its value read as a selection whenever that value
+    happened to name something on disk, quietly standing in for the whole
+    unit selection.
+    """
+    posargs = ["--cov-config", "pyproject.toml"]
+
+    assert unit_test_args(posargs) == ["tests", *posargs, *ignore_flags]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("tests", id="tests-root"),
+        pytest.param("tests/services", id="under-an-infrastructure-path"),
+    ],
+)
+def test_a_working_directory_option_is_not_a_path_selection(
+    unit_test_args: PytestArgs, ignore_flags: list[str], value: str
+) -> None:
+    """``--basetemp`` says where pytest works, not what it collects.
+
+    Its value does live under ``tests/``, so knowing the option is the only
+    thing that keeps it out of the selection: ``--basetemp tests`` stood in
+    for the default selection, and ``--basetemp tests/services`` was refused
+    as a request for the container-backed suite.
+    """
+    posargs = ["--basetemp", value]
+
+    assert unit_test_args(posargs) == ["tests", *posargs, *ignore_flags]
+
+
 @pytest.mark.parametrize(
     "posargs",
     [

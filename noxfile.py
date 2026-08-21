@@ -228,12 +228,20 @@ def test_coverage(session: nox.Session) -> None:
             )
 
 
-# Pytest options that take their value as a separate argument. The argument
-# after one of these is that option's value, never a test path: ``-k tests``
-# is a keyword expression, not a request to collect the tests directory.
+# The directory holding the test suite, and the only place a posarg can
+# select tests from. Everything the sessions run pytest against lives here.
+TESTS_ROOT = "tests"
+
+# Pytest options that take their value as a separate argument, skipped
+# outright so a value that does live under ``tests/`` -- ``--basetemp
+# tests/tmp``, ``--ignore tests/services`` -- is not read as a selection.
+# This list is a shortcut, not the rule: it is hand-curated and pytest and
+# its plugins keep growing options, so `_path_selections` decides on the
+# tests/-rooted check instead of on membership here.
 PYTEST_VALUE_OPTIONS = frozenset(
     {
         "-c",
+        "--basetemp",
         "--config-file",
         "--deselect",
         "--dist",
@@ -252,13 +260,40 @@ PYTEST_VALUE_OPTIONS = frozenset(
 )
 
 
+def _test_relative_path(arg: str) -> PurePosixPath | None:
+    """Return ``arg`` as a repository-relative path under ``tests/``.
+
+    Strips any ``::`` node identifier, resolves the rest against the
+    session's working directory (nox runs sessions from the directory
+    holding this noxfile, which is what pytest resolves a relative posarg
+    against too), and returns `None` unless the result exists and lives in
+    the test suite -- ``tests`` itself included.
+    """
+    path = Path(arg.split("::", 1)[0])
+    if not path.exists():
+        return None
+    root = Path.cwd().resolve()
+    try:
+        relative = path.resolve().relative_to(root / TESTS_ROOT)
+    except OSError, ValueError:
+        return None
+    return PurePosixPath(TESTS_ROOT, relative.as_posix())
+
+
 def _path_selections(posargs: Sequence[str]) -> list[str]:
     """Return the posargs that select tests by path.
 
-    A posarg selects tests when it is neither an option nor an option's
-    value and it names a file or directory that exists, once any ``::``
-    node identifier is stripped. Everything else -- ``-x``, ``-k expr``,
-    ``-n 2`` -- is a way of running the selection, not a selection.
+    A posarg selects tests when it is not an option and it resolves to an
+    existing path under ``tests/``, once any ``::`` node identifier is
+    stripped. Everything else -- ``-x``, ``-k expr``, ``-n 2`` -- is a way
+    of running the selection, not a selection.
+
+    Deciding on the tests/-rooted path rather than on PYTEST_VALUE_OPTIONS
+    is what keeps an option this noxfile has never heard of from having its
+    value misread: ``--cov-config pyproject.toml`` names a file that
+    exists, but not one this suite could ever collect. An unknown option
+    whose value does point into ``tests/`` is still misread, which is what
+    PYTEST_VALUE_OPTIONS remains good for.
     """
     selections: list[str] = []
     skip_value = False
@@ -267,20 +302,16 @@ def _path_selections(posargs: Sequence[str]) -> list[str]:
             skip_value = False
         elif arg.startswith("-"):
             skip_value = arg in PYTEST_VALUE_OPTIONS
-        elif Path(arg.split("::", 1)[0]).exists():
+        elif _test_relative_path(arg) is not None:
             selections.append(arg)
     return selections
 
 
 def _infra_path_for(selection: str) -> str | None:
     """Return the INFRA_TEST_PATHS entry covering ``selection``, if any."""
-    path = Path(selection.split("::", 1)[0])
-    if path.is_absolute():
-        try:
-            path = path.relative_to(Path.cwd())
-        except ValueError:
-            return None
-    relative = PurePosixPath(path.as_posix())
+    relative = _test_relative_path(selection)
+    if relative is None:
+        return None
     for infra_path in INFRA_TEST_PATHS:
         infra = PurePosixPath(infra_path)
         if relative == infra or infra in relative.parents:
@@ -294,8 +325,9 @@ def _unit_test_args(posargs: Sequence[str]) -> list[str]:
     The INFRA_TEST_PATHS ignore flags always apply, so an invocation that
     only passes options (``nox -s test-unit -- -x``) still runs the whole
     infrastructure-free selection rather than the entire suite against the
-    unreachable placeholder servers. A posarg that names a path replaces
-    the default ``tests`` selection instead of adding to it.
+    unreachable placeholder servers. A posarg that names a path under
+    ``tests/`` replaces the default ``tests`` selection instead of adding
+    to it.
 
     Raises
     ------
@@ -367,7 +399,7 @@ def test_unit(session: nox.Session) -> None:
 
     Positional arguments go to pytest with the ignore list still applied:
     options alone (``nox -s test-unit -- -x``) narrow how the unit
-    selection runs, while a path (``nox -s test-unit --
+    selection runs, while a path under ``tests/`` (``nox -s test-unit --
     tests/domain/base32id_test.py``) narrows what it selects. Naming a
     path that needs the containers is an error pointing at ``nox -s
     test``.
