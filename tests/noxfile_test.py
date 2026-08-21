@@ -24,10 +24,15 @@ from typing import Any
 
 import pytest
 
+from .support.unitsession import UNIT_SESSION_ENV
+
 _REPO_ROOT = Path(__file__).parents[1]
 
 PytestArgs = Callable[[Sequence[str]], list[str]]
 """The signature of the noxfile's argument composers."""
+
+SessionEnv = Callable[[], dict[str, str]]
+"""The signature of the noxfile's environment composer."""
 
 
 def _session_decorator_stub(*args: Any, **kwargs: Any) -> Any:
@@ -76,6 +81,11 @@ def xdist_args(noxfile: Any) -> PytestArgs:
 @pytest.fixture(scope="module")
 def unit_test_args(noxfile: Any) -> PytestArgs:
     return noxfile._unit_test_args
+
+
+@pytest.fixture(scope="module")
+def unit_test_env(noxfile: Any) -> SessionEnv:
+    return noxfile._unit_test_env
 
 
 @pytest.fixture(scope="module")
@@ -280,3 +290,31 @@ def test_an_absolute_infrastructure_path_is_refused(
 
     with pytest.raises(ValueError, match="nox -s test"):
         unit_test_args([selection])
+
+
+def test_the_unit_session_marks_itself(unit_test_env: SessionEnv) -> None:
+    """The session sets the marker the test-suite guard reads.
+
+    The variable name is the whole interface between ``noxfile.py`` and
+    `tests.support.unitsession`, and nothing else would notice if the two
+    drifted apart: the guard would simply never fire, and a misclassified
+    test would go back to failing on a connection error naming nothing.
+    """
+    assert unit_test_env()[UNIT_SESSION_ENV] == "1"
+
+
+def test_the_unit_session_keeps_the_placeholder_servers(
+    noxfile: Any, unit_test_env: SessionEnv
+) -> None:
+    """The unreachable servers stay as the backstop behind the guard.
+
+    The guard covers the fixtures and the database-provisioning helper. Any
+    other route to infrastructure still has to find nothing at the other end,
+    rather than a developer's own PostgreSQL or Kafka on the default ports.
+    """
+    env = unit_test_env()
+
+    assert env["OOK_DATABASE_URL"] == noxfile.UNREACHABLE_DATABASE_URL
+    assert (
+        env["KAFKA_BOOTSTRAP_SERVERS"] == noxfile.UNREACHABLE_KAFKA_BOOTSTRAP
+    )

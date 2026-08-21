@@ -54,6 +54,8 @@ from sqlalchemy.sql.elements import TextClause
 
 from ook.dbschema import Base
 
+from .unitsession import require_infrastructure
+
 __all__ = [
     "TruncateLockError",
     "ddl_database_url",
@@ -128,7 +130,17 @@ async def provision_database(name: str) -> str:
     str
         Database URL for the new database, carrying the same server and
         credentials as ``OOK_DATABASE_URL``.
+
+    Raises
+    ------
+    Failed
+        Raised if this is the infrastructure-free ``nox -s test-unit``
+        session, where there is no PostgreSQL server to create a database on.
+        The tests that run DDL come here instead of taking a fixture, so this
+        is where the guard in `tests.support.unitsession` catches them.
     """
+    require_infrastructure("it creates a test database")
+
     import asyncpg  # noqa: PLC0415
 
     url = urlsplit(os.environ["OOK_DATABASE_URL"])

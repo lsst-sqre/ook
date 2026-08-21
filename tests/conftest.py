@@ -45,6 +45,10 @@ from .support.kafka import (  # noqa: E402
     kafka_work_tracker,
     running_subscriptions,
 )
+from .support.unitsession import (  # noqa: E402
+    infrastructure_fixture,
+    reject_infrastructure_fixtures,
+)
 
 verify_worker_isolation(
     database_url=str(config.database_url),
@@ -52,6 +56,21 @@ verify_worker_isolation(
     linkcheck_kafka_topic=config.linkcheck_kafka_topic,
     kafka_consumer_group_id=config.kafka_consumer_group_id,
 )
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Reject an infrastructure test running in the ``test-unit`` session.
+
+    pytest calls this before it sets up any of the test's fixtures, so a test
+    that ``noxfile.py``'s ``INFRA_TEST_PATHS`` failed to classify fails on the
+    session marker rather than on a connection to the unreachable placeholder
+    servers that session points the application at. See
+    `tests.support.unitsession` for why that distinction is worth a hook.
+
+    Under ``nox -s test`` -- which starts the containers, so nothing here is
+    misclassified -- this is one environment lookup per test.
+    """
+    reject_infrastructure_fixtures(getattr(item, "fixturenames", ()))
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -99,6 +118,7 @@ def mock_github() -> Iterator[GitHubMocker]:
 
 
 @pytest_asyncio.fixture
+@infrastructure_fixture
 async def _rebuild_ddl_schema_after_test() -> AsyncIterator[None]:
     """Rebuild the DDL database's schema after this test, pass or fail.
 
@@ -123,6 +143,7 @@ async def http_client() -> AsyncIterator[AsyncClient]:
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
+@infrastructure_fixture
 async def database_engine() -> AsyncIterator[AsyncEngine]:
     """Return the one database engine this pytest worker's fixtures share.
 
@@ -153,6 +174,7 @@ async def database_engine() -> AsyncIterator[AsyncEngine]:
 
 
 @pytest_asyncio.fixture
+@infrastructure_fixture
 async def _empty_database(database_engine: AsyncEngine) -> None:
     """Give this test an empty, Alembic-stamped database.
 
@@ -169,6 +191,7 @@ async def _empty_database(database_engine: AsyncEngine) -> None:
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
+@infrastructure_fixture
 async def _app_lifespan(
     _patched_ssrf_guard_dns: None,
     database_engine: AsyncEngine,
@@ -204,6 +227,7 @@ async def _app_lifespan(
 
 
 @pytest_asyncio.fixture
+@infrastructure_fixture
 async def app(
     _app_lifespan: FastStreamAPI,
     _empty_database: None,
@@ -226,6 +250,7 @@ async def app(
 
 
 @pytest_asyncio.fixture
+@infrastructure_fixture
 async def client(app: FastStreamAPI) -> AsyncIterator[AsyncClient]:
     """Return an ``httpx.AsyncClient`` configured to talk to the test app."""
     async with AsyncClient(
@@ -235,6 +260,7 @@ async def client(app: FastStreamAPI) -> AsyncIterator[AsyncClient]:
 
 
 @pytest_asyncio.fixture
+@infrastructure_fixture
 async def factory(
     database_engine: AsyncEngine,
     _empty_database: None,

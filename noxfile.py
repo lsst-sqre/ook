@@ -29,9 +29,12 @@ nox.options.reuse_existing_virtualenvs = True
 # Test paths that require the Postgres and Kafka testcontainers. Every other
 # path under tests/ is treated as a pure unit test and runs in the
 # "test-unit" session without starting any containers. A new test directory
-# is picked up by test-unit automatically; if its tests actually need the
-# database or Kafka they fail immediately there (connection refused against
-# the unreachable placeholder servers below) until the path is added here.
+# is picked up by test-unit automatically, so a test that actually needs the
+# database or Kafka is misclassified until its path is added here. The
+# test-unit session marks itself with UNIT_SESSION_ENV_VAR and the suite's
+# guard (tests/support/unitsession.py) turns that misclassification into a
+# setup-time failure naming this list -- which is the only thing that points
+# a newcomer at it, since nothing about the test itself does.
 INFRA_TEST_PATHS = (
     "tests/cli",
     "tests/dbschema_test.py",
@@ -47,10 +50,18 @@ INFRA_TEST_PATHS = (
     "tests/truncate_lock_test.py",
 )
 
-# Placeholder connection targets for the test-unit session. Nothing listens
-# on port 1, so any test that reaches for the database or Kafka fails
-# immediately with a connection error instead of hanging or silently using
-# real infrastructure.
+# Environment variable with which the test-unit session marks itself, read by
+# tests/support/unitsession.py. Keep the name in step with the constant there;
+# tests/noxfile_test.py asserts that the two agree.
+UNIT_SESSION_ENV_VAR = "OOK_TEST_UNIT"
+
+# Placeholder connection targets for the test-unit session, and the backstop
+# behind the guard: nothing listens on port 1, so a test that gets past the
+# guard and reaches for the database or Kafka anyway cannot silently use a
+# developer's own PostgreSQL or Kafka. It is only a backstop because the
+# failure it produces is slow and mute -- safir retries a connection five
+# times at two-second intervals before raising a DatabaseInitializationError
+# that mentions neither this session nor INFRA_TEST_PATHS.
 UNREACHABLE_DATABASE_URL = "postgresql+asyncpg://ook@127.0.0.1:1/ook"
 UNREACHABLE_KAFKA_BOOTSTRAP = "127.0.0.1:1"
 
@@ -316,15 +327,38 @@ def _unit_test_args(posargs: Sequence[str]) -> list[str]:
     return ["tests", *posargs, *ignore_flags]
 
 
+def _unit_test_env() -> dict[str, str]:
+    """Compose the environment for the test-unit session.
+
+    Beyond the usual test environment this adds two things: the marker that
+    tells the suite's guard (tests/support/unitsession.py) no containers are
+    running, and the unreachable placeholder servers that back the guard up.
+
+    Returns
+    -------
+    dict
+        Environment variables for the session's pytest invocation.
+    """
+    return _make_env_vars(
+        {
+            UNIT_SESSION_ENV_VAR: "1",
+            "KAFKA_BOOTSTRAP_SERVERS": UNREACHABLE_KAFKA_BOOTSTRAP,
+            "OOK_DATABASE_URL": UNREACHABLE_DATABASE_URL,
+            "OOK_DATABASE_PASSWORD": "unreachable",
+        }
+    )
+
+
 @session(name="test-unit", uv_groups=["dev"])
 def test_unit(session: nox.Session) -> None:
     """Run the unit tests that need no testcontainers.
 
     Runs everything under tests/ except INFRA_TEST_PATHS, without starting
-    the Kafka or Postgres containers. The database and Kafka environment
-    variables point at unreachable placeholder servers, so a test that is
-    misclassified as a unit test (that is, one that actually touches the
-    database or Kafka) fails immediately with a connection error.
+    the Kafka or Postgres containers. The session marks itself with
+    UNIT_SESSION_ENV_VAR, so a test that is misclassified as a unit test
+    (that is, one that actually touches the database or Kafka) fails at setup
+    with a message naming INFRA_TEST_PATHS, instead of ten seconds later on a
+    connection to the placeholder servers.
 
     The session runs serially: it takes about a second, so the xdist
     worker startup that the container-backed sessions need would be pure
@@ -338,13 +372,7 @@ def test_unit(session: nox.Session) -> None:
     path that needs the containers is an error pointing at ``nox -s
     test``.
     """
-    env_vars = _make_env_vars(
-        {
-            "KAFKA_BOOTSTRAP_SERVERS": UNREACHABLE_KAFKA_BOOTSTRAP,
-            "OOK_DATABASE_URL": UNREACHABLE_DATABASE_URL,
-            "OOK_DATABASE_PASSWORD": "unreachable",
-        }
-    )
+    env_vars = _unit_test_env()
     try:
         pytest_args = _unit_test_args(session.posargs)
     except ValueError as e:
