@@ -27,6 +27,7 @@ from .services.algoliaaudit import AlgoliaAuditService
 from .services.algoliadocindex import AlgoliaDocIndexService
 from .services.classification import ClassificationService
 from .services.githubmetadata import GitHubMetadataService
+from .services.githuboidc import GitHubOidcVerifier
 from .services.glossary import GlossaryService
 from .services.ingest.lssttexmf import LsstTexmfIngestService
 from .services.ingest.sdmschemas import SdmSchemasIngestService
@@ -86,6 +87,14 @@ class ProcessContext:
     politeness schedule apply across all consumers in the process.
     """
 
+    github_oidc_verifier: GitHubOidcVerifier
+    """Process-wide verifier for GitHub Actions OIDC id-tokens.
+
+    A singleton because its cache of GitHub's signing keys is in-memory: a
+    per-request verifier would refetch the JWKS on every request and the
+    cache TTL would never apply.
+    """
+
     @classmethod
     async def create(cls, kafka_broker: KafkaBroker | None = None) -> Self:
         """Create a ProcessContext."""
@@ -109,6 +118,12 @@ class ProcessContext:
             user_agent=config.linkcheck_user_agent,
         )
 
+        github_oidc_verifier = GitHubOidcVerifier(
+            http_client=http_client,
+            audience=config.oidc_audience,
+            logger=structlog.get_logger("ook"),
+        )
+
         return cls(
             http_client=http_client,
             kafka_broker=broker,
@@ -120,6 +135,7 @@ class ProcessContext:
             ),
             algolia_client=algolia_client,
             url_checker=url_checker,
+            github_oidc_verifier=github_oidc_verifier,
         )
 
     async def aclose(self) -> None:
@@ -231,6 +247,16 @@ class Factory:
     def url_checker(self) -> UrlChecker:
         """The process-wide URL checker for external link checking."""
         return self._process_context.url_checker
+
+    @property
+    def github_oidc_verifier(self) -> GitHubOidcVerifier:
+        """The process-wide GitHub Actions OIDC token verifier.
+
+        A property rather than a ``create_`` method because its JWKS cache
+        must outlive the request: handing out a new verifier per request
+        would refetch GitHub's signing keys every time.
+        """
+        return self._process_context.github_oidc_verifier
 
     @property
     def db_session(self) -> AsyncSession:

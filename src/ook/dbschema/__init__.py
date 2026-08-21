@@ -7,6 +7,7 @@ from .intersphinx import SqlIntersphinxInventory
 from .linkcheck import (
     SqlCheckedUrl,
     SqlLinkCheck,
+    SqlLinkCheckContribution,
     SqlLinkCheckUrl,
     SqlUrlOccurrence,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "SqlIntersphinxInventory",
     "SqlLink",
     "SqlLinkCheck",
+    "SqlLinkCheckContribution",
     "SqlLinkCheckUrl",
     "SqlResource",
     "SqlResourceRelation",

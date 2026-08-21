@@ -3,22 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from ook.domain.linkcheck import (
+    AcceptedContribution,
     CheckedUrlReport,
     CheckRunStatus,
     CheckUrlStatus,
+    ContributionRejectionReason,
+    ContributionReport,
     LinkCheckReport,
     LinkState,
     LinkStatus,
     OriginLink,
+    RejectedContribution,
     SubmittedUrl,
     UrlOccurrence,
     UrlRecord,
     canonicalize_url,
+    contributed_outcome,
     evaluate_outcome,
     is_supported_url,
 )
@@ -26,12 +32,16 @@ from ook.exceptions import LinkCheckTooManyUrlsError
 from ook.storage.linkcheckstore import DueUrl
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from safir.database import CountedPaginatedList
     from structlog.stdlib import BoundLogger
 
-    from ook.domain.linkcheck import RetryLadderConfig
+    from ook.domain.linkcheck import (
+        ContributedResult,
+        ContributionProvenance,
+        RetryLadderConfig,
+    )
     from ook.storage.linkcheckstore import (
         CheckUrlRecord,
         LinkCheckStore,
@@ -187,7 +197,7 @@ class LinkCheckService:
                     LinkState(
                         url=url,
                         status=LinkStatus.unsupported,
-                        checked_at=now,
+                        date_checked=now,
                     ),
                     now=now,
                 )
@@ -357,6 +367,198 @@ class LinkCheckService:
             "Completed link recheck", checked_url_count=len(urls)
         )
 
+    async def contribute_results(
+        self,
+        *,
+        check_id: int,
+        provenance: ContributionProvenance,
+        results: Sequence[ContributedResult],
+    ) -> ContributionReport | None:
+        """Apply client-contributed results to a check's blocked URLs.
+
+        A client that re-checked a URL Ook's own egress is bot-blocked from
+        can contribute what it saw. Eligible results run through the same
+        status-transition engine and retry ladder as Ook's own checks, so a
+        contributed success resolves the URL and a contributed failure
+        advances its ladder; only the recorded vantage point differs. Each
+        applied result is also recorded as a contribution row, the
+        append-only provenance trail behind the state it produced.
+
+        The batch is applied entry by entry: ineligible entries are
+        reported back with a reason while the rest still apply.
+
+        Parameters
+        ----------
+        check_id
+            The check the results were contributed against.
+        provenance
+            Where the results were observed from. Its identifying claims
+            come from a verified OIDC token, not the request body.
+        results
+            The per-URL results the client observed.
+
+        Returns
+        -------
+        ContributionReport or None
+            What was applied and what was rejected, or None if the check
+            is unknown.
+        """
+        record = await self._store.get_check(check_id)
+        if record is None:
+            return None
+
+        now = datetime.now(tz=UTC)
+        members = {url.url for url in record.urls}
+        # The check record establishes membership only; blocked-ness is
+        # judged from these state rows, which are also what each write
+        # advances. Reading them once means a URL a concurrent server
+        # check resolves in between cannot be judged eligible from one
+        # snapshot and then written from another.
+        states = await self._store.get_url_states(
+            self._contribution_candidates(results, members=members)
+        )
+        eligible, rejected = self._partition_contributions(
+            results, members=members, states=states
+        )
+
+        accepted: list[AcceptedContribution] = []
+        for result in eligible:
+            state = evaluate_outcome(
+                url=result.url,
+                prior=states.get(result.url),
+                outcome=contributed_outcome(
+                    result, repository=provenance.repository, received_at=now
+                ),
+                ladder=self._retry_ladder,
+            )
+            await self._store.upsert_url_state(state, now=now)
+            accepted.append(
+                AcceptedContribution(url=result.url, status=state.status)
+            )
+        await self._store.add_contributions(
+            check_id=check_id,
+            provenance=provenance,
+            results=eligible,
+            now=now,
+        )
+
+        self._logger.info(
+            "Applied link-check contributions",
+            check_id=check_id,
+            repository=provenance.repository,
+            run_id=provenance.run_id,
+            accepted_count=len(accepted),
+            rejected_count=len(rejected),
+        )
+        if rejected:
+            self._logger.info(
+                "Rejected link-check contributions",
+                check_id=check_id,
+                repository=provenance.repository,
+                rejected_count=len(rejected),
+                reasons=dict(
+                    Counter(entry.reason.value for entry in rejected)
+                ),
+            )
+        return ContributionReport(
+            check_id=check_id,
+            provenance=provenance,
+            accepted=accepted,
+            rejected=rejected,
+        )
+
+    @staticmethod
+    def _contribution_candidates(
+        results: Sequence[ContributedResult], *, members: set[str]
+    ) -> list[str]:
+        """List the canonical member URLs a batch could contribute to.
+
+        No other URL's state can affect the batch, so scoping the state
+        read to these keeps it bounded by the batch rather than by the
+        number of URLs in the check.
+        """
+        candidates: set[str] = set()
+        for result in results:
+            if not is_supported_url(result.url):
+                continue
+            url = canonicalize_url(result.url)
+            if url in members:
+                candidates.add(url)
+        return sorted(candidates)
+
+    def _partition_contributions(
+        self,
+        results: Sequence[ContributedResult],
+        *,
+        members: set[str],
+        states: Mapping[str, LinkState],
+    ) -> tuple[list[ContributedResult], list[RejectedContribution]]:
+        """Split contributed results into the eligible and the rejected.
+
+        A result is eligible when its URL is checkable, is a member of the
+        check, is currently blocked, and has not already been contributed
+        earlier in the same batch. Eligible results come back
+        canonicalized, so downstream lookups and writes key on the same URL
+        the check's membership does.
+
+        Blocked-ness is judged from ``states``, the same rows that become
+        each accepted result's prior state, so the judgement and the write
+        it authorizes see one snapshot. A member URL absent from
+        ``states`` has never been checked, which is pending, not blocked.
+        """
+        eligible: list[ContributedResult] = []
+        seen: set[str] = set()
+        rejected: list[RejectedContribution] = []
+
+        def reject(
+            url: str, reason: ContributionRejectionReason, message: str
+        ) -> None:
+            rejected.append(
+                RejectedContribution(url=url, reason=reason, message=message)
+            )
+
+        for result in results:
+            if not is_supported_url(result.url):
+                reject(
+                    result.url,
+                    ContributionRejectionReason.unsupported_url,
+                    "The URL is not a checkable http(s) URL, so it cannot"
+                    " be a member of this check.",
+                )
+                continue
+            url = canonicalize_url(result.url)
+            state = states.get(url)
+            if url not in members:
+                reject(
+                    result.url,
+                    ContributionRejectionReason.not_a_member,
+                    "The URL is not one of this check's submitted URLs.",
+                )
+            elif state is None or state.status is not LinkStatus.blocked:
+                status = (
+                    state.status.value
+                    if state is not None
+                    else CheckUrlStatus.pending.value
+                )
+                reject(
+                    result.url,
+                    ContributionRejectionReason.not_blocked,
+                    f"The URL is {status}, not blocked: only URLs Ook"
+                    " could not verify from its own vantage point accept"
+                    " contributed results.",
+                )
+            elif url in seen:
+                reject(
+                    result.url,
+                    ContributionRejectionReason.duplicate,
+                    "An earlier result in this batch already contributed"
+                    " a result for this URL.",
+                )
+            else:
+                seen.add(url)
+                eligible.append(result.model_copy(update={"url": url}))
+        return eligible, rejected
+
     async def list_due_recheck_urls(self) -> list[DueUrl]:
         """Enumerate due, still-referenced URLs for scheduled recheck.
 
@@ -497,9 +699,9 @@ class LinkCheckService:
             return True
         if state.status is LinkStatus.unsupported:
             return False
-        if state.next_check_at is not None and state.next_check_at <= now:
+        if state.date_next_check is not None and state.date_next_check <= now:
             return True
-        return state.checked_at <= now - self._freshness_ttl
+        return state.date_checked <= now - self._freshness_ttl
 
     def _report_url(
         self, url_record: CheckUrlRecord, submitted_at: datetime
@@ -511,11 +713,11 @@ class LinkCheckService:
         until execution refreshes it.
         """
         status = url_record.status
-        checked_at = url_record.last_checked_at
+        date_checked = url_record.date_last_checked
         if (
             status is None
-            or checked_at is None
-            or checked_at < submitted_at - self._freshness_ttl
+            or date_checked is None
+            or date_checked < submitted_at - self._freshness_ttl
         ):
             return CheckedUrlReport(
                 url=url_record.url,
@@ -529,6 +731,8 @@ class LinkCheckService:
             redirect_status_code=url_record.redirect_status_code,
             redirect_url=url_record.redirect_url,
             error=url_record.error,
-            checked_at=checked_at,
+            date_checked=date_checked,
             origin_paths=url_record.origin_paths,
+            result_source=url_record.result_source,
+            contributed_by=url_record.contributed_by,
         )

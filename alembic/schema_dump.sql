@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict bU4ugrEeC3jwA9HgGwVieQzBqDWW0B956JoYzl5tJY7UuLX8Zfr1LS0hv8MAkxm
+\restrict vwduItUFGAxoab63eaFOJCtC9q1jbp9nEh5zpaGiayqFidvk5PA4vga7SyKfloy
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -191,12 +191,14 @@ CREATE TABLE public.checked_url (
     redirect_url text,
     redirect_status_code integer,
     error text,
-    last_checked_at timestamp with time zone,
-    last_ok_at timestamp with time zone,
-    failing_since timestamp with time zone,
+    result_source text NOT NULL,
+    contributed_by text,
+    date_last_checked timestamp with time zone,
+    date_last_ok timestamp with time zone,
+    date_failing_since timestamp with time zone,
     failure_count integer NOT NULL,
     consecutive_blocked_count integer NOT NULL,
-    next_check_at timestamp with time zone,
+    date_next_check timestamp with time zone,
     check_method text NOT NULL,
     date_created timestamp with time zone NOT NULL
 );
@@ -437,6 +439,52 @@ CREATE TABLE public.linkcheck_check_url (
 
 
 ALTER TABLE public.linkcheck_check_url OWNER TO test;
+
+--
+-- Name: linkcheck_contribution; Type: TABLE; Schema: public; Owner: test
+--
+
+CREATE TABLE public.linkcheck_contribution (
+    id bigint NOT NULL,
+    check_id bigint NOT NULL,
+    checked_url_id bigint NOT NULL,
+    provider text NOT NULL,
+    repository text NOT NULL,
+    run_id text NOT NULL,
+    workflow_ref text NOT NULL,
+    run_url text,
+    checker_version text,
+    status_code integer,
+    redirect_url text,
+    redirect_status_code integer,
+    error text,
+    date_checked timestamp with time zone NOT NULL,
+    date_received timestamp with time zone NOT NULL
+);
+
+
+ALTER TABLE public.linkcheck_contribution OWNER TO test;
+
+--
+-- Name: linkcheck_contribution_id_seq; Type: SEQUENCE; Schema: public; Owner: test
+--
+
+CREATE SEQUENCE public.linkcheck_contribution_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.linkcheck_contribution_id_seq OWNER TO test;
+
+--
+-- Name: linkcheck_contribution_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: test
+--
+
+ALTER SEQUENCE public.linkcheck_contribution_id_seq OWNED BY public.linkcheck_contribution.id;
+
 
 --
 -- Name: links_sdm_columns; Type: TABLE; Schema: public; Owner: test
@@ -796,6 +844,13 @@ ALTER TABLE ONLY public.link ALTER COLUMN id SET DEFAULT nextval('public.link_id
 
 
 --
+-- Name: linkcheck_contribution id; Type: DEFAULT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.linkcheck_contribution ALTER COLUMN id SET DEFAULT nextval('public.linkcheck_contribution_id_seq'::regclass);
+
+
+--
 -- Name: resource_relation id; Type: DEFAULT; Schema: public; Owner: test
 --
 
@@ -850,7 +905,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-6f68334c9c9b
+f43554a10acb
 \.
 
 
@@ -882,7 +937,7 @@ COPY public.author_alias (id, internal_id, author_id, date_updated) FROM stdin;
 -- Data for Name: checked_url; Type: TABLE DATA; Schema: public; Owner: test
 --
 
-COPY public.checked_url (id, url, status, status_code, redirect_url, redirect_status_code, error, last_checked_at, last_ok_at, failing_since, failure_count, consecutive_blocked_count, next_check_at, check_method, date_created) FROM stdin;
+COPY public.checked_url (id, url, status, status_code, redirect_url, redirect_status_code, error, result_source, contributed_by, date_last_checked, date_last_ok, date_failing_since, failure_count, consecutive_blocked_count, date_next_check, check_method, date_created) FROM stdin;
 \.
 
 
@@ -939,6 +994,14 @@ COPY public.linkcheck_check (id, origin_base_url, is_default_version, status, da
 --
 
 COPY public.linkcheck_check_url (check_id, checked_url_id, origin_paths) FROM stdin;
+\.
+
+
+--
+-- Data for Name: linkcheck_contribution; Type: TABLE DATA; Schema: public; Owner: test
+--
+
+COPY public.linkcheck_contribution (id, check_id, checked_url_id, provider, repository, run_id, workflow_ref, run_url, checker_version, status_code, redirect_url, redirect_status_code, error, date_checked, date_received) FROM stdin;
 \.
 
 
@@ -1084,6 +1147,13 @@ SELECT pg_catalog.setval('public.intersphinx_inventory_id_seq', 1, false);
 --
 
 SELECT pg_catalog.setval('public.link_id_seq', 1, false);
+
+
+--
+-- Name: linkcheck_contribution_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
+--
+
+SELECT pg_catalog.setval('public.linkcheck_contribution_id_seq', 1, false);
 
 
 --
@@ -1278,6 +1348,14 @@ ALTER TABLE ONLY public.linkcheck_check
 
 ALTER TABLE ONLY public.linkcheck_check_url
     ADD CONSTRAINT linkcheck_check_url_pkey PRIMARY KEY (check_id, checked_url_id);
+
+
+--
+-- Name: linkcheck_contribution linkcheck_contribution_pkey; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.linkcheck_contribution
+    ADD CONSTRAINT linkcheck_contribution_pkey PRIMARY KEY (id);
 
 
 --
@@ -1596,17 +1674,17 @@ CREATE INDEX ix_author_surname ON public.author USING btree (surname);
 
 
 --
--- Name: ix_checked_url_last_checked_at; Type: INDEX; Schema: public; Owner: test
+-- Name: ix_checked_url_date_last_checked; Type: INDEX; Schema: public; Owner: test
 --
 
-CREATE INDEX ix_checked_url_last_checked_at ON public.checked_url USING btree (last_checked_at);
+CREATE INDEX ix_checked_url_date_last_checked ON public.checked_url USING btree (date_last_checked);
 
 
 --
--- Name: ix_checked_url_next_check_at; Type: INDEX; Schema: public; Owner: test
+-- Name: ix_checked_url_date_next_check; Type: INDEX; Schema: public; Owner: test
 --
 
-CREATE INDEX ix_checked_url_next_check_at ON public.checked_url USING btree (next_check_at);
+CREATE INDEX ix_checked_url_date_next_check ON public.checked_url USING btree (date_next_check);
 
 
 --
@@ -1663,6 +1741,20 @@ CREATE INDEX ix_linkcheck_check_origin_base_url ON public.linkcheck_check USING 
 --
 
 CREATE INDEX ix_linkcheck_check_url_checked_url_id ON public.linkcheck_check_url USING btree (checked_url_id);
+
+
+--
+-- Name: ix_linkcheck_contribution_check_id; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_linkcheck_contribution_check_id ON public.linkcheck_contribution USING btree (check_id);
+
+
+--
+-- Name: ix_linkcheck_contribution_checked_url_id; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_linkcheck_contribution_checked_url_id ON public.linkcheck_contribution USING btree (checked_url_id);
 
 
 --
@@ -1842,6 +1934,22 @@ ALTER TABLE ONLY public.linkcheck_check_url
 
 
 --
+-- Name: linkcheck_contribution linkcheck_contribution_check_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.linkcheck_contribution
+    ADD CONSTRAINT linkcheck_contribution_check_id_fkey FOREIGN KEY (check_id) REFERENCES public.linkcheck_check(id) ON DELETE CASCADE;
+
+
+--
+-- Name: linkcheck_contribution linkcheck_contribution_checked_url_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.linkcheck_contribution
+    ADD CONSTRAINT linkcheck_contribution_checked_url_id_fkey FOREIGN KEY (checked_url_id) REFERENCES public.checked_url(id) ON DELETE CASCADE;
+
+
+--
 -- Name: links_sdm_columns links_sdm_columns_column_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
 --
 
@@ -1957,5 +2065,5 @@ ALTER TABLE ONLY public.url_occurrence
 -- PostgreSQL database dump complete
 --
 
-\unrestrict bU4ugrEeC3jwA9HgGwVieQzBqDWW0B956JoYzl5tJY7UuLX8Zfr1LS0hv8MAkxm
+\unrestrict vwduItUFGAxoab63eaFOJCtC9q1jbp9nEh5zpaGiayqFidvk5PA4vga7SyKfloy
 

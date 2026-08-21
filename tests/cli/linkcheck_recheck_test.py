@@ -38,8 +38,8 @@ async def test_run_linkcheck_recheck(factory: Factory) -> None:
                 LinkState(
                     url=url,
                     status=LinkStatus.ok,
-                    checked_at=stale,
-                    last_ok_at=stale,
+                    date_checked=stale,
+                    date_last_ok=stale,
                     status_code=200,
                 )
             )
@@ -62,8 +62,8 @@ async def test_run_linkcheck_recheck(factory: Factory) -> None:
             LinkState(
                 url="https://example.com/fresh",
                 status=LinkStatus.ok,
-                checked_at=now,
-                last_ok_at=now,
+                date_checked=now,
+                date_last_ok=now,
                 status_code=200,
             )
         )

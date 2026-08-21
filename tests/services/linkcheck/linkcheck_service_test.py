@@ -8,22 +8,39 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 import structlog
+from safir.database import create_async_session, create_database_engine
 
 from ook.config import config
 from ook.domain.linkcheck import (
     CheckRunStatus,
     CheckUrlStatus,
+    ContributedResult,
+    ContributionProvenance,
+    ContributionProvider,
+    ContributionRejectionReason,
     LinkState,
     LinkStatus,
+    ResultSource,
     RetryLadderConfig,
     SubmittedUrl,
     UrlOccurrence,
 )
 from ook.factory import Factory
 from ook.services.linkcheck import HostResolver, LinkCheckService, UrlChecker
+from ook.storage.linkcheckstore import LinkCheckStore
 
 PUBLIC_IP = "93.184.216.34"
 """A public (globally-routable) IPv4 address for fake DNS resolution."""
+
+PROVENANCE = ContributionProvenance(
+    provider=ContributionProvider.github_actions,
+    repository="lsst-sqre/documenteer",
+    run_id="42",
+    workflow_ref=(
+        "lsst-sqre/documenteer/.github/workflows/linkcheck.yaml@refs/heads/main"
+    ),
+)
+"""The attested provenance the contribution tests submit under."""
 
 
 async def _resolve_public(host: str) -> Sequence[str]:
@@ -36,9 +53,13 @@ def make_service(
     http_client: httpx.AsyncClient,
     *,
     resolve_host: HostResolver = _resolve_public,
+    store: LinkCheckStore | None = None,
 ) -> LinkCheckService:
     """Create a LinkCheckService whose UrlChecker uses the given client
     and a fake DNS resolver, so tests never touch the network.
+
+    Pass ``store`` to hold a reference to the store the service reads and
+    writes through; by default the service gets its own.
     """
     logger = structlog.get_logger("test")
     checker = UrlChecker(
@@ -51,7 +72,7 @@ def make_service(
         resolve_host=resolve_host,
     )
     return LinkCheckService(
-        linkcheck_store=factory.create_linkcheck_store(),
+        linkcheck_store=store or factory.create_linkcheck_store(),
         logger=logger,
         freshness_ttl=config.linkcheck_freshness_ttl,
         max_urls_per_check=config.linkcheck_max_urls_per_check,
@@ -59,6 +80,25 @@ def make_service(
         retry_ladder=RetryLadderConfig(),
         check_retention=config.linkcheck_check_retention,
     )
+
+
+async def _commit_url_state(state: LinkState) -> None:
+    """Write a URL state from a separate connection and commit it.
+
+    This is how a test stands in for a concurrent server check: the write
+    lands outside the transaction under test, so the code under test sees
+    it only on its next read.
+    """
+    logger = structlog.get_logger("test")
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    session = await create_async_session(engine)
+    store = LinkCheckStore(session=session, logger=logger)
+    async with session.begin():
+        await store.upsert_url_state(state)
+    await session.close()
+    await engine.dispose()
 
 
 def mock_transport(
@@ -102,7 +142,7 @@ async def test_execute_check_completes_with_ok_result(
             assert url_report.url == "https://example.com/page"
             assert url_report.status is CheckUrlStatus.ok
             assert url_report.status_code == 200
-            assert url_report.checked_at is not None
+            assert url_report.date_checked is not None
 
 
 @pytest.mark.asyncio
@@ -135,9 +175,9 @@ async def test_execute_check_never_ok_failure_is_broken(
             assert state is not None
             assert state.status is LinkStatus.broken
             assert state.status_code == 404
-            assert state.failing_since == state.checked_at
+            assert state.date_failing_since == state.date_checked
             assert state.failure_count == 1
-            assert state.next_check_at == state.checked_at + timedelta(
+            assert state.date_next_check == state.date_checked + timedelta(
                 hours=24
             )
             assert state.error is not None
@@ -224,8 +264,8 @@ async def test_execute_check_bot_blocked_is_blocked(
                 LinkState(
                     url="https://example.com/guarded",
                     status=LinkStatus.ok,
-                    checked_at=last_ok,
-                    last_ok_at=last_ok,
+                    date_checked=last_ok,
+                    date_last_ok=last_ok,
                     status_code=200,
                 )
             )
@@ -244,11 +284,13 @@ async def test_execute_check_bot_blocked_is_blocked(
             assert state is not None
             assert state.status is LinkStatus.blocked
             assert state.status_code == 403
-            assert state.last_ok_at == last_ok
+            assert state.date_last_ok == last_ok
             # The block neither extends nor resets the failure streak.
-            assert state.failing_since is None
+            assert state.date_failing_since is None
             assert state.failure_count == 0
-            assert state.next_check_at == state.checked_at + timedelta(hours=1)
+            assert state.date_next_check == state.date_checked + timedelta(
+                hours=1
+            )
             assert state.error is not None
             assert "bot protection" in state.error
 
@@ -280,8 +322,8 @@ async def test_execute_check_transient_server_error_is_blocked(
                 LinkState(
                     url="https://example.com/down",
                     status=LinkStatus.ok,
-                    checked_at=last_ok,
-                    last_ok_at=last_ok,
+                    date_checked=last_ok,
+                    date_last_ok=last_ok,
                     status_code=200,
                 )
             )
@@ -300,11 +342,13 @@ async def test_execute_check_transient_server_error_is_blocked(
             assert state is not None
             assert state.status is LinkStatus.blocked
             assert state.status_code == 503
-            assert state.last_ok_at == last_ok
+            assert state.date_last_ok == last_ok
             # The outage neither extends nor resets the failure streak.
-            assert state.failing_since is None
+            assert state.date_failing_since is None
             assert state.failure_count == 0
-            assert state.next_check_at == state.checked_at + timedelta(hours=1)
+            assert state.date_next_check == state.date_checked + timedelta(
+                hours=1
+            )
             assert state.error is not None
             assert "transient server error" in state.error
 
@@ -337,8 +381,8 @@ async def test_execute_check_previously_ok_failure_bookkeeping(
                 LinkState(
                     url="https://example.com/flaky",
                     status=LinkStatus.ok,
-                    checked_at=last_ok,
-                    last_ok_at=last_ok,
+                    date_checked=last_ok,
+                    date_last_ok=last_ok,
                     status_code=200,
                 )
             )
@@ -357,11 +401,13 @@ async def test_execute_check_previously_ok_failure_bookkeeping(
             assert state is not None
             assert state.status is LinkStatus.failing
             assert state.status_code == 500
-            assert state.last_ok_at == last_ok
-            assert state.failing_since == state.checked_at
+            assert state.date_last_ok == last_ok
+            assert state.date_failing_since == state.date_checked
             assert state.failure_count == 1
             # The first rung of the retry ladder schedules the recheck.
-            assert state.next_check_at == state.checked_at + timedelta(hours=1)
+            assert state.date_next_check == state.date_checked + timedelta(
+                hours=1
+            )
 
             report = await service.get_check_report(submission.check_id)
             assert report is not None
@@ -427,8 +473,8 @@ async def test_execute_check_skips_fresh_urls(factory: Factory) -> None:
                 LinkState(
                     url="https://example.com/fresh",
                     status=LinkStatus.ok,
-                    checked_at=now,
-                    last_ok_at=now,
+                    date_checked=now,
+                    date_last_ok=now,
                     status_code=200,
                 )
             )
@@ -478,8 +524,8 @@ async def test_submit_check_all_fresh_completes_immediately(
                 LinkState(
                     url="https://example.com/fresh",
                     status=LinkStatus.ok,
-                    checked_at=now,
-                    last_ok_at=now,
+                    date_checked=now,
+                    date_last_ok=now,
                     status_code=200,
                 )
             )
@@ -589,13 +635,13 @@ async def test_execute_recheck_advances_ladder(factory: Factory) -> None:
                 LinkState(
                     url=url,
                     status=LinkStatus.failing,
-                    checked_at=now - timedelta(hours=1),
-                    last_ok_at=now - timedelta(days=4),
-                    failing_since=now - timedelta(days=3),
+                    date_checked=now - timedelta(hours=1),
+                    date_last_ok=now - timedelta(days=4),
+                    date_failing_since=now - timedelta(days=3),
                     failure_count=3,
                     status_code=404,
                     error="404 Not Found",
-                    next_check_at=now - timedelta(minutes=5),
+                    date_next_check=now - timedelta(minutes=5),
                 )
             )
             ids = await store.upsert_checked_urls([url])
@@ -606,10 +652,10 @@ async def test_execute_recheck_advances_ladder(factory: Factory) -> None:
             assert state is not None
             assert state.status is LinkStatus.broken
             assert state.failure_count == 4
-            assert state.failing_since == now - timedelta(days=3)
+            assert state.date_failing_since == now - timedelta(days=3)
             # Broken links stay on the schedule at the slow broken
             # cadence so a recovered link heals via the recheck cron.
-            assert state.next_check_at == state.checked_at + timedelta(
+            assert state.date_next_check == state.date_checked + timedelta(
                 hours=24
             )
 
@@ -633,13 +679,13 @@ async def test_execute_recheck_heals_broken_url(factory: Factory) -> None:
                 LinkState(
                     url=url,
                     status=LinkStatus.broken,
-                    checked_at=now - timedelta(hours=25),
-                    last_ok_at=now - timedelta(days=5),
-                    failing_since=now - timedelta(days=4),
+                    date_checked=now - timedelta(hours=25),
+                    date_last_ok=now - timedelta(days=5),
+                    date_failing_since=now - timedelta(days=4),
                     failure_count=4,
                     status_code=403,
                     error="403 Forbidden (likely bot block)",
-                    next_check_at=now - timedelta(hours=1),
+                    date_next_check=now - timedelta(hours=1),
                 )
             )
             ids = await store.upsert_checked_urls([url])
@@ -652,9 +698,9 @@ async def test_execute_recheck_heals_broken_url(factory: Factory) -> None:
             assert state.status_code == 200
             assert state.error is None
             assert state.failure_count == 0
-            assert state.failing_since is None
-            assert state.last_ok_at == state.checked_at
-            assert state.next_check_at is None
+            assert state.date_failing_since is None
+            assert state.date_last_ok == state.date_checked
+            assert state.date_next_check is None
 
 
 @pytest.mark.asyncio
@@ -690,8 +736,8 @@ async def test_execute_recheck_skips_fresh_urls(factory: Factory) -> None:
             fresh_state = LinkState(
                 url=url,
                 status=LinkStatus.ok,
-                checked_at=now,
-                last_ok_at=now,
+                date_checked=now,
+                date_last_ok=now,
                 status_code=200,
             )
             await store.upsert_url_state(fresh_state)
@@ -727,8 +773,8 @@ async def test_list_due_recheck_urls_referenced_only(
                     LinkState(
                         url=url,
                         status=LinkStatus.ok,
-                        checked_at=stale,
-                        last_ok_at=stale,
+                        date_checked=stale,
+                        date_last_ok=stale,
                         status_code=200,
                     )
                 )
@@ -751,8 +797,8 @@ async def test_list_due_recheck_urls_referenced_only(
                 LinkState(
                     url="https://example.com/referenced-fresh",
                     status=LinkStatus.ok,
-                    checked_at=now,
-                    last_ok_at=now,
+                    date_checked=now,
+                    date_last_ok=now,
                     status_code=200,
                 )
             )
@@ -761,6 +807,134 @@ async def test_list_due_recheck_urls_referenced_only(
             assert [d.url for d in due] == [
                 "https://example.com/referenced-stale"
             ]
+
+
+@pytest.mark.asyncio
+async def test_contribution_rejects_url_a_concurrent_check_resolved(
+    factory: Factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A URL a concurrent server check resolves between the check read
+    and the state read is rejected, not overwritten.
+
+    Blocked-ness is judged from the same state rows that become each
+    write's prior state, so a stale blocked snapshot cannot authorize a
+    contribution over a newer server result.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    url = "https://example.com/guarded"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        store = factory.create_linkcheck_store()
+        service = make_service(factory, hc, store=store)
+        async with factory.db_session.begin():
+            await store.upsert_url_state(
+                LinkState(
+                    url=url,
+                    status=LinkStatus.blocked,
+                    date_checked=now,
+                    consecutive_blocked_count=1,
+                    status_code=403,
+                    error="HTTP 403 (likely blocked by bot protection)",
+                    date_next_check=now + timedelta(hours=1),
+                )
+            )
+            submission = await service.submit_check(
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
+                urls=[SubmittedUrl(url=url, origin_paths=["a"])],
+            )
+
+        # A server recheck resolves the URL from another connection in the
+        # window between the two reads.
+        read_states = store.get_url_states
+
+        async def racing_get_url_states(
+            urls: Sequence[str],
+        ) -> dict[str, LinkState]:
+            await _commit_url_state(
+                LinkState(
+                    url=url,
+                    status=LinkStatus.ok,
+                    date_checked=now + timedelta(minutes=1),
+                    date_last_ok=now + timedelta(minutes=1),
+                    status_code=200,
+                )
+            )
+            return await read_states(urls)
+
+        monkeypatch.setattr(store, "get_url_states", racing_get_url_states)
+
+        async with factory.db_session.begin():
+            report = await service.contribute_results(
+                check_id=submission.check_id,
+                provenance=PROVENANCE,
+                results=[
+                    ContributedResult(
+                        url=url, status_code=200, date_checked=now
+                    )
+                ],
+            )
+
+        assert report is not None
+        assert report.accepted == []
+        assert [(entry.url, entry.reason) for entry in report.rejected] == [
+            (url, ContributionRejectionReason.not_blocked)
+        ]
+
+        monkeypatch.undo()
+        async with factory.db_session.begin():
+            state = await store.get_url_state(url)
+        assert state is not None
+        assert state.status is LinkStatus.ok
+        assert state.result_source is ResultSource.server
+
+
+@pytest.mark.asyncio
+async def test_contribution_to_never_checked_member_is_rejected(
+    factory: Factory,
+) -> None:
+    """A member URL with no state row has never been checked, so it is
+    pending rather than blocked and accepts no contribution.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    url = "https://example.com/unchecked"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            submission = await service.submit_check(
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
+                urls=[SubmittedUrl(url=url, origin_paths=["a"])],
+            )
+
+            report = await service.contribute_results(
+                check_id=submission.check_id,
+                provenance=PROVENANCE,
+                results=[
+                    ContributedResult(
+                        url=url, status_code=200, date_checked=now
+                    )
+                ],
+            )
+
+            assert report is not None
+            assert report.accepted == []
+            (rejected,) = report.rejected
+            assert rejected.url == url
+            assert rejected.reason is ContributionRejectionReason.not_blocked
+            assert "pending" in rejected.message
+            # The contribution neither resolved the URL nor invented a
+            # state for it.
+            assert await store.get_url_state(url) is None
 
 
 @pytest.mark.asyncio

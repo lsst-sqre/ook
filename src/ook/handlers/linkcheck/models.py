@@ -7,28 +7,49 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import Request
-from pydantic import AfterValidator, BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field, HttpUrl
 
 from ook.domain.base32id import Base32Id, serialize_ook_base32_id
+from ook.domain.githuboidc import GitHubOidcClaims
+from ook.domain.linkcheck import (
+    AcceptedContribution as AcceptedContributionDomain,
+)
 from ook.domain.linkcheck import (
     CheckedUrlReport,
     CheckRunStatus,
     CheckUrlStatus,
+    ContributedResult,
+    ContributionProvider,
+    ContributionRejectionReason,
     LinkCheckReport,
+    LinkStatus,
+    ResultSource,
     SubmittedUrl,
     normalize_origin_base_url,
 )
+from ook.domain.linkcheck import ContributionProvenance as ProvenanceDomain
+from ook.domain.linkcheck import ContributionReport as ContributionReportDomain
 from ook.domain.linkcheck import OriginLink as OriginLinkDomain
 from ook.domain.linkcheck import OriginPage as OriginPageDomain
+from ook.domain.linkcheck import (
+    RejectedContribution as RejectedContributionDomain,
+)
 from ook.domain.linkcheck import UrlRecord as UrlRecordDomain
 
 __all__ = [
+    "AcceptedContribution",
     "CheckedUrl",
+    "ContributedResultModel",
+    "ContributionEnvironment",
+    "ContributionProvenanceModel",
     "LinkCheck",
+    "LinkCheckContributionReport",
+    "LinkCheckContributionRequest",
     "LinkCheckRequest",
     "LinkCheckSummary",
     "OriginLink",
     "OriginPage",
+    "RejectedContribution",
     "SubmittedUrlModel",
     "UrlRecord",
 ]
@@ -146,13 +167,38 @@ class CheckedUrl(BaseModel):
         Field(description="Description of the failure, if the check failed."),
     ] = None
 
-    checked_at: Annotated[
+    date_checked: Annotated[
         datetime | None,
         Field(
             description=(
                 "Time of the check that produced this result, or null"
                 " while the URL is pending."
             )
+        ),
+    ] = None
+
+    result_source: Annotated[
+        ResultSource,
+        Field(
+            description=(
+                "Where this result was observed from: ``server`` for"
+                " Ook's own check, ``contribution`` for a result"
+                " contributed by a client that checked the URL from its"
+                " own vantage point. Pending URLs report ``server``,"
+                " having no result yet."
+            )
+        ),
+    ] = ResultSource.server
+
+    contributed_by: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The ``owner/name`` of the repository whose CI"
+                " contributed this result, or null when Ook checked the"
+                " URL itself."
+            ),
+            examples=["lsst-sqre/documenteer"],
         ),
     ] = None
 
@@ -177,7 +223,9 @@ class CheckedUrl(BaseModel):
             redirect_status_code=report.redirect_status_code,
             redirect_url=report.redirect_url,
             error=report.error,
-            checked_at=report.checked_at,
+            date_checked=report.date_checked,
+            result_source=report.result_source,
+            contributed_by=report.contributed_by,
             origin_paths=report.origin_paths,
         )
 
@@ -314,7 +362,7 @@ class UrlRecord(BaseModel):
         ),
     ] = None
 
-    last_checked_at: Annotated[
+    date_last_checked: Annotated[
         datetime | None,
         Field(
             description=(
@@ -323,7 +371,7 @@ class UrlRecord(BaseModel):
         ),
     ] = None
 
-    last_ok_at: Annotated[
+    date_last_ok: Annotated[
         datetime | None,
         Field(
             description=(
@@ -333,7 +381,7 @@ class UrlRecord(BaseModel):
         ),
     ] = None
 
-    failing_since: Annotated[
+    date_failing_since: Annotated[
         datetime | None,
         Field(
             description=(
@@ -352,7 +400,7 @@ class UrlRecord(BaseModel):
         ),
     ] = 0
 
-    next_check_at: Annotated[
+    date_next_check: Annotated[
         datetime | None,
         Field(
             description=(
@@ -366,6 +414,31 @@ class UrlRecord(BaseModel):
         datetime,
         Field(description="Time the URL's record was created."),
     ]
+
+    result_source: Annotated[
+        ResultSource,
+        Field(
+            description=(
+                "Where the most recent result was observed from:"
+                " ``server`` for Ook's own check, ``contribution`` for a"
+                " result contributed by a client that checked the URL"
+                " from its own vantage point. Never-checked URLs report"
+                " ``server``."
+            )
+        ),
+    ] = ResultSource.server
+
+    contributed_by: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The ``owner/name`` of the repository whose CI"
+                " contributed the most recent result, or null when Ook"
+                " checked the URL itself."
+            ),
+            examples=["lsst-sqre/documenteer"],
+        ),
+    ] = None
 
     occurrences: Annotated[
         list[OriginPage],
@@ -387,12 +460,14 @@ class UrlRecord(BaseModel):
             redirect_status_code=record.redirect_status_code,
             redirect_url=record.redirect_url,
             error=record.error,
-            last_checked_at=record.last_checked_at,
-            last_ok_at=record.last_ok_at,
-            failing_since=record.failing_since,
+            date_last_checked=record.date_last_checked,
+            date_last_ok=record.date_last_ok,
+            date_failing_since=record.date_failing_since,
             failure_count=record.failure_count,
-            next_check_at=record.next_check_at,
+            date_next_check=record.date_next_check,
             date_created=record.date_created,
+            result_source=record.result_source,
+            contributed_by=record.contributed_by,
             occurrences=[
                 OriginPage.from_domain(page) for page in record.occurrences
             ],
@@ -460,7 +535,7 @@ class OriginLink(BaseModel):
         ),
     ] = None
 
-    checked_at: Annotated[
+    date_checked: Annotated[
         datetime | None,
         Field(
             description=(
@@ -490,7 +565,7 @@ class OriginLink(BaseModel):
             redirect_status_code=link.redirect_status_code,
             redirect_url=link.redirect_url,
             error=link.error,
-            checked_at=link.checked_at,
+            date_checked=link.date_checked,
             origin_paths=link.origin_paths,
         )
 
@@ -572,4 +647,395 @@ class LinkCheck(BaseModel):
             date_completed=report.date_completed,
             summary=LinkCheckSummary.from_urls(report.urls),
             urls=[CheckedUrl.from_domain(url) for url in report.urls],
+        )
+
+
+class ContributionEnvironment(BaseModel):
+    """The client environment a batch of contributed results came from.
+
+    Every field here is advisory: the identity a contribution is recorded
+    under comes from the verified OIDC token, never from the body. A
+    ``repository`` that disagrees with the token's claim is ignored.
+
+    Advisory does not mean unconstrained: the descriptive fields are
+    persisted verbatim on every contribution row and rendered in reports,
+    so each is bounded in length and ``run_url`` must be a URL a report can
+    safely link.
+    """
+
+    provider: Annotated[
+        ContributionProvider,
+        Field(
+            description=(
+                "The kind of client environment the results were observed"
+                " from. Only GitHub Actions runs can contribute, because"
+                " the provenance attestation is an Actions OIDC id-token."
+            )
+        ),
+    ]
+
+    repository: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The ``owner/name`` of the repository the client believes"
+                " it is running in. Advisory: the repository recorded as"
+                " provenance is the one the id-token attests to."
+            ),
+            examples=["lsst-sqre/documenteer"],
+            max_length=255,
+        ),
+    ] = None
+
+    run_url: Annotated[
+        HttpUrl | None,
+        Field(
+            description=(
+                "A URL to the workflow run, recorded for display in"
+                " reports. Must be an http(s) URL: it is rendered as a"
+                " link, so a scheme a report could execute is rejected"
+                " rather than stored."
+            ),
+            examples=[
+                "https://github.com/lsst-sqre/documenteer/actions/runs/42"
+            ],
+            max_length=2048,
+        ),
+    ] = None
+
+    checker_version: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The version of the client that performed the checks,"
+                " recorded for display in reports."
+            ),
+            examples=["documenteer 2.1.0"],
+            max_length=128,
+        ),
+    ] = None
+
+    def to_domain(self, claims: GitHubOidcClaims) -> ProvenanceDomain:
+        """Combine the attested claims with this advisory environment into
+        the domain provenance model.
+
+        The identifying fields come from ``claims`` — the environment block
+        never gets to name the repository a contribution is recorded under.
+        This is also the one place ``run_url`` crosses from a parsed URL
+        back to text, so the domain model, the store column, and the
+        response field all keep it as a string.
+        """
+        return ProvenanceDomain(
+            provider=self.provider,
+            repository=claims.repository,
+            run_id=claims.run_id,
+            workflow_ref=claims.workflow_ref,
+            run_url=None if self.run_url is None else str(self.run_url),
+            checker_version=self.checker_version,
+        )
+
+
+class ContributedResultModel(BaseModel):
+    """One URL's result as observed by the contributing client."""
+
+    url: Annotated[
+        str,
+        Field(
+            description=(
+                "The URL the client checked. Fragments are stripped before"
+                " it is matched against the check's member URLs."
+            ),
+            examples=["https://example.com/guarded"],
+        ),
+    ]
+
+    status_code: Annotated[
+        int | None,
+        Field(
+            description=(
+                "Final HTTP status code the client received, or null if it"
+                " received no response at all. A 2xx resolves the URL;"
+                " anything else is a failure."
+            ),
+            examples=[200],
+        ),
+    ] = None
+
+    redirect_status_code: Annotated[
+        int | None,
+        Field(
+            description=(
+                "HTTP status code of the redirect (e.g. 301, 302), if the"
+                " URL redirected. A permanent redirect resolves the URL to"
+                " ``redirected`` rather than ``ok``."
+            )
+        ),
+    ] = None
+
+    redirect_url: Annotated[
+        str | None,
+        Field(description="Final resolved location, if the URL redirected."),
+    ] = None
+
+    error: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Description of the failure, if the client's check failed."
+            )
+        ),
+    ] = None
+
+    date_checked: Annotated[
+        datetime,
+        Field(
+            description=(
+                "Time the client performed the check. Advisory, and"
+                " recorded only on the contribution itself: the URL's"
+                " state is stamped with the server's receipt time, so"
+                " freshness and the retry ladder run on one clock."
+            )
+        ),
+    ]
+
+    def to_domain(self) -> ContributedResult:
+        """Convert to the domain contributed-result model."""
+        return ContributedResult(
+            url=self.url,
+            status_code=self.status_code,
+            redirect_status_code=self.redirect_status_code,
+            redirect_url=self.redirect_url,
+            error=self.error,
+            date_checked=self.date_checked,
+        )
+
+
+class LinkCheckContributionRequest(BaseModel):
+    """Schema for `post_linkcheck_contributions`."""
+
+    id_token: Annotated[
+        str,
+        Field(
+            description=(
+                "A GitHub Actions OIDC id-token, minted for this"
+                " deployment's audience by the workflow run that observed"
+                " the results. Required: it is what attests to where the"
+                " results came from. Its ``repository``, ``run_id``, and"
+                " ``workflow_ref`` claims are recorded as the"
+                " contribution's provenance."
+            ),
+            min_length=1,
+        ),
+    ]
+
+    environment: Annotated[
+        ContributionEnvironment,
+        Field(description="The client environment the results came from."),
+    ]
+
+    results: Annotated[
+        list[ContributedResultModel],
+        Field(
+            description=(
+                "The per-URL results the client observed. Entries that are"
+                " not eligible are rejected individually; the rest still"
+                " apply. A batch may carry at most as many results as a"
+                " check submission may carry URLs"
+                " (``OOK_LINKCHECK_MAX_URLS_PER_CHECK``); a larger one is"
+                " rejected whole."
+            ),
+            min_length=1,
+        ),
+    ]
+
+
+class ContributionProvenanceModel(BaseModel):
+    """Where a batch of contributed results was observed from."""
+
+    provider: Annotated[
+        ContributionProvider,
+        Field(description="The kind of client environment."),
+    ]
+
+    repository: Annotated[
+        str,
+        Field(
+            description=(
+                "The ``owner/name`` of the repository whose CI observed"
+                " the results, from the verified id-token."
+            ),
+            examples=["lsst-sqre/documenteer"],
+        ),
+    ]
+
+    run_id: Annotated[
+        str,
+        Field(
+            description=(
+                "The workflow run that observed the results, from the"
+                " verified id-token."
+            ),
+            examples=["42"],
+        ),
+    ]
+
+    workflow_ref: Annotated[
+        str,
+        Field(
+            description=(
+                "The fully-qualified reference of the workflow that"
+                " observed the results, from the verified id-token."
+            ),
+            examples=[
+                "lsst-sqre/documenteer/.github/workflows/ci.yaml@refs/heads/main"
+            ],
+        ),
+    ]
+
+    run_url: Annotated[
+        str | None,
+        Field(description="The run URL the client reported, if any."),
+    ] = None
+
+    checker_version: Annotated[
+        str | None,
+        Field(description="The client version the client reported, if any."),
+    ] = None
+
+    @classmethod
+    def from_domain(
+        cls, provenance: ProvenanceDomain
+    ) -> ContributionProvenanceModel:
+        """Create a provenance block from its domain model."""
+        return cls(
+            provider=provenance.provider,
+            repository=provenance.repository,
+            run_id=provenance.run_id,
+            workflow_ref=provenance.workflow_ref,
+            run_url=provenance.run_url,
+            checker_version=provenance.checker_version,
+        )
+
+
+class AcceptedContribution(BaseModel):
+    """A contributed result that was applied to its URL."""
+
+    url: Annotated[
+        str,
+        Field(description="The canonical URL the result was applied to."),
+    ]
+
+    status: Annotated[
+        LinkStatus,
+        Field(
+            description=(
+                "The URL's status after the contributed result ran through"
+                " the status-transition engine."
+            )
+        ),
+    ]
+
+    @classmethod
+    def from_domain(
+        cls, accepted: AcceptedContributionDomain
+    ) -> AcceptedContribution:
+        """Create an accepted entry from its domain model."""
+        return cls(url=accepted.url, status=accepted.status)
+
+
+class RejectedContribution(BaseModel):
+    """A contributed result that was not applied, and why."""
+
+    url: Annotated[
+        str,
+        Field(description="The URL as it was submitted."),
+    ]
+
+    reason: Annotated[
+        ContributionRejectionReason,
+        Field(
+            description=(
+                "Why the result was not applied: ``not_a_member`` if the"
+                " URL is not part of this check, ``not_blocked`` if Ook"
+                " resolved the URL from its own vantage point,"
+                " ``unsupported_url`` if the URL cannot be checked at all,"
+                " and ``duplicate`` if an earlier entry in the same batch"
+                " already contributed a result for it."
+            )
+        ),
+    ]
+
+    message: Annotated[
+        str,
+        Field(description="A human-readable explanation of the rejection."),
+    ]
+
+    @classmethod
+    def from_domain(
+        cls, rejected: RejectedContributionDomain
+    ) -> RejectedContribution:
+        """Create a rejected entry from its domain model."""
+        return cls(
+            url=rejected.url,
+            reason=rejected.reason,
+            message=rejected.message,
+        )
+
+
+class LinkCheckContributionReport(BaseModel):
+    """The outcome of a batch of contributed results."""
+
+    check_id: Annotated[
+        Base32Id,
+        Field(description="The check the results were contributed against."),
+    ]
+
+    provenance: Annotated[
+        ContributionProvenanceModel,
+        Field(
+            description=(
+                "Where the results were recorded as coming from, taken"
+                " from the verified id-token."
+            )
+        ),
+    ]
+
+    accepted: Annotated[
+        list[AcceptedContribution],
+        Field(
+            description=(
+                "The results that were applied, with the status each URL"
+                " reached, in submission order."
+            )
+        ),
+    ]
+
+    rejected: Annotated[
+        list[RejectedContribution],
+        Field(
+            description=(
+                "The results that were not applied, each with its reason,"
+                " in submission order."
+            )
+        ),
+    ]
+
+    @classmethod
+    def from_domain(
+        cls, report: ContributionReportDomain
+    ) -> LinkCheckContributionReport:
+        """Create a contribution report from its domain model."""
+        return cls(
+            check_id=report.check_id,
+            provenance=ContributionProvenanceModel.from_domain(
+                report.provenance
+            ),
+            accepted=[
+                AcceptedContribution.from_domain(entry)
+                for entry in report.accepted
+            ],
+            rejected=[
+                RejectedContribution.from_domain(entry)
+                for entry in report.rejected
+            ],
         )

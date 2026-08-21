@@ -15,9 +15,11 @@ from ook.domain.redirects import PERMANENT_REDIRECT_CODES
 
 from ._models import (
     CheckResult,
+    ContributedResult,
     LinkCheckOutcome,
     LinkState,
     LinkStatus,
+    ResultSource,
     RetryLadderConfig,
 )
 
@@ -26,6 +28,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "canonicalize_url",
+    "contributed_outcome",
     "evaluate_outcome",
     "is_supported_url",
     "normalize_origin_base_url",
@@ -33,6 +36,32 @@ __all__ = [
 
 _SUPPORTED_SCHEMES = frozenset({"http", "https"})
 """URL schemes the link checker is able to check."""
+
+_SUCCESS_CODES = range(200, 300)
+"""HTTP status codes counted as a successful resolution.
+
+The same range the URL checker applies to its own responses, so a
+contributed result is judged resolved on exactly the terms a server check
+is.
+"""
+
+_BOT_BLOCKED_CODE = 403
+"""HTTP status code treated as a bot block in a contributed result.
+
+The URL checker only calls a 403 a block when the response carries
+Cloudflare's own headers, because it holds the response. A contributing
+client reports a status code, not a response — and it is re-checking a URL
+Ook was already blocked from, so a 403 observed from its vantage point too
+is the block persisting rather than a newly-discovered broken link.
+"""
+
+_TRANSIENT_CODES = frozenset({429, 503})
+"""HTTP status codes treated as transient server conditions.
+
+Matching the URL checker: a persistent rate limit or a server-side outage
+says nothing about whether the link is broken, so it never escalates the
+failing-to-broken ladder.
+"""
 
 _MAX_BLOCKED_BACKOFF_DOUBLINGS = 30
 """Ceiling on the blocked-backoff doubling exponent.
@@ -161,6 +190,73 @@ def is_supported_url(url: str) -> bool:
     return parts.scheme in _SUPPORTED_SCHEMES and bool(parts.netloc)
 
 
+def contributed_outcome(
+    result: ContributedResult, *, repository: str, received_at: datetime
+) -> LinkCheckOutcome:
+    """Convert a client-contributed result into a check outcome.
+
+    A contributed result describes what a client saw when it resolved the
+    URL from its own vantage point. This translates that description into
+    the same outcome shape `evaluate_outcome` consumes for Ook's own
+    checks, so a contribution advances a URL's state by exactly the rules
+    a server check does.
+
+    The classification is deliberately coarser than the URL checker's,
+    which reads the response's own headers: a client reports a status code,
+    not a response. A 2xx resolves the URL; a 403 is inconclusive (the
+    client was blocked in turn), as are the transient 429 and 503; anything
+    else is a confirmed failure that advances the retry ladder.
+
+    Parameters
+    ----------
+    result
+        The result the client observed.
+    repository
+        The ``owner/name`` of the repository whose CI observed the result,
+        from its verified OIDC token. This is what attributes the resulting
+        state to the contributing vantage point.
+    received_at
+        The time the server received the contribution, which becomes the
+        outcome's check time. The client's own ``date_checked`` is advisory:
+        stamping the server's receipt time is what keeps freshness and the
+        retry ladder measured on one clock a client cannot skew.
+
+    Returns
+    -------
+    LinkCheckOutcome
+        The outcome to evaluate against the URL's prior state.
+    """
+    if result.status_code is not None and result.status_code in _SUCCESS_CODES:
+        return LinkCheckOutcome(
+            date_checked=received_at,
+            result=CheckResult.success,
+            status_code=result.status_code,
+            redirect_status_code=result.redirect_status_code,
+            redirect_url=result.redirect_url,
+            contributed_by=repository,
+        )
+    is_bot_blocked = result.status_code == _BOT_BLOCKED_CODE
+    if result.error is not None:
+        error = result.error
+    elif result.status_code is None:
+        error = "The contributed check received no response"
+    elif is_bot_blocked:
+        error = f"HTTP {result.status_code} (likely blocked by bot protection)"
+    else:
+        error = f"HTTP {result.status_code}"
+    return LinkCheckOutcome(
+        date_checked=received_at,
+        result=CheckResult.failure,
+        status_code=result.status_code,
+        redirect_status_code=result.redirect_status_code,
+        redirect_url=result.redirect_url,
+        error=error,
+        is_bot_blocked=is_bot_blocked,
+        is_transient=result.status_code in _TRANSIENT_CODES,
+        contributed_by=repository,
+    )
+
+
 def evaluate_outcome(
     *,
     url: str,
@@ -192,22 +288,33 @@ def evaluate_outcome(
     LinkState
         The link's next state.
     """
+    # The vantage point the outcome came from travels through every
+    # transition path unchanged: a contributed outcome is evaluated exactly
+    # like a server one, and only the attribution differs.
+    result_source = (
+        ResultSource.server
+        if outcome.contributed_by is None
+        else ResultSource.contribution
+    )
+
     if outcome.result is CheckResult.unsupported:
         # Unsupported URLs are never checked again by the ladder; they
         # only change status if the URL itself changes.
         return LinkState(
             url=url,
             status=LinkStatus.unsupported,
-            checked_at=outcome.checked_at,
-            last_ok_at=prior.last_ok_at if prior is not None else None,
-            failing_since=None,
+            date_checked=outcome.date_checked,
+            date_last_ok=prior.date_last_ok if prior is not None else None,
+            date_failing_since=None,
             failure_count=0,
             consecutive_blocked_count=0,
             status_code=outcome.status_code,
             redirect_status_code=None,
             redirect_url=None,
             error=outcome.error,
-            next_check_at=None,
+            date_next_check=None,
+            result_source=result_source,
+            contributed_by=outcome.contributed_by,
         )
 
     if outcome.result is CheckResult.success:
@@ -221,16 +328,18 @@ def evaluate_outcome(
         return LinkState(
             url=url,
             status=status,
-            checked_at=outcome.checked_at,
-            last_ok_at=outcome.checked_at,
-            failing_since=None,
+            date_checked=outcome.date_checked,
+            date_last_ok=outcome.date_checked,
+            date_failing_since=None,
             failure_count=0,
             consecutive_blocked_count=0,
             status_code=outcome.status_code,
             redirect_status_code=outcome.redirect_status_code,
             redirect_url=outcome.redirect_url,
             error=None,
-            next_check_at=None,
+            date_next_check=None,
+            result_source=result_source,
+            contributed_by=outcome.contributed_by,
         )
 
     if outcome.is_bot_blocked or outcome.is_transient:
@@ -251,67 +360,73 @@ def evaluate_outcome(
         return LinkState(
             url=url,
             status=LinkStatus.blocked,
-            checked_at=outcome.checked_at,
-            last_ok_at=prior.last_ok_at if prior is not None else None,
-            failing_since=prior.failing_since if prior is not None else None,
+            date_checked=outcome.date_checked,
+            date_last_ok=prior.date_last_ok if prior is not None else None,
+            date_failing_since=prior.date_failing_since
+            if prior is not None
+            else None,
             failure_count=prior.failure_count if prior is not None else 0,
             consecutive_blocked_count=blocked_count,
             status_code=outcome.status_code,
             redirect_status_code=None,
             redirect_url=None,
             error=outcome.error,
-            next_check_at=(
-                outcome.checked_at
+            date_next_check=(
+                outcome.date_checked
                 + _blocked_recheck_delay(ladder, blocked_count)
             ),
+            result_source=result_source,
+            contributed_by=outcome.contributed_by,
         )
 
     # Failure path: extend (or start) the consecutive-failure streak.
-    last_ok_at = prior.last_ok_at if prior is not None else None
-    if prior is not None and prior.failing_since is not None:
-        failing_since = prior.failing_since
+    date_last_ok = prior.date_last_ok if prior is not None else None
+    if prior is not None and prior.date_failing_since is not None:
+        date_failing_since = prior.date_failing_since
         failure_count = prior.failure_count + 1
     else:
-        failing_since = outcome.checked_at
+        date_failing_since = outcome.date_checked
         failure_count = 1
 
-    if last_ok_at is None:
+    if date_last_ok is None:
         # A link never seen OK is broken immediately: a brand-new
         # broken link is most likely an authoring error.
         status = LinkStatus.broken
     else:
-        streak_span = outcome.checked_at - failing_since
+        streak_span = outcome.date_checked - date_failing_since
         ladder_exhausted = (
             failure_count >= ladder.min_attempts
             and streak_span >= ladder.broken_threshold
         )
         status = LinkStatus.broken if ladder_exhausted else LinkStatus.failing
 
-    next_check_at: datetime | None = None
+    date_next_check: datetime | None = None
     if status is LinkStatus.failing:
         interval_index = min(
             failure_count - 1, len(ladder.recheck_intervals) - 1
         )
-        next_check_at = (
-            outcome.checked_at + ladder.recheck_intervals[interval_index]
+        date_next_check = (
+            outcome.date_checked + ladder.recheck_intervals[interval_index]
         )
     else:
         # Broken links are revisited at a slow cadence so a since-fixed
         # link heals back to ok/redirected via the success path without
         # waiting to be resubmitted.
-        next_check_at = outcome.checked_at + ladder.broken_recheck_interval
+        date_next_check = outcome.date_checked + ladder.broken_recheck_interval
 
     return LinkState(
         url=url,
         status=status,
-        checked_at=outcome.checked_at,
-        last_ok_at=last_ok_at,
-        failing_since=failing_since,
+        date_checked=outcome.date_checked,
+        date_last_ok=date_last_ok,
+        date_failing_since=date_failing_since,
         failure_count=failure_count,
         consecutive_blocked_count=0,
         status_code=outcome.status_code,
         redirect_status_code=None,
         redirect_url=None,
         error=outcome.error,
-        next_check_at=next_check_at,
+        date_next_check=date_next_check,
+        result_source=result_source,
+        contributed_by=outcome.contributed_by,
     )

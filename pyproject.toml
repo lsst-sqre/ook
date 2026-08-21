@@ -39,6 +39,7 @@ dependencies = [
     "markdown-it-py[linkify,plugins]",
     "aiohttp>=2.0,<4.0", # for algoliasearch
     "async_timeout>=2.0,<4.0", # for algoliasearch
+    "pyjwt[crypto]>=2.10", # GitHub Actions OIDC token verification
     "pylatexenc>=2.10",
     "base32-lib>=1.0.2",
     "pycountry>=24.6.1",

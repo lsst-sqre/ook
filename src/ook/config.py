@@ -295,6 +295,21 @@ class Configuration(BaseSettings):
         ),
     )
 
+    oidc_audience: str = Field(
+        ...,
+        validation_alias="OOK_OIDC_AUDIENCE",
+        description=(
+            "Audience required of the GitHub Actions OIDC id-tokens clients"
+            " present as provenance for contributed link-check results. Set"
+            " it to this deployment's public base URL (for example"
+            " ``https://roundtable.lsst.cloud/ook``): the audience is what"
+            " scopes a minted token to one Ook, so a token minted for the"
+            " development deployment is not replayable against production."
+            " There is no default because a shared one would defeat that,"
+            " and because only the environment knows its own base URL."
+        ),
+    )
+
     slack_webhook: SecretStr | None = Field(
         None,
         validation_alias="OOK_SLACK_WEBHOOK",

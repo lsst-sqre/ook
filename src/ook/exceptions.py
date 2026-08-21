@@ -21,7 +21,9 @@ __all__ = [
     "ConflictingQueryParametersError",
     "DocumentParsingError",
     "DuplicateOrcidError",
+    "GitHubOidcUnavailableError",
     "InvalidInventoryUrlError",
+    "InvalidOidcTokenError",
     "InvalidOrcidError",
     "LinkCheckTooManyUrlsError",
     "LtdSlugClassificationError",
@@ -113,6 +115,57 @@ class UpstreamInventoryError(ClientRequestError):
     """
 
     error = "upstream_inventory_error"
+    status_code = status.HTTP_502_BAD_GATEWAY
+
+
+class InvalidOidcTokenError(ClientRequestError):
+    """Raised when a GitHub Actions OIDC id-token fails provenance
+    verification.
+
+    Every way a presented token can fail is this one class: a token that is
+    not a JWT at all, one carrying no key ID or one no published GitHub key
+    matches, a bad signature, the wrong audience or issuer, an expired or
+    not-yet-valid token, and one missing a provenance claim. They are one
+    class because the caller can do exactly one thing about any of them —
+    mint a fresh token from a GitHub Actions workflow with the right
+    audience — and because distinguishing them in the response would tell an
+    attacker probing with forged tokens which part of the forgery to fix.
+    The specific reason travels in the message for the client's own logs and
+    in Ook's structured logs for operators.
+
+    A 422 rather than a 401: the ingress already authenticated the request
+    against Gafaelfawr's link-check submission scope, and this token is a
+    field of the request body attesting to *where* the contributed results
+    were observed. The failure is therefore a fact about the payload, and
+    raising it with the ``location`` and ``field_path`` of that field lands
+    the error in the same shape FastAPI produces for a body field failing
+    its own validation.
+    """
+
+    error = "invalid_oidc_token"
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+
+
+class GitHubOidcUnavailableError(ClientRequestError):
+    """Raised when GitHub's OIDC signing keys cannot be obtained at all.
+
+    Verification needs GitHub's published JWKS, and a fetch of it can fail
+    (a 5xx, a timeout, a connection error, an unparsable document). When a
+    previously-fetched key set is cached the failure is invisible: the
+    stale copy keeps serving, because JWKS rotation is slow and an old copy
+    verifies today's tokens. This is raised only for the cold case, where
+    there is no cached copy to fall back on and so no way to tell a good
+    token from a forged one.
+
+    Deliberately not `InvalidOidcTokenError`: the client's token may be
+    perfectly good, and telling them it was rejected would send them
+    re-minting a token that was never the problem. A 502, matching
+    `UpstreamInventoryError`, since both report that an upstream Ook depends
+    on failed to answer. The condition is transient, so the request is worth
+    retrying.
+    """
+
+    error = "github_oidc_unavailable"
     status_code = status.HTTP_502_BAD_GATEWAY
 
 

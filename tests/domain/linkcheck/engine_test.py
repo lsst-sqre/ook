@@ -8,10 +8,13 @@ import pytest
 
 from ook.domain.linkcheck import (
     CheckResult,
+    ContributedResult,
     LinkCheckOutcome,
     LinkState,
     LinkStatus,
+    ResultSource,
     RetryLadderConfig,
+    contributed_outcome,
     evaluate_outcome,
 )
 
@@ -33,21 +36,21 @@ LADDER = RetryLadderConfig(
 """Ladder configuration matching the PRD defaults."""
 
 
-def make_ok_state(checked_at: datetime) -> LinkState:
-    """Create a prior state for a link last seen OK at ``checked_at``."""
+def make_ok_state(date_checked: datetime) -> LinkState:
+    """Create a prior state for a link last seen OK at ``date_checked``."""
     return LinkState(
         url=URL,
         status=LinkStatus.ok,
-        checked_at=checked_at,
-        last_ok_at=checked_at,
+        date_checked=date_checked,
+        date_last_ok=date_checked,
         status_code=200,
     )
 
 
-def fail_at(checked_at: datetime) -> LinkCheckOutcome:
-    """Create a failure outcome at ``checked_at``."""
+def fail_at(date_checked: datetime) -> LinkCheckOutcome:
+    """Create a failure outcome at ``date_checked``."""
     return LinkCheckOutcome(
-        checked_at=checked_at,
+        date_checked=date_checked,
         result=CheckResult.failure,
         status_code=503,
         error="503 Service Unavailable",
@@ -57,18 +60,18 @@ def fail_at(checked_at: datetime) -> LinkCheckOutcome:
 def test_new_link_success_is_ok() -> None:
     """A successful check of a never-seen link yields ``ok``."""
     outcome = LinkCheckOutcome(
-        checked_at=T0, result=CheckResult.success, status_code=200
+        date_checked=T0, result=CheckResult.success, status_code=200
     )
     state = evaluate_outcome(
         url=URL, prior=None, outcome=outcome, ladder=LADDER
     )
     assert state.url == URL
     assert state.status == LinkStatus.ok
-    assert state.checked_at == T0
-    assert state.last_ok_at == T0
+    assert state.date_checked == T0
+    assert state.date_last_ok == T0
     assert state.status_code == 200
     assert state.failure_count == 0
-    assert state.failing_since is None
+    assert state.date_failing_since is None
     assert state.redirect_url is None
 
 
@@ -79,7 +82,7 @@ def test_new_link_failure_is_broken_immediately() -> None:
     retry ladder does not apply.
     """
     outcome = LinkCheckOutcome(
-        checked_at=T0,
+        date_checked=T0,
         result=CheckResult.failure,
         status_code=404,
         error="404 Not Found",
@@ -88,8 +91,8 @@ def test_new_link_failure_is_broken_immediately() -> None:
         url=URL, prior=None, outcome=outcome, ladder=LADDER
     )
     assert state.status == LinkStatus.broken
-    assert state.last_ok_at is None
-    assert state.failing_since == T0
+    assert state.date_last_ok is None
+    assert state.date_failing_since == T0
     assert state.failure_count == 1
     assert state.status_code == 404
     assert state.error == "404 Not Found"
@@ -100,27 +103,27 @@ def test_previously_ok_link_failure_is_failing() -> None:
     ``failing`` and is scheduled for the first recheck interval.
     """
     prior = make_ok_state(T0)
-    checked_at = T0 + timedelta(hours=12)
+    date_checked = T0 + timedelta(hours=12)
     state = evaluate_outcome(
-        url=URL, prior=prior, outcome=fail_at(checked_at), ladder=LADDER
+        url=URL, prior=prior, outcome=fail_at(date_checked), ladder=LADDER
     )
     assert state.status == LinkStatus.failing
-    assert state.last_ok_at == T0
-    assert state.failing_since == checked_at
+    assert state.date_last_ok == T0
+    assert state.date_failing_since == date_checked
     assert state.failure_count == 1
-    assert state.next_check_at == checked_at + LADDER.recheck_intervals[0]
+    assert state.date_next_check == date_checked + LADDER.recheck_intervals[0]
 
 
 def make_failing_state(
-    failing_since: datetime, failure_count: int
+    date_failing_since: datetime, failure_count: int
 ) -> LinkState:
     """Create a prior state for a previously-OK link on the ladder."""
     return LinkState(
         url=URL,
         status=LinkStatus.failing,
-        checked_at=failing_since,
-        last_ok_at=failing_since - timedelta(hours=1),
-        failing_since=failing_since,
+        date_checked=date_failing_since,
+        date_last_ok=date_failing_since - timedelta(hours=1),
+        date_failing_since=date_failing_since,
         failure_count=failure_count,
         status_code=503,
         error="503 Service Unavailable",
@@ -143,12 +146,12 @@ def test_failing_link_stays_failing_below_thresholds(
     both the attempt-count and duration thresholds.
     """
     prior = make_failing_state(T0, prior_failure_count)
-    checked_at = T0 + timedelta(hours=hours_since_first_failure)
+    date_checked = T0 + timedelta(hours=hours_since_first_failure)
     state = evaluate_outcome(
-        url=URL, prior=prior, outcome=fail_at(checked_at), ladder=LADDER
+        url=URL, prior=prior, outcome=fail_at(date_checked), ladder=LADDER
     )
     assert state.status == LinkStatus.failing
-    assert state.failing_since == T0
+    assert state.date_failing_since == T0
     assert state.failure_count == prior_failure_count + 1
 
 
@@ -157,14 +160,16 @@ def test_failing_link_becomes_broken_when_ladder_exhausted() -> None:
     spans at least the duration threshold with enough attempts.
     """
     prior = make_failing_state(T0, 2)
-    checked_at = T0 + timedelta(hours=48)
+    date_checked = T0 + timedelta(hours=48)
     state = evaluate_outcome(
-        url=URL, prior=prior, outcome=fail_at(checked_at), ladder=LADDER
+        url=URL, prior=prior, outcome=fail_at(date_checked), ladder=LADDER
     )
     assert state.status == LinkStatus.broken
-    assert state.failing_since == T0
+    assert state.date_failing_since == T0
     assert state.failure_count == 3
-    assert state.next_check_at == checked_at + LADDER.broken_recheck_interval
+    assert (
+        state.date_next_check == date_checked + LADDER.broken_recheck_interval
+    )
 
 
 def test_broken_link_is_scheduled_for_slow_recheck() -> None:
@@ -172,7 +177,7 @@ def test_broken_link_is_scheduled_for_slow_recheck() -> None:
     recheck so a recovered link can heal without waiting for resubmission.
     """
     prior = make_failing_state(T0, 2)
-    checked_at = T0 + timedelta(hours=48)
+    date_checked = T0 + timedelta(hours=48)
     ladder = RetryLadderConfig(
         broken_threshold=timedelta(hours=48),
         min_attempts=3,
@@ -180,10 +185,10 @@ def test_broken_link_is_scheduled_for_slow_recheck() -> None:
         broken_recheck_interval=timedelta(hours=12),
     )
     state = evaluate_outcome(
-        url=URL, prior=prior, outcome=fail_at(checked_at), ladder=ladder
+        url=URL, prior=prior, outcome=fail_at(date_checked), ladder=ladder
     )
     assert state.status == LinkStatus.broken
-    assert state.next_check_at == checked_at + timedelta(hours=12)
+    assert state.date_next_check == date_checked + timedelta(hours=12)
 
 
 def test_new_broken_link_is_scheduled_for_slow_recheck() -> None:
@@ -191,7 +196,7 @@ def test_new_broken_link_is_scheduled_for_slow_recheck() -> None:
     scheduled for a slow recheck at the broken cadence.
     """
     outcome = LinkCheckOutcome(
-        checked_at=T0,
+        date_checked=T0,
         result=CheckResult.failure,
         status_code=404,
         error="404 Not Found",
@@ -200,7 +205,7 @@ def test_new_broken_link_is_scheduled_for_slow_recheck() -> None:
         url=URL, prior=None, outcome=outcome, ladder=LADDER
     )
     assert state.status == LinkStatus.broken
-    assert state.next_check_at == T0 + LADDER.broken_recheck_interval
+    assert state.date_next_check == T0 + LADDER.broken_recheck_interval
 
 
 @pytest.mark.parametrize(
@@ -214,19 +219,19 @@ def test_successful_check_recovers_link_to_ok(
     """
     prior = make_failing_state(T0, 2)
     prior = prior.model_copy(update={"status": prior_status})
-    checked_at = T0 + timedelta(hours=24)
+    date_checked = T0 + timedelta(hours=24)
     outcome = LinkCheckOutcome(
-        checked_at=checked_at, result=CheckResult.success, status_code=200
+        date_checked=date_checked, result=CheckResult.success, status_code=200
     )
     state = evaluate_outcome(
         url=URL, prior=prior, outcome=outcome, ladder=LADDER
     )
     assert state.status == LinkStatus.ok
-    assert state.last_ok_at == checked_at
-    assert state.failing_since is None
+    assert state.date_last_ok == date_checked
+    assert state.date_failing_since is None
     assert state.failure_count == 0
     assert state.error is None
-    assert state.next_check_at is None
+    assert state.date_next_check is None
 
 
 @pytest.mark.parametrize("redirect_status_code", [301, 308])
@@ -237,7 +242,7 @@ def test_permanent_redirect_is_redirected(
     final location recorded so the source can be updated.
     """
     outcome = LinkCheckOutcome(
-        checked_at=T0,
+        date_checked=T0,
         result=CheckResult.success,
         status_code=200,
         redirect_status_code=redirect_status_code,
@@ -249,7 +254,7 @@ def test_permanent_redirect_is_redirected(
     assert state.status == LinkStatus.redirected
     assert state.redirect_url == "https://example.com/moved"
     assert state.redirect_status_code == redirect_status_code
-    assert state.last_ok_at == T0
+    assert state.date_last_ok == T0
 
 
 @pytest.mark.parametrize("redirect_status_code", [302, 307])
@@ -260,7 +265,7 @@ def test_temporary_redirect_is_ok_with_metadata(
     the redirect metadata.
     """
     outcome = LinkCheckOutcome(
-        checked_at=T0,
+        date_checked=T0,
         result=CheckResult.success,
         status_code=200,
         redirect_status_code=redirect_status_code,
@@ -279,9 +284,9 @@ def test_successful_check_recovers_link_to_redirected() -> None:
     failing link to ``redirected``.
     """
     prior = make_failing_state(T0, 2)
-    checked_at = T0 + timedelta(hours=24)
+    date_checked = T0 + timedelta(hours=24)
     outcome = LinkCheckOutcome(
-        checked_at=checked_at,
+        date_checked=date_checked,
         result=CheckResult.success,
         status_code=200,
         redirect_status_code=301,
@@ -291,8 +296,8 @@ def test_successful_check_recovers_link_to_redirected() -> None:
         url=URL, prior=prior, outcome=outcome, ladder=LADDER
     )
     assert state.status == LinkStatus.redirected
-    assert state.last_ok_at == checked_at
-    assert state.failing_since is None
+    assert state.date_last_ok == date_checked
+    assert state.date_failing_since is None
     assert state.failure_count == 0
 
 
@@ -306,25 +311,25 @@ def test_ladder_thresholds_are_caller_supplied() -> None:
         recheck_intervals=(timedelta(minutes=30),),
     )
     prior = make_failing_state(T0, 1)
-    checked_at = T0 + timedelta(hours=2)
+    date_checked = T0 + timedelta(hours=2)
     state = evaluate_outcome(
-        url=URL, prior=prior, outcome=fail_at(checked_at), ladder=ladder
+        url=URL, prior=prior, outcome=fail_at(date_checked), ladder=ladder
     )
     assert state.status == LinkStatus.broken
 
     # With the default thresholds the same timeline stays failing, and
     # the next recheck comes from the caller-supplied schedule.
     state = evaluate_outcome(
-        url=URL, prior=prior, outcome=fail_at(checked_at), ladder=LADDER
+        url=URL, prior=prior, outcome=fail_at(date_checked), ladder=LADDER
     )
     assert state.status == LinkStatus.failing
-    assert state.next_check_at == checked_at + LADDER.recheck_intervals[1]
+    assert state.date_next_check == date_checked + LADDER.recheck_intervals[1]
 
 
-def block_at(checked_at: datetime) -> LinkCheckOutcome:
-    """Create a bot-blocked failure outcome at ``checked_at``."""
+def block_at(date_checked: datetime) -> LinkCheckOutcome:
+    """Create a bot-blocked failure outcome at ``date_checked``."""
     return LinkCheckOutcome(
-        checked_at=checked_at,
+        date_checked=date_checked,
         result=CheckResult.failure,
         status_code=403,
         error="HTTP 403 (likely blocked by bot protection; server=cloudflare)",
@@ -338,32 +343,32 @@ def test_bot_blocked_outcome_is_blocked() -> None:
     near-term recheck because blocks flap.
     """
     prior = make_ok_state(T0)
-    checked_at = T0 + timedelta(hours=12)
+    date_checked = T0 + timedelta(hours=12)
     state = evaluate_outcome(
-        url=URL, prior=prior, outcome=block_at(checked_at), ladder=LADDER
+        url=URL, prior=prior, outcome=block_at(date_checked), ladder=LADDER
     )
     assert state.status == LinkStatus.blocked
-    assert state.last_ok_at == T0
+    assert state.date_last_ok == T0
     assert state.status_code == 403
     assert state.error is not None
     assert "bot protection" in state.error
-    assert state.next_check_at == (
-        checked_at + LADDER.blocked_recheck_interval
+    assert state.date_next_check == (
+        date_checked + LADDER.blocked_recheck_interval
     )
 
 
 def test_bot_blocked_does_not_extend_failure_streak() -> None:
     """A bot-blocked check of a failing link neither extends nor discards
-    the failing→broken streak: ``failing_since`` and ``failure_count``
+    the failing→broken streak: ``date_failing_since`` and ``failure_count``
     carry over unchanged so the block cannot push the link to broken.
     """
     prior = make_failing_state(T0, 2)
-    checked_at = T0 + timedelta(hours=72)
+    date_checked = T0 + timedelta(hours=72)
     state = evaluate_outcome(
-        url=URL, prior=prior, outcome=block_at(checked_at), ladder=LADDER
+        url=URL, prior=prior, outcome=block_at(date_checked), ladder=LADDER
     )
     assert state.status == LinkStatus.blocked
-    assert state.failing_since == T0
+    assert state.date_failing_since == T0
     assert state.failure_count == 2
 
 
@@ -376,17 +381,17 @@ def test_bot_blocked_never_seen_ok_is_blocked_not_broken() -> None:
         url=URL, prior=None, outcome=block_at(T0), ladder=LADDER
     )
     assert state.status == LinkStatus.blocked
-    assert state.last_ok_at is None
-    assert state.failing_since is None
+    assert state.date_last_ok is None
+    assert state.date_failing_since is None
     assert state.failure_count == 0
-    assert state.next_check_at == T0 + LADDER.blocked_recheck_interval
+    assert state.date_next_check == T0 + LADDER.blocked_recheck_interval
 
 
-def transient_at(checked_at: datetime, status_code: int) -> LinkCheckOutcome:
+def transient_at(date_checked: datetime, status_code: int) -> LinkCheckOutcome:
     """Create a transient-server-condition failure outcome (429/503)."""
     label = "rate limited" if status_code == 429 else "transient server error"
     return LinkCheckOutcome(
-        checked_at=checked_at,
+        date_checked=date_checked,
         result=CheckResult.failure,
         status_code=status_code,
         error=f"HTTP {status_code} ({label})",
@@ -400,20 +405,20 @@ def test_transient_outcome_is_blocked() -> None:
     schedules a near-term recheck rather than confirming rot.
     """
     prior = make_ok_state(T0)
-    checked_at = T0 + timedelta(hours=12)
+    date_checked = T0 + timedelta(hours=12)
     state = evaluate_outcome(
         url=URL,
         prior=prior,
-        outcome=transient_at(checked_at, 503),
+        outcome=transient_at(date_checked, 503),
         ladder=LADDER,
     )
     assert state.status == LinkStatus.blocked
-    assert state.last_ok_at == T0
+    assert state.date_last_ok == T0
     assert state.status_code == 503
     assert state.error is not None
     assert "transient server error" in state.error
-    assert state.next_check_at == (
-        checked_at + LADDER.blocked_recheck_interval
+    assert state.date_next_check == (
+        date_checked + LADDER.blocked_recheck_interval
     )
 
 
@@ -423,15 +428,15 @@ def test_transient_does_not_extend_failure_streak() -> None:
     nor reset its progress toward it.
     """
     prior = make_failing_state(T0, 2)
-    checked_at = T0 + timedelta(hours=72)
+    date_checked = T0 + timedelta(hours=72)
     state = evaluate_outcome(
         url=URL,
         prior=prior,
-        outcome=transient_at(checked_at, 429),
+        outcome=transient_at(date_checked, 429),
         ladder=LADDER,
     )
     assert state.status == LinkStatus.blocked
-    assert state.failing_since == T0
+    assert state.date_failing_since == T0
     assert state.failure_count == 2
 
 
@@ -444,21 +449,21 @@ def test_transient_never_seen_ok_is_blocked_not_broken() -> None:
         url=URL, prior=None, outcome=transient_at(T0, 503), ladder=LADDER
     )
     assert state.status == LinkStatus.blocked
-    assert state.last_ok_at is None
-    assert state.failing_since is None
+    assert state.date_last_ok is None
+    assert state.date_failing_since is None
     assert state.failure_count == 0
-    assert state.next_check_at == T0 + LADDER.blocked_recheck_interval
+    assert state.date_next_check == T0 + LADDER.blocked_recheck_interval
 
 
 def make_blocked_state(
-    checked_at: datetime, consecutive_blocked_count: int
+    date_checked: datetime, consecutive_blocked_count: int
 ) -> LinkState:
     """Create a prior state for a link currently in the blocked streak."""
     return LinkState(
         url=URL,
         status=LinkStatus.blocked,
-        checked_at=checked_at,
-        last_ok_at=checked_at - timedelta(days=1),
+        date_checked=date_checked,
+        date_last_ok=date_checked - timedelta(days=1),
         consecutive_blocked_count=consecutive_blocked_count,
         status_code=403,
     )
@@ -469,13 +474,13 @@ def test_first_block_counts_one_and_rechecks_at_base_interval() -> None:
     base blocked interval (no backoff yet, since blocks tend to flap).
     """
     prior = make_ok_state(T0)
-    checked_at = T0 + timedelta(hours=12)
+    date_checked = T0 + timedelta(hours=12)
     state = evaluate_outcome(
-        url=URL, prior=prior, outcome=block_at(checked_at), ladder=LADDER
+        url=URL, prior=prior, outcome=block_at(date_checked), ladder=LADDER
     )
     assert state.consecutive_blocked_count == 1
-    assert state.next_check_at == (
-        checked_at + LADDER.blocked_recheck_interval
+    assert state.date_next_check == (
+        date_checked + LADDER.blocked_recheck_interval
     )
 
 
@@ -484,13 +489,13 @@ def test_consecutive_blocks_back_off_the_recheck_interval() -> None:
     interval so a persistently blocked link is polled less often.
     """
     prior = make_blocked_state(T0, consecutive_blocked_count=2)
-    checked_at = T0 + timedelta(hours=2)
+    date_checked = T0 + timedelta(hours=2)
     state = evaluate_outcome(
-        url=URL, prior=prior, outcome=block_at(checked_at), ladder=LADDER
+        url=URL, prior=prior, outcome=block_at(date_checked), ladder=LADDER
     )
     # Third consecutive block: 1h base doubled twice = 4h.
     assert state.consecutive_blocked_count == 3
-    assert state.next_check_at == checked_at + timedelta(hours=4)
+    assert state.date_next_check == date_checked + timedelta(hours=4)
 
 
 def test_blocked_backoff_caps_at_broken_recheck_interval() -> None:
@@ -499,12 +504,14 @@ def test_blocked_backoff_caps_at_broken_recheck_interval() -> None:
     instead of rechecking at the near-term blocked interval forever.
     """
     prior = make_blocked_state(T0, consecutive_blocked_count=20)
-    checked_at = T0 + timedelta(hours=1)
+    date_checked = T0 + timedelta(hours=1)
     state = evaluate_outcome(
-        url=URL, prior=prior, outcome=block_at(checked_at), ladder=LADDER
+        url=URL, prior=prior, outcome=block_at(date_checked), ladder=LADDER
     )
     assert state.consecutive_blocked_count == 21
-    assert state.next_check_at == (checked_at + LADDER.broken_recheck_interval)
+    assert state.date_next_check == (
+        date_checked + LADDER.broken_recheck_interval
+    )
 
 
 def test_conclusive_outcome_resets_blocked_count() -> None:
@@ -512,9 +519,9 @@ def test_conclusive_outcome_resets_blocked_count() -> None:
     blocked counter, so a later block starts its backoff fresh.
     """
     prior = make_blocked_state(T0, consecutive_blocked_count=5)
-    checked_at = T0 + timedelta(hours=1)
+    date_checked = T0 + timedelta(hours=1)
     outcome = LinkCheckOutcome(
-        checked_at=checked_at, result=CheckResult.success, status_code=200
+        date_checked=date_checked, result=CheckResult.success, status_code=200
     )
     state = evaluate_outcome(
         url=URL, prior=prior, outcome=outcome, ladder=LADDER
@@ -528,9 +535,9 @@ def test_hard_failure_resets_blocked_count() -> None:
     blocked streak is broken by a definite outcome.
     """
     prior = make_blocked_state(T0, consecutive_blocked_count=5)
-    checked_at = T0 + timedelta(hours=1)
+    date_checked = T0 + timedelta(hours=1)
     state = evaluate_outcome(
-        url=URL, prior=prior, outcome=fail_at(checked_at), ladder=LADDER
+        url=URL, prior=prior, outcome=fail_at(date_checked), ladder=LADDER
     )
     assert state.consecutive_blocked_count == 0
 
@@ -540,7 +547,7 @@ def test_unsupported_outcome_is_unsupported() -> None:
     enters the retry ladder.
     """
     outcome = LinkCheckOutcome(
-        checked_at=T0,
+        date_checked=T0,
         result=CheckResult.unsupported,
         error="Unsupported URL scheme",
     )
@@ -552,6 +559,156 @@ def test_unsupported_outcome_is_unsupported() -> None:
     )
     assert state.status == LinkStatus.unsupported
     assert state.failure_count == 0
-    assert state.failing_since is None
-    assert state.next_check_at is None
+    assert state.date_failing_since is None
+    assert state.date_next_check is None
     assert state.error == "Unsupported URL scheme"
+
+
+def test_server_outcome_is_sourced_to_the_server() -> None:
+    """An outcome with no contributing repository is Ook's own check, so
+    the resulting state reports the ``server`` source and no repository.
+    """
+    outcome = LinkCheckOutcome(
+        date_checked=T0, result=CheckResult.success, status_code=200
+    )
+    state = evaluate_outcome(
+        url=URL, prior=None, outcome=outcome, ladder=LADDER
+    )
+    assert state.result_source is ResultSource.server
+    assert state.contributed_by is None
+
+
+def test_contributed_outcome_is_sourced_to_the_repository() -> None:
+    """An outcome carrying a contributing repository stamps the state
+    with the ``contribution`` source and that repository, so a report can
+    render "externally verified by <repository> CI".
+    """
+    outcome = LinkCheckOutcome(
+        date_checked=T0,
+        result=CheckResult.success,
+        status_code=200,
+        contributed_by="lsst-sqre/documenteer",
+    )
+    state = evaluate_outcome(
+        url=URL, prior=None, outcome=outcome, ladder=LADDER
+    )
+    assert state.status is LinkStatus.ok
+    assert state.result_source is ResultSource.contribution
+    assert state.contributed_by == "lsst-sqre/documenteer"
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        LinkCheckOutcome(
+            date_checked=T0,
+            result=CheckResult.failure,
+            status_code=404,
+            error="404 Not Found",
+            contributed_by="lsst-sqre/documenteer",
+        ),
+        LinkCheckOutcome(
+            date_checked=T0,
+            result=CheckResult.failure,
+            status_code=403,
+            error="403 Forbidden",
+            is_bot_blocked=True,
+            contributed_by="lsst-sqre/documenteer",
+        ),
+        LinkCheckOutcome(
+            date_checked=T0,
+            result=CheckResult.unsupported,
+            error="Unsupported URL scheme",
+            contributed_by="lsst-sqre/documenteer",
+        ),
+    ],
+    ids=["failure", "blocked", "unsupported"],
+)
+def test_contributed_source_is_stamped_on_every_path(
+    outcome: LinkCheckOutcome,
+) -> None:
+    """Every transition path stamps the contribution source, not just the
+    success path, so a contributed failure is still attributed.
+    """
+    state = evaluate_outcome(
+        url=URL, prior=make_ok_state(T0), outcome=outcome, ladder=LADDER
+    )
+    assert state.result_source is ResultSource.contribution
+    assert state.contributed_by == "lsst-sqre/documenteer"
+
+
+def test_contributed_success_stamps_the_receipt_time() -> None:
+    """A contributed 2xx becomes a success outcome carrying the redirect
+    metadata, timed at the server's receipt rather than the client's own
+    (advisory) check time.
+    """
+    result = ContributedResult(
+        url=URL,
+        status_code=200,
+        redirect_status_code=301,
+        redirect_url="https://example.com/new-location",
+        date_checked=T0 - timedelta(hours=6),
+    )
+
+    outcome = contributed_outcome(
+        result, repository="lsst-sqre/documenteer", received_at=T0
+    )
+
+    assert outcome.result is CheckResult.success
+    assert outcome.date_checked == T0
+    assert outcome.status_code == 200
+    assert outcome.redirect_status_code == 301
+    assert outcome.redirect_url == "https://example.com/new-location"
+    assert outcome.error is None
+    assert outcome.contributed_by == "lsst-sqre/documenteer"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "is_bot_blocked", "is_transient"),
+    [
+        (403, True, False),
+        (429, False, True),
+        (503, False, True),
+        (404, False, False),
+        (500, False, False),
+    ],
+)
+def test_contributed_failure_classification(
+    status_code: int, *, is_bot_blocked: bool, is_transient: bool
+) -> None:
+    """A contributed non-2xx is a failure, and the codes that are
+    inconclusive from Ook's own vantage point stay inconclusive from a
+    client's: only the rest advance the retry ladder.
+    """
+    result = ContributedResult(
+        url=URL, status_code=status_code, date_checked=T0
+    )
+
+    outcome = contributed_outcome(
+        result, repository="lsst-sqre/documenteer", received_at=T0
+    )
+
+    assert outcome.result is CheckResult.failure
+    assert outcome.is_bot_blocked is is_bot_blocked
+    assert outcome.is_transient is is_transient
+    assert outcome.error is not None
+    assert f"HTTP {status_code}" in outcome.error
+
+
+def test_contributed_result_without_a_response_is_a_failure() -> None:
+    """A client that got no response at all (a connection error) reports no
+    status code; its own error description is carried through.
+    """
+    result = ContributedResult(
+        url=URL, error="Connection refused", date_checked=T0
+    )
+
+    outcome = contributed_outcome(
+        result, repository="lsst-sqre/documenteer", received_at=T0
+    )
+
+    assert outcome.result is CheckResult.failure
+    assert outcome.status_code is None
+    assert outcome.error == "Connection refused"
+    assert outcome.is_bot_blocked is False
+    assert outcome.is_transient is False

@@ -109,11 +109,11 @@ async def test_post_enqueues_and_consumer_executes(
     ok = results["https://example.com/ok"]
     assert ok["status"] == "ok"
     assert ok["status_code"] == 200
-    assert ok["checked_at"] is not None
+    assert ok["date_checked"] is not None
     gone = results["https://example.com/gone"]
     assert gone["status"] == "broken"
     assert gone["status_code"] == 404
-    assert gone["checked_at"] is not None
+    assert gone["date_checked"] is not None
 
 
 @pytest.mark.asyncio
@@ -149,13 +149,13 @@ async def test_recheck_message_advances_ladder(
                     LinkState(
                         url=url,
                         status=LinkStatus.failing,
-                        checked_at=now - timedelta(hours=1),
-                        last_ok_at=now - timedelta(days=4),
-                        failing_since=now - timedelta(days=3),
+                        date_checked=now - timedelta(hours=1),
+                        date_last_ok=now - timedelta(days=4),
+                        date_failing_since=now - timedelta(days=3),
                         failure_count=3,
                         status_code=404,
                         error="404 Not Found",
-                        next_check_at=now - timedelta(minutes=5),
+                        date_next_check=now - timedelta(minutes=5),
                     )
                 )
                 ids = await store.upsert_checked_urls([url])
