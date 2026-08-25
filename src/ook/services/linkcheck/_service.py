@@ -23,6 +23,7 @@ from ook.domain.linkcheck import (
     SubmittedUrl,
     UrlOccurrence,
     UrlRecord,
+    accepts_contribution,
     canonicalize_url,
     contributed_outcome,
     evaluate_outcome,
@@ -374,15 +375,16 @@ class LinkCheckService:
         provenance: ContributionProvenance,
         results: Sequence[ContributedResult],
     ) -> ContributionReport | None:
-        """Apply client-contributed results to a check's blocked URLs.
+        """Apply client-contributed results to a check's unverified URLs.
 
-        A client that re-checked a URL Ook's own egress is bot-blocked from
-        can contribute what it saw. Eligible results run through the same
-        status-transition engine and retry ladder as Ook's own checks, so a
-        contributed success resolves the URL and a contributed failure
-        advances its ladder; only the recorded vantage point differs. Each
-        applied result is also recorded as a contribution row, the
-        append-only provenance trail behind the state it produced.
+        A client that re-checked a URL Ook's own egress could not verify —
+        one Ook found bot-blocked, or found broken without ever getting a
+        response — can contribute what it saw. Eligible results run through
+        the same status-transition engine and retry ladder as Ook's own
+        checks, so a contributed success resolves the URL and a contributed
+        failure advances its ladder; only the recorded vantage point
+        differs. Each applied result is also recorded as a contribution row,
+        the append-only provenance trail behind the state it produced.
 
         The batch is applied entry by entry: ineligible entries are
         reported back with a reason while the rest still apply.
@@ -409,7 +411,7 @@ class LinkCheckService:
 
         now = datetime.now(tz=UTC)
         members = {url.url for url in record.urls}
-        # The check record establishes membership only; blocked-ness is
+        # The check record establishes membership only; eligibility is
         # judged from these state rows, which are also what each write
         # advances. Reading them once means a URL a concurrent server
         # check resolves in between cannot be judged eligible from one
@@ -496,15 +498,17 @@ class LinkCheckService:
         """Split contributed results into the eligible and the rejected.
 
         A result is eligible when its URL is checkable, is a member of the
-        check, is currently blocked, and has not already been contributed
-        earlier in the same batch. Eligible results come back
-        canonicalized, so downstream lookups and writes key on the same URL
-        the check's membership does.
+        check, is in a state open to contribution (see
+        `~ook.domain.linkcheck.accepts_contribution`), and has not already
+        been contributed earlier in the same batch. Eligible results come
+        back canonicalized, so downstream lookups and writes key on the
+        same URL the check's membership does.
 
-        Blocked-ness is judged from ``states``, the same rows that become
+        Eligibility is judged from ``states``, the same rows that become
         each accepted result's prior state, so the judgement and the write
         it authorizes see one snapshot. A member URL absent from
-        ``states`` has never been checked, which is pending, not blocked.
+        ``states`` has never been checked, which is pending: Ook has no
+        verdict there to be unable to reach.
         """
         eligible: list[ContributedResult] = []
         seen: set[str] = set()
@@ -534,18 +538,11 @@ class LinkCheckService:
                     ContributionRejectionReason.not_a_member,
                     "The URL is not one of this check's submitted URLs.",
                 )
-            elif state is None or state.status is not LinkStatus.blocked:
-                status = (
-                    state.status.value
-                    if state is not None
-                    else CheckUrlStatus.pending.value
-                )
+            elif not accepts_contribution(state):
                 reject(
                     result.url,
                     ContributionRejectionReason.not_blocked,
-                    f"The URL is {status}, not blocked: only URLs Ook"
-                    " could not verify from its own vantage point accept"
-                    " contributed results.",
+                    self._ineligible_message(state),
                 )
             elif url in seen:
                 reject(
@@ -558,6 +555,33 @@ class LinkCheckService:
                 seen.add(url)
                 eligible.append(result.model_copy(update={"url": url}))
         return eligible, rejected
+
+    @staticmethod
+    def _ineligible_message(state: LinkState | None) -> str:
+        """Explain why a URL's stored state accepts no contributed result.
+
+        The reason enum is one value for every ineligible state, so the
+        message carries the distinguishing detail: the state's own status,
+        the HTTP status code behind it when Ook got a response, and the
+        two states that are eligible.
+        """
+        if state is None:
+            # No state row at all: never checked, which is pending.
+            status = CheckUrlStatus.pending.value
+            detail = ""
+        else:
+            status = state.status.value
+            detail = (
+                ""
+                if state.status_code is None
+                else f" (HTTP {state.status_code})"
+            )
+        return (
+            f"The URL is {status}{detail}. Contributed results apply only"
+            " to a URL Ook found blocked, or found broken with no terminal"
+            " HTTP status at all: those are the verdicts Ook could not"
+            " reach from its own vantage point."
+        )
 
     async def list_due_recheck_urls(self) -> list[DueUrl]:
         """Enumerate due, still-referenced URLs for scheduled recheck.

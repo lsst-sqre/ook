@@ -1,6 +1,7 @@
 """Domain for external link checking."""
 
 from ._engine import (
+    accepts_contribution,
     canonicalize_url,
     contributed_outcome,
     evaluate_outcome,
@@ -57,6 +58,7 @@ __all__ = [
     "SubmittedUrl",
     "UrlOccurrence",
     "UrlRecord",
+    "accepts_contribution",
     "canonicalize_url",
     "contributed_outcome",
     "evaluate_outcome",

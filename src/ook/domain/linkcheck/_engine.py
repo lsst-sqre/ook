@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
 __all__ = [
+    "accepts_contribution",
     "canonicalize_url",
     "contributed_outcome",
     "evaluate_outcome",
@@ -50,9 +51,20 @@ _BOT_BLOCKED_CODE = 403
 
 The URL checker only calls a 403 a block when the response carries
 Cloudflare's own headers, because it holds the response. A contributing
-client reports a status code, not a response — and it is re-checking a URL
-Ook was already blocked from, so a 403 observed from its vantage point too
-is the block persisting rather than a newly-discovered broken link.
+client reports a status code, not a response, so the headers that would
+settle it are unavailable and the status code has to stand on its own.
+
+On a ``blocked`` URL that reading is direct: the client is re-checking a URL
+Ook was already blocked from, so a 403 from its vantage point too is the
+block persisting rather than a newly-discovered broken link. On an
+unreachable ``broken`` URL — eligible for contribution since Ook never got a
+terminal status there either — a contributed 403 is instead the *first*
+block anyone has observed, and it moves the URL ``broken`` -> ``blocked``:
+the blocked backoff starts at one while the failing streak carries over
+untouched, so the URL rechecks on the prompt blocked cadence rather than the
+slow broken one. That is the right way to err, because bot protection
+answering a client is the likeliest reason a URL Ook could not reach at all
+answers 403 from somewhere else.
 """
 
 _TRANSIENT_CODES = frozenset({429, 503})
@@ -239,7 +251,7 @@ def contributed_outcome(
     if result.error is not None:
         error = result.error
     elif result.status_code is None:
-        error = "The contributed check received no response"
+        error = "The contributed check reached no terminal HTTP status"
     elif is_bot_blocked:
         error = f"HTTP {result.status_code} (likely blocked by bot protection)"
     else:
@@ -255,6 +267,55 @@ def contributed_outcome(
         is_transient=result.status_code in _TRANSIENT_CODES,
         contributed_by=repository,
     )
+
+
+def accepts_contribution(state: LinkState | None) -> bool:
+    """Determine whether a URL's stored state is open to a contributed
+    result.
+
+    Contributions exist to settle the verdicts Ook could not reach from
+    its own vantage point, so a URL is open to one exactly when Ook's
+    stored verdict rests on evidence it never obtained:
+
+    - ``blocked``: a bot-protection layer answered instead of the origin,
+      so the check was inconclusive.
+    - ``broken`` with no status code: Ook never got a terminal HTTP status
+      out of the origin, so the verdict is the absence of an answer rather
+      than an answer. Nothing responded at all (a DNS, TLS, connection, or
+      timeout failure at Ook's egress), or responses came back but the
+      chain never resolved to a final status — a redirect loop past the
+      hop limit, or a ``Location`` Ook could not turn into a fetchable
+      URL. All of these are vantage-dependent: the same challenge that
+      loops Ook's egress may hand a client on another network the origin,
+      and if the failure is real the next scheduled recheck re-fails it.
+
+    Every other state is Ook's own evidence and is answered by Ook's own
+    vantage point: a ``broken`` URL that *did* answer with a status code,
+    a URL still climbing the ``failing`` ladder against real responses, an
+    ``ok`` or ``redirected`` URL Ook resolved, an ``unsupported`` URL that
+    is not checkable at all, and a URL with no state row at all, which has
+    never been checked rather than checked inconclusively.
+
+    The predicate deliberately keys on the *absence of a status code*
+    rather than on the kind of failure behind it: the stored state carries
+    no structured failure kind, only prose in ``error``, so a narrower rule
+    would have to match on that prose.
+
+    Parameters
+    ----------
+    state
+        The URL's stored state, or None if it has never been checked.
+
+    Returns
+    -------
+    bool
+        `True` if a contributed result may be applied to the URL.
+    """
+    if state is None:
+        return False
+    if state.status is LinkStatus.blocked:
+        return True
+    return state.status is LinkStatus.broken and state.status_code is None
 
 
 def evaluate_outcome(

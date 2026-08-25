@@ -754,8 +754,9 @@ class ContributedResultModel(BaseModel):
         Field(
             description=(
                 "Final HTTP status code the client received, or null if it"
-                " received no response at all. A 2xx resolves the URL;"
-                " anything else is a failure."
+                " never reached one — nothing answered, or the redirect"
+                " chain did not resolve. A 2xx resolves the URL; anything"
+                " else is a failure."
             ),
             examples=[200],
         ),
@@ -956,11 +957,15 @@ class RejectedContribution(BaseModel):
         Field(
             description=(
                 "Why the result was not applied: ``not_a_member`` if the"
-                " URL is not part of this check, ``not_blocked`` if Ook"
-                " resolved the URL from its own vantage point,"
+                " URL is not part of this check, ``not_blocked`` if Ook's"
+                " own verdict for the URL stands (it is neither"
+                " ``blocked`` nor ``broken`` without a terminal HTTP"
+                " status, so Ook reached that verdict from its own"
+                " vantage point),"
                 " ``unsupported_url`` if the URL cannot be checked at all,"
                 " and ``duplicate`` if an earlier entry in the same batch"
-                " already contributed a result for it."
+                " already contributed a result for it. The accompanying"
+                " ``message`` names the URL's current status."
             )
         ),
     ]

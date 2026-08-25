@@ -98,6 +98,31 @@ async def _seed_ok_url(url: str) -> None:
     )
 
 
+async def _seed_unreachable_broken_url(url: str, **overrides: Any) -> None:
+    """Seed a URL Ook recorded broken without ever getting a response.
+
+    A connection, TLS, or DNS failure at Ook's own egress leaves ``broken``
+    with no status code: the verdict rests on evidence Ook never obtained.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    fields: dict[str, Any] = {
+        "status_code": None,
+        "date_failing_since": now - timedelta(days=3),
+        "failure_count": 4,
+        "error": "[SSL] certificate verify failed",
+        "date_next_check": now + timedelta(days=1),
+    }
+    fields.update(overrides)
+    await _seed_url_state(
+        LinkState(
+            url=url,
+            status=LinkStatus.broken,
+            date_checked=now,
+            **fields,
+        )
+    )
+
+
 async def _submit_check(
     client: AsyncClient, urls: list[str]
 ) -> tuple[str, str]:
@@ -191,6 +216,116 @@ async def test_contribution_resolves_blocked_url(
     assert results[url]["error"] is None
     assert results[url]["result_source"] == "contribution"
     assert results[url]["contributed_by"] == REPOSITORY
+
+
+@pytest.mark.asyncio
+async def test_contribution_resolves_unreachable_broken_url(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A contributed success for a member URL Ook recorded broken without
+    ever getting a response resolves it and clears the failing streak.
+
+    Ook's verdict there rests on evidence it never obtained, so a client
+    that did reach the origin settles it.
+    """
+    key = GitHubOidcSigningKey()
+    JwksMock(respx_mock, [key])
+    url = "https://example.com/unreachable"
+    await _seed_unreachable_broken_url(url)
+    check_id, location = await _submit_check(client, [url])
+
+    response = await client.post(
+        f"/ook/linkcheck/checks/{check_id}/contributions",
+        json=_body(key, [_result(url, status_code=200)]),
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["accepted"] == [{"url": url, "status": "ok"}]
+    assert data["rejected"] == []
+
+    poll = await client.get(location)
+    result = {entry["url"]: entry for entry in poll.json()["urls"]}[url]
+    assert result["status"] == "ok"
+    assert result["status_code"] == 200
+    assert result["error"] is None
+    assert result["result_source"] == "contribution"
+    assert result["contributed_by"] == REPOSITORY
+
+    # The failing streak the unreachable verdict had accumulated is
+    # cleared outright, so the URL is not left mid-ladder.
+    record = await client.get("/ook/linkcheck/urls", params={"url": url})
+    assert record.status_code == 200
+    assert record.json()["date_failing_since"] is None
+    assert record.json()["failure_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_contributed_no_response_extends_unreachable_streak(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A contributing client that also got no response is accepted on an
+    unreachable broken URL: the result is a plain failure that extends the
+    streak and records the vantage point that confirmed it.
+    """
+    key = GitHubOidcSigningKey()
+    JwksMock(respx_mock, [key])
+    url = "https://example.com/unreachable"
+    await _seed_unreachable_broken_url(url)
+    check_id, _ = await _submit_check(client, [url])
+
+    response = await client.post(
+        f"/ook/linkcheck/checks/{check_id}/contributions",
+        json=_body(key, [_result(url, error="Connection refused")]),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["accepted"] == [{"url": url, "status": "broken"}]
+
+    record = await client.get("/ook/linkcheck/urls", params={"url": url})
+    assert record.status_code == 200
+    data = record.json()
+    assert data["status"] == "broken"
+    assert data["status_code"] is None
+    assert data["failure_count"] == 5
+    assert data["error"] == "Connection refused"
+    assert data["result_source"] == "contribution"
+    assert data["contributed_by"] == REPOSITORY
+
+
+@pytest.mark.asyncio
+async def test_contribution_to_broken_url_with_a_response_is_rejected(
+    client: AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A member URL Ook recorded broken from an HTTP response it did
+    receive keeps Ook's own verdict, and the rejection message names the
+    status code behind it.
+    """
+    key = GitHubOidcSigningKey()
+    JwksMock(respx_mock, [key])
+    url = "https://example.com/gone-for-good"
+    await _seed_unreachable_broken_url(url, status_code=404, error="HTTP 404")
+    check_id, _ = await _submit_check(client, [url])
+
+    response = await client.post(
+        f"/ook/linkcheck/checks/{check_id}/contributions",
+        json=_body(key, [_result(url, status_code=200)]),
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["accepted"] == []
+    (rejected,) = data["rejected"]
+    assert rejected["url"] == url
+    assert rejected["reason"] == "not_blocked"
+    assert "HTTP 404" in rejected["message"]
+
+    record = await client.get("/ook/linkcheck/urls", params={"url": url})
+    assert record.json()["status"] == "broken"
+    assert record.json()["result_source"] == "server"
 
 
 @pytest.mark.asyncio

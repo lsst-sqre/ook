@@ -151,19 +151,27 @@ async def get_linkcheck_check(
     summary="Contribute link-check results",
     description=(
         "Contribute results for URLs of a check that Ook could not verify"
-        " from its own vantage point. Only URLs that are members of the"
-        " check and currently ``blocked`` are eligible; the batch applies"
-        " entry by entry, so ineligible entries come back in ``rejected``"
-        " with a reason while the rest still apply. Accepted results run"
-        " through the same status-transition engine, retry ladder, and"
-        " freshness TTL as Ook's own checks, and the URL records the"
-        " contributing repository as its result source. Every request must"
-        " carry a GitHub Actions OIDC id-token minted for this deployment's"
-        " audience: its ``repository``, ``run_id``, and ``workflow_ref``"
-        " claims are the recorded provenance, and the ``environment`` block"
-        " is advisory. A batch carries at most as many results as a check"
-        " submission carries URLs. Like the check submission endpoint, this"
-        " endpoint is write-protected by Gafaelfawr at the ingress."
+        " from its own vantage point. A URL is eligible when it is a"
+        " member of the check and Ook's stored verdict for it rests on"
+        " evidence Ook never obtained: either it is ``blocked`` (a"
+        " bot-protection layer answered instead of the origin) or it is"
+        " ``broken`` with no ``status_code`` at all (Ook never got a"
+        " terminal HTTP status out of the origin — nothing answered, or"
+        " the redirect chain never resolved to one). A ``broken`` URL"
+        " that did answer with a status code is Ook's own evidence and is"
+        " not eligible, and neither is any other status."
+        " The batch applies entry by entry, so ineligible entries come"
+        " back in ``rejected`` with a reason while the rest still apply."
+        " Accepted results run through the same status-transition engine,"
+        " retry ladder, and freshness TTL as Ook's own checks, and the URL"
+        " records the contributing repository as its result source. Every"
+        " request must carry a GitHub Actions OIDC id-token minted for this"
+        " deployment's audience: its ``repository``, ``run_id``, and"
+        " ``workflow_ref`` claims are the recorded provenance, and the"
+        " ``environment`` block is advisory. A batch carries at most as"
+        " many results as a check submission carries URLs. Like the check"
+        " submission endpoint, this endpoint is write-protected by"
+        " Gafaelfawr at the ingress."
     ),
     responses={
         404: {"description": "Not found", "model": ErrorModel},
@@ -196,7 +204,7 @@ async def post_linkcheck_contributions(
     contribution: LinkCheckContributionRequest,
     context: Annotated[RequestContext, Depends(context_dependency)],
 ) -> LinkCheckContributionReport:
-    """Apply client-contributed results to a check's blocked URLs."""
+    """Apply client-contributed results to a check's unverified URLs."""
     # Enforced here rather than as a Field constraint because a pydantic
     # constraint is fixed when the class is defined and cannot follow the
     # setting, and checked before verification so an oversized batch does

@@ -479,16 +479,23 @@ class ContributionRejectionReason(StrEnum):
     """
 
     not_blocked = "not_blocked"
-    """The URL's current status is not ``blocked``.
+    """The URL's current status is not open to contribution.
 
-    Contributions exist to resolve URLs Ook's own egress cannot verify. A
-    URL Ook did resolve is answered by Ook's own vantage point, which is
-    the one its retry ladder is calibrated for.
+    Contributions exist to settle the verdicts Ook's own egress could not
+    reach: a ``blocked`` URL, and a ``broken`` URL Ook never got a terminal
+    HTTP status out of — nothing answered, or the redirect chain never
+    resolved to one. Every other status — including ``broken`` from an
+    HTTP response Ook did receive — is answered by Ook's own vantage
+    point, which is the one its retry ladder is calibrated for.
+
+    The name predates the widening to unreachable ``broken`` URLs and is
+    kept for wire compatibility; the rejection's ``message`` names the
+    URL's actual status.
     """
 
     unsupported_url = "unsupported_url"
     """The entry's URL is not a checkable http(s) URL, so it could never be
-    a member of a check in a blocked state.
+    a member of a check in a contributable state.
     """
 
     duplicate = "duplicate"

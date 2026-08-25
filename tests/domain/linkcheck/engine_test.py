@@ -14,6 +14,7 @@ from ook.domain.linkcheck import (
     LinkStatus,
     ResultSource,
     RetryLadderConfig,
+    accepts_contribution,
     contributed_outcome,
     evaluate_outcome,
 )
@@ -712,3 +713,152 @@ def test_contributed_result_without_a_response_is_a_failure() -> None:
     assert outcome.error == "Connection refused"
     assert outcome.is_bot_blocked is False
     assert outcome.is_transient is False
+
+
+def test_blocked_state_accepts_contributions() -> None:
+    """A bot-blocked URL is the original contribution case: Ook's own
+    egress could not resolve it, so a client's vantage point can.
+    """
+    assert accepts_contribution(make_blocked_state(T0, 1)) is True
+
+
+def test_broken_state_without_a_response_accepts_contributions() -> None:
+    """A URL Ook recorded broken without ever receiving a response — a
+    connection, TLS, DNS, or timeout failure at its egress — rests on
+    evidence Ook never obtained, so it accepts a contributed result too.
+    """
+    state = LinkState(
+        url=URL,
+        status=LinkStatus.broken,
+        date_checked=T0,
+        date_failing_since=T0,
+        failure_count=1,
+        status_code=None,
+        error="[SSL] certificate verify failed",
+    )
+
+    assert accepts_contribution(state) is True
+
+
+def test_broken_state_from_an_unresolved_chain_accepts_contributions() -> None:
+    """A URL Ook recorded broken after responses that never resolved to a
+    terminal status is eligible too, deliberately.
+
+    The URL checker also records a null status code when it *did* get
+    responses but none of them settled the URL: a redirect loop past the
+    hop cap, or a ``Location`` it could not turn into a fetchable URL.
+    Those stay as vantage-dependent as an outright connection failure — a
+    challenge that loops Ook's egress can hand a client on another network
+    the origin — and the stored state carries no structured failure kind
+    that could separate them from a no-response failure anyway, only prose
+    in ``error``. So the predicate keys on the missing status code alone.
+    """
+    state = LinkState(
+        url=URL,
+        status=LinkStatus.broken,
+        date_checked=T0,
+        date_failing_since=T0,
+        failure_count=1,
+        status_code=None,
+        error="Exceeded 10 redirects",
+    )
+
+    assert accepts_contribution(state) is True
+
+
+def test_contributed_block_on_an_unreachable_broken_url_starts_backoff() -> (
+    None
+):
+    """A contributed 403 on an unreachable broken URL is the first block
+    anyone has observed for it, so it moves broken -> blocked.
+
+    The blocked backoff starts at one — the URL now rechecks on the prompt
+    blocked cadence rather than the slow broken one — while the
+    failing->broken streak carries over untouched, since an inconclusive
+    outcome must neither advance nor reset progress toward broken.
+    """
+    prior = LinkState(
+        url=URL,
+        status=LinkStatus.broken,
+        date_checked=T0,
+        date_last_ok=T0 - timedelta(days=7),
+        date_failing_since=T0 - timedelta(days=3),
+        failure_count=4,
+        consecutive_blocked_count=0,
+        status_code=None,
+        error="Connection refused",
+    )
+    date_checked = T0 + timedelta(hours=1)
+
+    state = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=LinkCheckOutcome(
+            date_checked=date_checked,
+            result=CheckResult.failure,
+            status_code=403,
+            error="HTTP 403 (likely blocked by bot protection)",
+            is_bot_blocked=True,
+            contributed_by="lsst-sqre/documenteer",
+        ),
+        ladder=LADDER,
+    )
+
+    assert state.status is LinkStatus.blocked
+    assert state.consecutive_blocked_count == 1
+    assert state.date_next_check == (
+        date_checked + LADDER.blocked_recheck_interval
+    )
+    # The streak is preserved, not restarted and not extended.
+    assert state.date_failing_since == prior.date_failing_since
+    assert state.failure_count == prior.failure_count
+    assert state.date_last_ok == prior.date_last_ok
+
+
+def test_broken_state_with_a_response_rejects_contributions() -> None:
+    """A URL Ook recorded broken from an HTTP response it did receive is
+    Ook's own evidence, so it is not open to contribution.
+    """
+    state = LinkState(
+        url=URL,
+        status=LinkStatus.broken,
+        date_checked=T0,
+        date_failing_since=T0,
+        failure_count=1,
+        status_code=404,
+        error="HTTP 404",
+    )
+
+    assert accepts_contribution(state) is False
+
+
+@pytest.mark.parametrize(
+    "status", [LinkStatus.ok, LinkStatus.redirected, LinkStatus.unsupported]
+)
+def test_resolved_states_reject_contributions(status: LinkStatus) -> None:
+    """A status Ook reached from its own vantage point is answered by that
+    vantage point, whatever the contributing client saw.
+    """
+    state = LinkState(
+        url=URL,
+        status=status,
+        date_checked=T0,
+        date_last_ok=T0,
+        status_code=200,
+    )
+
+    assert accepts_contribution(state) is False
+
+
+def test_failing_state_rejects_contributions() -> None:
+    """A URL still on the failing ladder failed against responses Ook did
+    receive, so it stays Ook's own to judge.
+    """
+    assert accepts_contribution(make_failing_state(T0, 1)) is False
+
+
+def test_never_checked_state_accepts_no_contribution() -> None:
+    """A URL with no state row has never been checked, which is pending
+    rather than an unreachable verdict.
+    """
+    assert accepts_contribution(None) is False
