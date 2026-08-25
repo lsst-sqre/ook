@@ -724,8 +724,8 @@ def test_blocked_state_accepts_contributions() -> None:
 
 def test_broken_state_without_a_response_accepts_contributions() -> None:
     """A URL Ook recorded broken without ever receiving a response — a
-    connection, TLS, or DNS failure at its egress — rests on evidence Ook
-    never obtained, so it accepts a contributed result too.
+    connection, TLS, DNS, or timeout failure at its egress — rests on
+    evidence Ook never obtained, so it accepts a contributed result too.
     """
     state = LinkState(
         url=URL,
@@ -738,6 +738,81 @@ def test_broken_state_without_a_response_accepts_contributions() -> None:
     )
 
     assert accepts_contribution(state) is True
+
+
+def test_broken_state_from_an_unresolved_chain_accepts_contributions() -> None:
+    """A URL Ook recorded broken after responses that never resolved to a
+    terminal status is eligible too, deliberately.
+
+    The URL checker also records a null status code when it *did* get
+    responses but none of them settled the URL: a redirect loop past the
+    hop cap, or a ``Location`` it could not turn into a fetchable URL.
+    Those stay as vantage-dependent as an outright connection failure — a
+    challenge that loops Ook's egress can hand a client on another network
+    the origin — and the stored state carries no structured failure kind
+    that could separate them from a no-response failure anyway, only prose
+    in ``error``. So the predicate keys on the missing status code alone.
+    """
+    state = LinkState(
+        url=URL,
+        status=LinkStatus.broken,
+        date_checked=T0,
+        date_failing_since=T0,
+        failure_count=1,
+        status_code=None,
+        error="Exceeded 10 redirects",
+    )
+
+    assert accepts_contribution(state) is True
+
+
+def test_contributed_block_on_an_unreachable_broken_url_starts_backoff() -> (
+    None
+):
+    """A contributed 403 on an unreachable broken URL is the first block
+    anyone has observed for it, so it moves broken -> blocked.
+
+    The blocked backoff starts at one — the URL now rechecks on the prompt
+    blocked cadence rather than the slow broken one — while the
+    failing->broken streak carries over untouched, since an inconclusive
+    outcome must neither advance nor reset progress toward broken.
+    """
+    prior = LinkState(
+        url=URL,
+        status=LinkStatus.broken,
+        date_checked=T0,
+        date_last_ok=T0 - timedelta(days=7),
+        date_failing_since=T0 - timedelta(days=3),
+        failure_count=4,
+        consecutive_blocked_count=0,
+        status_code=None,
+        error="Connection refused",
+    )
+    date_checked = T0 + timedelta(hours=1)
+
+    state = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=LinkCheckOutcome(
+            date_checked=date_checked,
+            result=CheckResult.failure,
+            status_code=403,
+            error="HTTP 403 (likely blocked by bot protection)",
+            is_bot_blocked=True,
+            contributed_by="lsst-sqre/documenteer",
+        ),
+        ladder=LADDER,
+    )
+
+    assert state.status is LinkStatus.blocked
+    assert state.consecutive_blocked_count == 1
+    assert state.date_next_check == (
+        date_checked + LADDER.blocked_recheck_interval
+    )
+    # The streak is preserved, not restarted and not extended.
+    assert state.date_failing_since == prior.date_failing_since
+    assert state.failure_count == prior.failure_count
+    assert state.date_last_ok == prior.date_last_ok
 
 
 def test_broken_state_with_a_response_rejects_contributions() -> None:

@@ -482,8 +482,9 @@ class ContributionRejectionReason(StrEnum):
     """The URL's current status is not open to contribution.
 
     Contributions exist to settle the verdicts Ook's own egress could not
-    reach: a ``blocked`` URL, and a ``broken`` URL that answered with no
-    status code at all. Every other status — including ``broken`` from an
+    reach: a ``blocked`` URL, and a ``broken`` URL Ook never got a terminal
+    HTTP status out of — nothing answered, or the redirect chain never
+    resolved to one. Every other status — including ``broken`` from an
     HTTP response Ook did receive — is answered by Ook's own vantage
     point, which is the one its retry ladder is calibrated for.
 

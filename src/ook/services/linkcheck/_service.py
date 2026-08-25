@@ -578,9 +578,9 @@ class LinkCheckService:
             )
         return (
             f"The URL is {status}{detail}. Contributed results apply only"
-            " to a URL Ook found blocked, or found broken with no response"
-            " at all: those are the verdicts Ook could not reach from its"
-            " own vantage point."
+            " to a URL Ook found blocked, or found broken with no terminal"
+            " HTTP status at all: those are the verdicts Ook could not"
+            " reach from its own vantage point."
         )
 
     async def list_due_recheck_urls(self) -> list[DueUrl]:
