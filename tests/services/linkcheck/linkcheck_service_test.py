@@ -894,6 +894,258 @@ async def test_contribution_rejects_url_a_concurrent_check_resolved(
 
 
 @pytest.mark.asyncio
+async def test_contributed_success_resolves_unreachable_broken_url(
+    factory: Factory,
+) -> None:
+    """A URL Ook recorded broken without ever getting a response accepts a
+    contributed success, which resolves it and clears the failing streak.
+
+    Ook's ``broken`` verdict there rests on evidence it never obtained —
+    a connection, TLS, or DNS failure at its own egress — so a client
+    that did reach the origin settles it.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    url = "https://example.com/unreachable"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            await store.upsert_url_state(
+                LinkState(
+                    url=url,
+                    status=LinkStatus.broken,
+                    date_checked=now,
+                    date_failing_since=now - timedelta(days=3),
+                    failure_count=4,
+                    status_code=None,
+                    error="[SSL] certificate verify failed",
+                    date_next_check=now + timedelta(days=1),
+                )
+            )
+            submission = await service.submit_check(
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
+                urls=[SubmittedUrl(url=url, origin_paths=["a"])],
+            )
+
+            report = await service.contribute_results(
+                check_id=submission.check_id,
+                provenance=PROVENANCE,
+                results=[
+                    ContributedResult(
+                        url=url, status_code=200, date_checked=now
+                    )
+                ],
+            )
+
+            assert report is not None
+            assert report.rejected == []
+            assert [(e.url, e.status) for e in report.accepted] == [
+                (url, LinkStatus.ok)
+            ]
+
+            state = await store.get_url_state(url)
+
+    assert state is not None
+    assert state.status is LinkStatus.ok
+    assert state.date_failing_since is None
+    assert state.failure_count == 0
+    assert state.result_source is ResultSource.contribution
+    assert state.contributed_by == "lsst-sqre/documenteer"
+
+
+@pytest.mark.asyncio
+async def test_contributed_failure_extends_unreachable_broken_streak(
+    factory: Factory,
+) -> None:
+    """A contributed result that also got no response is accepted on an
+    unreachable broken URL and simply extends the failure streak.
+
+    A null-status contributed result is a plain, non-transient failure, so
+    the URL stays broken and records the vantage point that confirmed it.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    url = "https://example.com/unreachable"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            await store.upsert_url_state(
+                LinkState(
+                    url=url,
+                    status=LinkStatus.broken,
+                    date_checked=now,
+                    date_failing_since=now - timedelta(days=3),
+                    failure_count=4,
+                    status_code=None,
+                    error="[SSL] certificate verify failed",
+                    date_next_check=now + timedelta(days=1),
+                )
+            )
+            submission = await service.submit_check(
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
+                urls=[SubmittedUrl(url=url, origin_paths=["a"])],
+            )
+
+            report = await service.contribute_results(
+                check_id=submission.check_id,
+                provenance=PROVENANCE,
+                results=[
+                    ContributedResult(
+                        url=url,
+                        error="Connection refused",
+                        date_checked=now,
+                    )
+                ],
+            )
+
+            assert report is not None
+            assert report.rejected == []
+            assert [(e.url, e.status) for e in report.accepted] == [
+                (url, LinkStatus.broken)
+            ]
+
+            state = await store.get_url_state(url)
+
+    assert state is not None
+    assert state.status is LinkStatus.broken
+    assert state.failure_count == 5
+    assert state.date_failing_since == now - timedelta(days=3)
+    # A null-status failure is conclusive, not a block, so the blocked
+    # backoff counter is untouched.
+    assert state.consecutive_blocked_count == 0
+    assert state.result_source is ResultSource.contribution
+    assert state.contributed_by == "lsst-sqre/documenteer"
+
+
+@pytest.mark.asyncio
+async def test_contribution_to_broken_url_with_a_response_is_rejected(
+    factory: Factory,
+) -> None:
+    """A URL Ook recorded broken from an HTTP response it did receive is
+    Ook's own evidence, so it accepts no contributed result.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    url = "https://example.com/gone"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            await store.upsert_url_state(
+                LinkState(
+                    url=url,
+                    status=LinkStatus.broken,
+                    date_checked=now,
+                    date_failing_since=now - timedelta(days=3),
+                    failure_count=4,
+                    status_code=404,
+                    error="HTTP 404",
+                    date_next_check=now + timedelta(days=1),
+                )
+            )
+            submission = await service.submit_check(
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
+                urls=[SubmittedUrl(url=url, origin_paths=["a"])],
+            )
+
+            report = await service.contribute_results(
+                check_id=submission.check_id,
+                provenance=PROVENANCE,
+                results=[
+                    ContributedResult(
+                        url=url, status_code=200, date_checked=now
+                    )
+                ],
+            )
+
+            assert report is not None
+            assert report.accepted == []
+            (rejected,) = report.rejected
+            assert rejected.url == url
+            assert rejected.reason is ContributionRejectionReason.not_blocked
+            assert "HTTP 404" in rejected.message
+
+            state = await store.get_url_state(url)
+
+    assert state is not None
+    assert state.status is LinkStatus.broken
+    assert state.result_source is ResultSource.server
+
+
+@pytest.mark.asyncio
+async def test_contribution_to_failing_url_is_rejected(
+    factory: Factory,
+) -> None:
+    """A URL still climbing the failing ladder failed against responses
+    Ook did receive, so it accepts no contributed result either.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    url = "https://example.com/flaky"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            await store.upsert_url_state(
+                LinkState(
+                    url=url,
+                    status=LinkStatus.failing,
+                    date_checked=now,
+                    date_last_ok=now - timedelta(days=2),
+                    date_failing_since=now - timedelta(hours=2),
+                    failure_count=1,
+                    status_code=500,
+                    error="HTTP 500",
+                    date_next_check=now + timedelta(hours=1),
+                )
+            )
+            submission = await service.submit_check(
+                origin_base_url="https://sqr-000.lsst.io",
+                is_default_version=True,
+                urls=[SubmittedUrl(url=url, origin_paths=["a"])],
+            )
+
+            report = await service.contribute_results(
+                check_id=submission.check_id,
+                provenance=PROVENANCE,
+                results=[
+                    ContributedResult(
+                        url=url, status_code=200, date_checked=now
+                    )
+                ],
+            )
+
+            assert report is not None
+            assert report.accepted == []
+            (rejected,) = report.rejected
+            assert rejected.reason is ContributionRejectionReason.not_blocked
+            assert "failing" in rejected.message
+
+            state = await store.get_url_state(url)
+
+    assert state is not None
+    assert state.status is LinkStatus.failing
+    assert state.result_source is ResultSource.server
+
+
+@pytest.mark.asyncio
 async def test_contribution_to_never_checked_member_is_rejected(
     factory: Factory,
 ) -> None:

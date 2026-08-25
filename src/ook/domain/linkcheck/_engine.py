@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
 __all__ = [
+    "accepts_contribution",
     "canonicalize_url",
     "contributed_outcome",
     "evaluate_outcome",
@@ -255,6 +256,44 @@ def contributed_outcome(
         is_transient=result.status_code in _TRANSIENT_CODES,
         contributed_by=repository,
     )
+
+
+def accepts_contribution(state: LinkState | None) -> bool:
+    """Determine whether a URL's stored state is open to a contributed
+    result.
+
+    Contributions exist to settle the verdicts Ook could not reach from
+    its own vantage point, so a URL is open to one exactly when Ook's
+    stored verdict rests on evidence it never obtained:
+
+    - ``blocked``: a bot-protection layer answered instead of the origin,
+      so the check was inconclusive.
+    - ``broken`` with no status code: Ook received no response at all — a
+      connection, TLS, or DNS failure at its egress — and a client on
+      another network may well reach the origin.
+
+    Every other state is Ook's own evidence and is answered by Ook's own
+    vantage point: a ``broken`` URL that *did* answer with a status code,
+    a URL still climbing the ``failing`` ladder against real responses, an
+    ``ok`` or ``redirected`` URL Ook resolved, an ``unsupported`` URL that
+    is not checkable at all, and a URL with no state row at all, which has
+    never been checked rather than checked inconclusively.
+
+    Parameters
+    ----------
+    state
+        The URL's stored state, or None if it has never been checked.
+
+    Returns
+    -------
+    bool
+        `True` if a contributed result may be applied to the URL.
+    """
+    if state is None:
+        return False
+    if state.status is LinkStatus.blocked:
+        return True
+    return state.status is LinkStatus.broken and state.status_code is None
 
 
 def evaluate_outcome(

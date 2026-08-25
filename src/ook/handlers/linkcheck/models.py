@@ -956,11 +956,14 @@ class RejectedContribution(BaseModel):
         Field(
             description=(
                 "Why the result was not applied: ``not_a_member`` if the"
-                " URL is not part of this check, ``not_blocked`` if Ook"
-                " resolved the URL from its own vantage point,"
+                " URL is not part of this check, ``not_blocked`` if Ook's"
+                " own verdict for the URL stands (it is neither"
+                " ``blocked`` nor ``broken`` without a response, so Ook"
+                " reached that verdict from its own vantage point),"
                 " ``unsupported_url`` if the URL cannot be checked at all,"
                 " and ``duplicate`` if an earlier entry in the same batch"
-                " already contributed a result for it."
+                " already contributed a result for it. The accompanying"
+                " ``message`` names the URL's current status."
             )
         ),
     ]

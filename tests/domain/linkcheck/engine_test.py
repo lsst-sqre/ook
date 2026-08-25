@@ -14,6 +14,7 @@ from ook.domain.linkcheck import (
     LinkStatus,
     ResultSource,
     RetryLadderConfig,
+    accepts_contribution,
     contributed_outcome,
     evaluate_outcome,
 )
@@ -712,3 +713,77 @@ def test_contributed_result_without_a_response_is_a_failure() -> None:
     assert outcome.error == "Connection refused"
     assert outcome.is_bot_blocked is False
     assert outcome.is_transient is False
+
+
+def test_blocked_state_accepts_contributions() -> None:
+    """A bot-blocked URL is the original contribution case: Ook's own
+    egress could not resolve it, so a client's vantage point can.
+    """
+    assert accepts_contribution(make_blocked_state(T0, 1)) is True
+
+
+def test_broken_state_without_a_response_accepts_contributions() -> None:
+    """A URL Ook recorded broken without ever receiving a response — a
+    connection, TLS, or DNS failure at its egress — rests on evidence Ook
+    never obtained, so it accepts a contributed result too.
+    """
+    state = LinkState(
+        url=URL,
+        status=LinkStatus.broken,
+        date_checked=T0,
+        date_failing_since=T0,
+        failure_count=1,
+        status_code=None,
+        error="[SSL] certificate verify failed",
+    )
+
+    assert accepts_contribution(state) is True
+
+
+def test_broken_state_with_a_response_rejects_contributions() -> None:
+    """A URL Ook recorded broken from an HTTP response it did receive is
+    Ook's own evidence, so it is not open to contribution.
+    """
+    state = LinkState(
+        url=URL,
+        status=LinkStatus.broken,
+        date_checked=T0,
+        date_failing_since=T0,
+        failure_count=1,
+        status_code=404,
+        error="HTTP 404",
+    )
+
+    assert accepts_contribution(state) is False
+
+
+@pytest.mark.parametrize(
+    "status", [LinkStatus.ok, LinkStatus.redirected, LinkStatus.unsupported]
+)
+def test_resolved_states_reject_contributions(status: LinkStatus) -> None:
+    """A status Ook reached from its own vantage point is answered by that
+    vantage point, whatever the contributing client saw.
+    """
+    state = LinkState(
+        url=URL,
+        status=status,
+        date_checked=T0,
+        date_last_ok=T0,
+        status_code=200,
+    )
+
+    assert accepts_contribution(state) is False
+
+
+def test_failing_state_rejects_contributions() -> None:
+    """A URL still on the failing ladder failed against responses Ook did
+    receive, so it stays Ook's own to judge.
+    """
+    assert accepts_contribution(make_failing_state(T0, 1)) is False
+
+
+def test_never_checked_state_accepts_no_contribution() -> None:
+    """A URL with no state row has never been checked, which is pending
+    rather than an unreachable verdict.
+    """
+    assert accepts_contribution(None) is False
