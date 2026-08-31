@@ -27,7 +27,11 @@ dependencies = [
     "pydantic_settings",
     "safir[db,kafka]>=15.2.0",
     "alembic[tz]",
-    "faststream[kafka]>=0.7.3,<0.8",
+    # <0.7.5: faststream 0.7.5's ContextRepoComposition hides the "message"
+    # scope from faststream-fastapi's captured app-level context, so
+    # Context("message") resolves to an EmptyPlaceholder and Kafka handlers
+    # fail (see consumercontext.py). Unpin once upstream is fixed.
+    "faststream[kafka]>=0.7.3,<0.7.5",
     "faststream-fastapi>=1.2.1,<2",
     "algoliasearch>=3.0,<4.0",
     "dataclasses-avroschema",
