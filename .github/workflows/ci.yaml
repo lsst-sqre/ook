@@ -1,7 +1,7 @@
 name: CI
 
 env:
-  UV_VERSION: "0.12.5"
+  UV_VERSION: "0.12.7"
 
 "on":
   merge_group: {}
