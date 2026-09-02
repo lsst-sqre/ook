@@ -7,28 +7,34 @@ name, the display name to show for it, and the site-relative URI of the
 page anchor documenting it. Ook turns those entries into the entities
 behind the Links API's per-language domains.
 
-Two models, because the inventory and the entity are not the same thing.
-`InventoryObject` is a faithful reading of one inventory row and knows
-nothing beyond it. `InventoryEntity` is that row placed in its Sphinx
-domain's name hierarchy, which is not a property of the row at all: it is
-decided by looking at the rest of the inventory, and the same row yields a
-different parent depending on what else the site documents.
+Two models on the way in, because the inventory and the entity are not the
+same thing. `InventoryObject` is a faithful reading of one inventory row
+and knows nothing beyond it. `InventoryEntity` is that row placed in its
+Sphinx domain's name hierarchy, which is not a property of the row at all:
+it is decided by looking at the rest of the inventory, and the same row
+yields a different parent depending on what else the site documents.
+
+`IntersphinxEntityLinks` is the model on the way back out -- one stored
+entity with the links every source contributed for it, which is the shape
+the question "where is this object documented?" is answered in.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Protocol
+from typing import Any, Protocol
 
 from sphobjinv import Inventory
 
 from ..exceptions import InventoryParseError
+from .links import Link
 
 __all__ = [
     "PYTHON_SPHINX_DOMAIN",
     "SPHINX_DOMAIN_HIERARCHIES",
+    "IntersphinxEntityLinks",
     "InventoryEntity",
     "InventoryObject",
     "PythonHierarchy",
@@ -114,6 +120,45 @@ class InventoryEntity:
     common and is not an error -- a site is free to document a class
     without documenting its module -- and treating it as one would fail an
     ingest over a gap in someone else's documentation.
+    """
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class IntersphinxEntityLinks:
+    """A stored entity together with the documentation links to it.
+
+    An entity is stored once per ``(sphinx_domain, name)`` however many
+    sites document it, so `links` is the union across sources rather than
+    one site's view. It is empty for an entity that exists only to hold
+    documented descendants -- a package whose own page no source publishes.
+    """
+
+    sphinx_domain: str
+    """The Sphinx domain the entity was declared in."""
+
+    name: str
+    """The entity's fully qualified name within that domain."""
+
+    role: str
+    """The Sphinx role the entity was declared with."""
+
+    dispname: str
+    """The name to display for the entity."""
+
+    parent_name: str | None
+    """The name of the entity that contains this one, or None when it is
+    top level.
+
+    The name rather than the ID, because the ID is a storage detail and the
+    name is what a caller can look the parent up by.
+    """
+
+    extras: dict[str, Any] | None
+    """Domain-specific attributes with no field of their own, or None."""
+
+    links: list[Link] = field(default_factory=list)
+    """The documentation links to this entity, from every source that
+    documents it.
     """
 
 

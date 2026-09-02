@@ -42,6 +42,8 @@ from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
 from .services.technoteingest import TechnoteIngestService
 from .storage.authorstore import AuthorStore
 from .storage.glossarystore import GlossaryStore
+from .storage.intersphinxentitystore import IntersphinxEntityStore
+from .storage.intersphinxsourcestore import IntersphinxSourceStore
 from .storage.intersphinxstore import IntersphinxInventoryStore
 from .storage.linkcheckstore import LinkCheckStore
 from .storage.linkstore import LinkStore
@@ -322,6 +324,20 @@ class Factory:
     ) -> IntersphinxInventoryStore:
         """Create an IntersphinxInventoryStore."""
         return IntersphinxInventoryStore(
+            session=self._session,
+            logger=self._logger,
+        )
+
+    def create_intersphinx_entity_store(self) -> IntersphinxEntityStore:
+        """Create an IntersphinxEntityStore."""
+        return IntersphinxEntityStore(
+            session=self._session,
+            logger=self._logger,
+        )
+
+    def create_intersphinx_source_store(self) -> IntersphinxSourceStore:
+        """Create an IntersphinxSourceStore."""
+        return IntersphinxSourceStore(
             session=self._session,
             logger=self._logger,
         )
