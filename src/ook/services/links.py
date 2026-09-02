@@ -5,6 +5,10 @@ from __future__ import annotations
 from safir.database import CountedPaginatedList
 from structlog.stdlib import BoundLogger
 
+from ook.domain.intersphinxentities import (
+    PYTHON_SPHINX_DOMAIN,
+    IntersphinxEntityLinks,
+)
 from ook.domain.links import (
     SdmColumnLink,
     SdmColumnLinksCollection,
@@ -13,6 +17,7 @@ from ook.domain.links import (
     SdmTableLink,
     SdmTableLinksCollection,
 )
+from ook.storage.intersphinxentitystore import IntersphinxEntityStore
 from ook.storage.linkstore import (
     LinkStore,
     SdmColumnLinksCollectionCursor,
@@ -26,9 +31,40 @@ __all__ = ["LinksService"]
 class LinksService:
     """A service for linking to documentation across known domains."""
 
-    def __init__(self, logger: BoundLogger, link_store: LinkStore) -> None:
+    def __init__(
+        self,
+        logger: BoundLogger,
+        link_store: LinkStore,
+        entity_store: IntersphinxEntityStore,
+    ) -> None:
         self._logger = logger
         self._link_store = link_store
+        self._entity_store = entity_store
+
+    async def get_python_object(
+        self, name: str
+    ) -> IntersphinxEntityLinks | None:
+        """Get a Python object and the documentation links to it.
+
+        The entity is returned even when no source links to it, because
+        such an entity is not a gap in the data: it is a name held in place
+        by the documented objects beneath it -- a package whose own page no
+        site publishes. Only a name nothing in the ``py`` domain answers to
+        is absent, which is what lets the API distinguish "unknown object"
+        from "known object nobody gave a page".
+
+        Parameters
+        ----------
+        name
+            The object's fully qualified Python name.
+
+        Returns
+        -------
+        IntersphinxEntityLinks or None
+            The object with the links every source contributed for it, or
+            None if no stored Python object goes by that name.
+        """
+        return await self._entity_store.get_entity(PYTHON_SPHINX_DOMAIN, name)
 
     async def get_links_for_sdm_schema(
         self, schema_name: str

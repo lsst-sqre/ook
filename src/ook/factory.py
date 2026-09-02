@@ -518,6 +518,7 @@ class Factory:
         return LinksService(
             logger=self._logger,
             link_store=self.create_link_store(),
+            entity_store=self.create_intersphinx_entity_store(),
         )
 
     def create_author_service(self) -> AuthorService:

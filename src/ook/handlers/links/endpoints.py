@@ -14,7 +14,7 @@ from ook.storage.linkstore import (
     SdmTableLinksCollectionCursor,
 )
 
-from .models import Link, SdmDomainInfo, SdmLinks
+from .models import Link, PythonDomainInfo, SdmDomainInfo, SdmLinks
 
 router = APIRouter(prefix=f"{config.path_prefix}/links", tags=["links"])
 """FastAPI router for the links API."""
@@ -29,6 +29,18 @@ table_name_path = Annotated[str, Path(title="Table name", examples=["Object"])]
 
 column_name_path = Annotated[
     str, Path(title="Column name", examples=["detect_isPrimary"])
+]
+
+python_object_name_path = Annotated[
+    str,
+    Path(
+        title="Python object name",
+        description=(
+            "The fully qualified name of the Python object, which is what a "
+            "Sphinx cross-reference targets."
+        ),
+        examples=["lsst.afw.table.SourceCatalog"],
+    ),
 ]
 
 
@@ -341,3 +353,44 @@ async def get_sdm_schema_column_links(
                 f"{table_name} in schema {schema_name}."
             )
         return [Link.from_domain_link(link) for link in links]
+
+
+@router.get(
+    "/domains/python",
+    summary="Information about the Python domain",
+    response_description="Information about the Python domain",
+)
+async def get_python_domain_info(
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> PythonDomainInfo:
+    """Get information about the Python domain."""
+    return PythonDomainInfo.create(request=context.request)
+
+
+@router.get(
+    "/domains/python/objects/{name}",
+    summary="Get a Python object's doc links",
+    response_description="List of doc links for a Python object",
+    responses={404: {"description": "Not found", "model": ErrorModel}},
+)
+async def get_python_object_links(
+    name: python_object_name_path,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[Link]:
+    """Get the documentation links for one Python object.
+
+    An object every source has dropped a page for still answers, with an
+    empty list: the object is known to Ook, which is a different answer
+    from the 404 an unknown name gets.
+    """
+    logger = context.logger
+    logger.debug(
+        "Received request to get documentation links for a Python object.",
+        name=name,
+    )
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        entity = await link_service.get_python_object(name)
+        if entity is None:
+            raise NotFoundError(f"No Python object named {name} is known.")
+        return [Link.from_domain_link(link) for link in entity.links]

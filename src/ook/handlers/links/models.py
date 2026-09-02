@@ -18,7 +18,9 @@ from ook.domain.links import (
 
 __all__ = [
     "Link",
+    "LinkDomainInfo",
     "LinkedEntityInfo",
+    "PythonDomainInfo",
     "SdmColumnLinkedEntityInfo",
     "SdmLinks",
     "SdmSchemaLinkedEntityInfo",
@@ -36,17 +38,36 @@ def _path_template(app: FastAPI, route_name: str, *param_names: str) -> str:
     return str(app.url_path_for(route_name, **placeholders))
 
 
-class SdmDomainInfo(BaseModel):
-    """Links for the SDM domain APIs."""
+class LinkDomainInfo(BaseModel):
+    """The URI templates one link domain publishes.
+
+    Every link domain answers the same two questions -- how to address one
+    of its entities, and how to page through a collection of them -- so the
+    shape is shared and each domain fills in its own templates. A client
+    that has read one domain's info can therefore read any of them.
+    """
 
     entities: dict[str, str] = Field(
         ...,
-        title="Entities in the SDM domain",
+        title="Entities in the domain",
+        description=(
+            "URI templates addressing one entity, keyed by the kind of "
+            "entity the template addresses."
+        ),
     )
 
     collections: dict[str, str] = Field(
-        ..., title="Collections in the SDM domain"
+        ...,
+        title="Collections in the domain",
+        description=(
+            "URI templates addressing a collection of entities, keyed by "
+            "the kind of collection the template addresses."
+        ),
     )
+
+
+class SdmDomainInfo(LinkDomainInfo):
+    """Links for the SDM domain APIs."""
 
     @classmethod
     def create(cls, request: Request) -> Self:
@@ -87,6 +108,23 @@ class SdmDomainInfo(BaseModel):
                     "table_name",
                 ),
             },
+        )
+
+
+class PythonDomainInfo(LinkDomainInfo):
+    """Links for the Python domain APIs."""
+
+    @classmethod
+    def create(cls, request: Request) -> Self:
+        """Create a `PythonDomainInfo` object."""
+        base_url = str(request.base_url).removesuffix("/")
+        app = request.app
+        return cls(
+            entities={
+                "object": base_url
+                + _path_template(app, "get_python_object_links", "name"),
+            },
+            collections={},
         )
 
 
