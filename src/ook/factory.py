@@ -29,6 +29,7 @@ from .services.classification import ClassificationService
 from .services.githubmetadata import GitHubMetadataService
 from .services.githuboidc import GitHubOidcVerifier
 from .services.glossary import GlossaryService
+from .services.ingest.intersphinx import IntersphinxIngestService
 from .services.ingest.lssttexmf import LsstTexmfIngestService
 from .services.ingest.sdmschemas import SdmSchemasIngestService
 from .services.intersphinx import IntersphinxCacheService
@@ -347,6 +348,20 @@ class Factory:
         """Create an IntersphinxSourceService."""
         return IntersphinxSourceService(
             source_store=self.create_intersphinx_source_store(),
+            logger=self._logger,
+        )
+
+    def create_intersphinx_ingest_service(self) -> IntersphinxIngestService:
+        """Create an IntersphinxIngestService.
+
+        The service commits its own transactions, one per source, so it must
+        be called without a surrounding transaction.
+        """
+        return IntersphinxIngestService(
+            cache_service=self.create_intersphinx_cache_service(),
+            entity_store=self.create_intersphinx_entity_store(),
+            source_store=self.create_intersphinx_source_store(),
+            session=self._session,
             logger=self._logger,
         )
 

@@ -9,7 +9,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from ook.dbschema.links import SqlIntersphinxLink, SqlLink
-from ook.domain.intersphinxentities import InventoryEntity
+from ook.domain.intersphinxentities import (
+    IntersphinxSourceLink,
+    InventoryEntity,
+)
 from ook.domain.links import Link
 from ook.factory import Factory
 
@@ -372,3 +375,301 @@ async def test_deleting_source_deletes_its_links(factory: Factory) -> None:
         )
         assert stored is not None
         assert stored.links == []
+
+
+def _source_link(
+    entity_id: int,
+    *,
+    html_url: str,
+    title: str = "pkg.Thing",
+    link_type: str = "python_api",
+) -> IntersphinxSourceLink:
+    return IntersphinxSourceLink(
+        entity_id=entity_id,
+        html_url=html_url,
+        title=title,
+        type=link_type,
+    )
+
+
+@pytest.mark.asyncio
+async def test_replace_source_links_writes_the_links(
+    factory: Factory,
+) -> None:
+    """A replace writes the links with the source's title as the collection
+    title.
+    """
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        source_store = factory.create_intersphinx_source_store()
+        source = await source_store.add_source(
+            url="https://pipelines.lsst.io/objects.inv",
+            title="LSST Science Pipelines",
+        )
+        entity_ids = await entity_store.upsert_entities(
+            [_entity("lsst.afw.table.SourceCatalog")]
+        )
+
+        written = await entity_store.replace_source_links(
+            source.id,
+            [
+                _source_link(
+                    entity_ids["py", "lsst.afw.table.SourceCatalog"],
+                    html_url=(
+                        "https://pipelines.lsst.io/py-api/index.html#anchor"
+                    ),
+                    title="lsst.afw.table.SourceCatalog",
+                )
+            ],
+            collection_title=source.title,
+        )
+
+        assert written == 1
+        stored = await entity_store.get_entity(
+            "py", "lsst.afw.table.SourceCatalog"
+        )
+        assert stored is not None
+        assert stored.links == [
+            Link(
+                html_url=(
+                    "https://pipelines.lsst.io/py-api/index.html#anchor"
+                ),
+                type="python_api",
+                title="lsst.afw.table.SourceCatalog",
+                collection_title="LSST Science Pipelines",
+            )
+        ]
+
+
+@pytest.mark.asyncio
+async def test_replace_source_links_leaves_other_sources_alone(
+    factory: Factory,
+) -> None:
+    """Re-ingesting one site replaces its links and no one else's."""
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        source_store = factory.create_intersphinx_source_store()
+        first = await source_store.add_source(
+            url="https://a.example/objects.inv", title="A docs"
+        )
+        second = await source_store.add_source(
+            url="https://b.example/objects.inv", title="B docs"
+        )
+        entity_ids = await entity_store.upsert_entities([_entity("pkg.Thing")])
+        entity_id = entity_ids["py", "pkg.Thing"]
+        await entity_store.replace_source_links(
+            first.id,
+            [_source_link(entity_id, html_url="https://a.example/old.html")],
+            collection_title=first.title,
+        )
+        await entity_store.replace_source_links(
+            second.id,
+            [_source_link(entity_id, html_url="https://b.example/keep.html")],
+            collection_title=second.title,
+        )
+
+        await entity_store.replace_source_links(
+            first.id,
+            [_source_link(entity_id, html_url="https://a.example/new.html")],
+            collection_title=first.title,
+        )
+
+        stored = await entity_store.get_entity("py", "pkg.Thing")
+        assert stored is not None
+        assert [link.html_url for link in stored.links] == [
+            "https://a.example/new.html",
+            "https://b.example/keep.html",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_replace_source_links_with_nothing_clears_them(
+    factory: Factory,
+) -> None:
+    """A source that documents nothing any more keeps no links."""
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        source_store = factory.create_intersphinx_source_store()
+        source = await source_store.add_source(
+            url="https://a.example/objects.inv", title="A docs"
+        )
+        entity_ids = await entity_store.upsert_entities([_entity("pkg.Thing")])
+        await entity_store.replace_source_links(
+            source.id,
+            [
+                _source_link(
+                    entity_ids["py", "pkg.Thing"],
+                    html_url="https://a.example/old.html",
+                )
+            ],
+            collection_title=source.title,
+        )
+
+        assert (
+            await entity_store.replace_source_links(
+                source.id, [], collection_title=source.title
+            )
+            == 0
+        )
+
+        stored = await entity_store.get_entity("py", "pkg.Thing")
+        assert stored is not None
+        assert stored.links == []
+        # The base link row goes with the subtype row rather than being
+        # orphaned by the delete.
+        assert (
+            await factory.db_session.execute(select(SqlLink))
+        ).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_prune_keeps_entities_a_source_documents(
+    factory: Factory,
+) -> None:
+    """An entity with a link from any source is kept."""
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        source_store = factory.create_intersphinx_source_store()
+        source = await source_store.add_source(
+            url="https://a.example/objects.inv", title="A docs"
+        )
+        entity_ids = await entity_store.upsert_entities([_entity("pkg.Thing")])
+        await entity_store.replace_source_links(
+            source.id,
+            [
+                _source_link(
+                    entity_ids["py", "pkg.Thing"],
+                    html_url="https://a.example/api.html#pkg.Thing",
+                )
+            ],
+            collection_title=source.title,
+        )
+
+        assert await entity_store.prune_orphan_entities() == 0
+        assert await entity_store.get_entity("py", "pkg.Thing") is not None
+
+
+@pytest.mark.asyncio
+async def test_prune_keeps_ancestors_of_documented_entities(
+    factory: Factory,
+) -> None:
+    """A package no source documents survives while a descendant is
+    documented, so the hierarchy above a documented object stays whole.
+    """
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        source_store = factory.create_intersphinx_source_store()
+        source = await source_store.add_source(
+            url="https://a.example/objects.inv", title="A docs"
+        )
+        entity_ids = await entity_store.upsert_entities(
+            [
+                _entity("pkg", role="module"),
+                _entity("pkg.mod", role="module", parent_name="pkg"),
+                _entity("pkg.mod.Thing", parent_name="pkg.mod"),
+            ]
+        )
+        await entity_store.replace_source_links(
+            source.id,
+            [
+                _source_link(
+                    entity_ids["py", "pkg.mod.Thing"],
+                    html_url="https://a.example/api.html#pkg.mod.Thing",
+                )
+            ],
+            collection_title=source.title,
+        )
+
+        assert await entity_store.prune_orphan_entities() == 0
+        assert await entity_store.get_entity("py", "pkg") is not None
+        assert await entity_store.get_entity("py", "pkg.mod") is not None
+
+
+@pytest.mark.asyncio
+async def test_prune_deletes_entities_nothing_documents(
+    factory: Factory,
+) -> None:
+    """An entity with no links and no documented descendants is pruned."""
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        source_store = factory.create_intersphinx_source_store()
+        source = await source_store.add_source(
+            url="https://a.example/objects.inv", title="A docs"
+        )
+        entity_ids = await entity_store.upsert_entities(
+            [
+                _entity("pkg", role="module"),
+                _entity("pkg.Kept", parent_name="pkg"),
+                _entity("pkg.Dropped", parent_name="pkg"),
+            ]
+        )
+        await entity_store.replace_source_links(
+            source.id,
+            [
+                _source_link(
+                    entity_ids["py", "pkg.Kept"],
+                    html_url="https://a.example/api.html#pkg.Kept",
+                ),
+                _source_link(
+                    entity_ids["py", "pkg.Dropped"],
+                    html_url="https://a.example/api.html#pkg.Dropped",
+                ),
+            ],
+            collection_title=source.title,
+        )
+
+        # The site stops documenting pkg.Dropped.
+        await entity_store.replace_source_links(
+            source.id,
+            [
+                _source_link(
+                    entity_ids["py", "pkg.Kept"],
+                    html_url="https://a.example/api.html#pkg.Kept",
+                )
+            ],
+            collection_title=source.title,
+        )
+
+        assert await entity_store.prune_orphan_entities() == 1
+        assert await entity_store.get_entity("py", "pkg.Dropped") is None
+        assert await entity_store.get_entity("py", "pkg.Kept") is not None
+        assert await entity_store.get_entity("py", "pkg") is not None
+
+
+@pytest.mark.asyncio
+async def test_prune_deletes_a_whole_undocumented_subtree(
+    factory: Factory,
+) -> None:
+    """Deregistering the last source for a package prunes the package and
+    everything under it.
+    """
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        source_store = factory.create_intersphinx_source_store()
+        source = await source_store.add_source(
+            url="https://a.example/objects.inv", title="A docs"
+        )
+        entity_ids = await entity_store.upsert_entities(
+            [
+                _entity("pkg", role="module"),
+                _entity("pkg.Thing", parent_name="pkg"),
+            ]
+        )
+        await entity_store.replace_source_links(
+            source.id,
+            [
+                _source_link(
+                    entity_ids["py", "pkg.Thing"],
+                    html_url="https://a.example/api.html#pkg.Thing",
+                )
+            ],
+            collection_title=source.title,
+        )
+
+        await entity_store.replace_source_links(
+            source.id, [], collection_title=source.title
+        )
+
+        assert await entity_store.prune_orphan_entities() == 2
+        assert await entity_store.get_entity("py", "pkg") is None
+        assert await entity_store.get_entity("py", "pkg.Thing") is None

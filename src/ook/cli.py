@@ -28,13 +28,16 @@ from ook.domain.algoliarecord import MinimalDocumentModel
 from ook.domain.kafka import RecheckUrlsMessageV1
 from ook.factory import Factory
 from ook.services.algoliadocindex import AlgoliaDocIndexService
+from ook.services.ingest.intersphinx import IntersphinxIngestSummary
 from ook.services.intersphinx import IntersphinxRefreshSummary
 
 __all__ = [
     "LinkcheckRecheckSummary",
     "help",
     "main",
+    "report_ingest_intersphinx",
     "report_refresh_intersphinx",
+    "run_ingest_intersphinx",
     "run_linkcheck_recheck",
     "run_refresh_intersphinx",
     "upload_doc_stub",
@@ -451,6 +454,93 @@ async def refresh_intersphinx(*, limit: int | None) -> None:
         summary = await run_refresh_intersphinx(factory, limit=limit)
     await engine.dispose()
     report_refresh_intersphinx(summary)
+
+
+async def run_ingest_intersphinx(
+    factory: Factory,
+) -> IntersphinxIngestSummary:
+    """Ingest every enabled intersphinx documentation source.
+
+    Each source's inventory is pulled through the intersphinx cache, parsed,
+    and its links replaced. The service owns its own transaction boundaries
+    -- it commits each source's outcome as soon as that source is done -- so
+    this must not wrap the call in a transaction. A source that fails is
+    recorded on its registry row and the run continues.
+
+    Parameters
+    ----------
+    factory
+        A factory with a database session and a shared HTTP client.
+
+    Returns
+    -------
+    IntersphinxIngestSummary
+        Each visited source's outcome.
+    """
+    service = factory.create_intersphinx_ingest_service()
+    return await service.ingest_sources()
+
+
+def report_ingest_intersphinx(summary: IntersphinxIngestSummary) -> None:
+    """Print an ingest run's counts and fail the run if a source failed.
+
+    A source that could not be fetched or parsed keeps the links it already
+    had, so the API goes on serving them and nothing about the run is
+    urgent -- but Ook has stopped refreshing that site, which is exactly
+    what a CronJob's red badge is for. The exit comes after the counts are
+    printed, since the run deliberately continues past a failing source
+    rather than aborting on it.
+
+    Parameters
+    ----------
+    summary
+        The outcomes `run_ingest_intersphinx` returned.
+
+    Raises
+    ------
+    click.ClickException
+        If any source's ingest failed.
+    """
+    click.echo(
+        f"Ingested intersphinx sources: {len(summary.results)} considered, "
+        f"{summary.succeeded} succeeded, {summary.failed} failed, "
+        f"{summary.entity_count} entities, {summary.link_count} links, "
+        f"{summary.pruned_count} pruned."
+    )
+    if summary.failed:
+        raise click.ClickException(
+            f"Could not ingest {summary.failed} intersphinx source(s); their "
+            "previous links are still served. See each registration's "
+            "last_error."
+        )
+
+
+@main.command(name="ingest-intersphinx")
+@run_with_asyncio
+async def ingest_intersphinx() -> None:
+    """Ingest documentation links from registered intersphinx sources.
+
+    Every enabled source in the ``/ook/intersphinx/sources`` registry has
+    its ``objects.inv`` inventory pulled through the intersphinx cache,
+    parsed, and its links replaced; entities no source documents any more,
+    directly or below them, are pruned. Intended to run as a scheduled cron
+    job.
+
+    A source that cannot be fetched or parsed keeps its existing links and
+    has the failure recorded on its registration, and the run continues with
+    the remaining sources; the command then exits nonzero. See
+    `report_ingest_intersphinx`.
+    """
+    logger = structlog.get_logger("ook")
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    async with Factory.create_standalone(
+        logger=logger, engine=engine
+    ) as factory:
+        summary = await run_ingest_intersphinx(factory)
+    await engine.dispose()
+    report_ingest_intersphinx(summary)
 
 
 timespan_pattern = re.compile(

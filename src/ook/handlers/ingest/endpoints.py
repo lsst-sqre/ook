@@ -4,16 +4,20 @@ import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response
+from safir.models import ErrorModel
 
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 from ook.domain.resources import Document
+from ook.services.ingest.intersphinx import IntersphinxIngestSummary
 
 from ..resources.models import DocumentResource
 from .models import (
     DocumentIngestRequest,
     DocumentIngestResult,
     DocumentIngestStatus,
+    IntersphinxIngestRequest,
+    IntersphinxIngestResponse,
     LsstTexmfIngestRequest,
     LtdIngestRequest,
     SdmSchemasIngestRequest,
@@ -134,6 +138,65 @@ async def post_ingest_lsst_texmf(
         )
         await context.session.commit()
     return Response(status_code=200)
+
+
+@router.post(
+    "/intersphinx",
+    summary="Ingest intersphinx documentation sources",
+    description=(
+        "Pull the ``objects.inv`` inventory of every enabled source in the"
+        " ``/ook/intersphinx/sources`` registry through the intersphinx"
+        " cache, parse it, and replace that site's documentation links."
+        " Entities no source documents any more — neither directly nor"
+        " anywhere below them in the hierarchy — are pruned."
+        "\n\n"
+        "Give ``source_url`` to ingest a single registered source instead."
+        " That source is ingested whatever its ``enabled`` flag says: the"
+        " flag governs which sites a scheduled run visits, and naming one"
+        " is the more specific instruction — it is also how a registration"
+        " is tried out before being turned on."
+        "\n\n"
+        "A source whose inventory cannot be fetched or parsed keeps the"
+        " links from its last successful ingest, has the failure recorded"
+        " on its registration, and does not stop the run. Such a source is"
+        " reported in the response body with ``status`` ``failure`` rather"
+        " than as an error status, since one unreachable site says nothing"
+        " about the others; the response is a ``200`` whenever the run"
+        " itself completed."
+        "\n\n"
+        "This endpoint is protected by Gafaelfawr at the ingress and"
+        " requires the ``exec:admin`` scope, matching the registry whose"
+        " sources it ingests."
+    ),
+    responses={
+        404: {
+            "description": "No source is registered with that inventory URL.",
+            "model": ErrorModel,
+        },
+    },
+)
+async def post_ingest_intersphinx(
+    context: Annotated[RequestContext, Depends(context_dependency)],
+    ingest_request: IntersphinxIngestRequest | None = None,
+) -> IntersphinxIngestResponse:
+    """Trigger an ingest of registered intersphinx documentation sources."""
+    logger = context.logger
+    source_url = None if ingest_request is None else ingest_request.source_url
+    logger.info(
+        "Received request to ingest intersphinx sources.",
+        source_url=None if source_url is None else str(source_url),
+    )
+    # No surrounding transaction: the ingest service commits each source as
+    # soon as that source is done, so a site that fails late leaves every
+    # earlier site's links committed.
+    service = context.factory.create_intersphinx_ingest_service()
+    if source_url is None:
+        summary = await service.ingest_sources()
+    else:
+        summary = IntersphinxIngestSummary(
+            results=[await service.ingest_source_url(str(source_url))]
+        )
+    return IntersphinxIngestResponse.from_domain(summary)
 
 
 @router.post(

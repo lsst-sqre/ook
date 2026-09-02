@@ -35,6 +35,7 @@ __all__ = [
     "PYTHON_SPHINX_DOMAIN",
     "SPHINX_DOMAIN_HIERARCHIES",
     "IntersphinxEntityLinks",
+    "IntersphinxSourceLink",
     "InventoryEntity",
     "InventoryObject",
     "PythonHierarchy",
@@ -160,6 +161,38 @@ class IntersphinxEntityLinks:
     """The documentation links to this entity, from every source that
     documents it.
     """
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class IntersphinxSourceLink:
+    """One documentation link that one source contributes for one entity.
+
+    The write-side counterpart of `IntersphinxEntityLinks`: that model is
+    an entity with every source's links, while this is one source's claim
+    about one entity, which is the unit a per-source replace writes.
+
+    The source itself is not named here. Every link in a replace comes from
+    the same source, so the source's ID and its title travel with the call
+    rather than being repeated on each of a site's tens of thousands of
+    links.
+    """
+
+    entity_id: int
+    """The database ID of the entity this link documents."""
+
+    html_url: str
+    """The absolute URL of the page anchor documenting the entity.
+
+    Absolute, unlike `InventoryEntity.uri`: the inventory records a URI
+    relative to itself, and resolving it against the site the inventory was
+    served from is the ingest service's job.
+    """
+
+    title: str
+    """The title of the documentation this link points at."""
+
+    type: str
+    """The kind of documentation this link points at (``python_api``)."""
 
 
 class SphinxDomainHierarchy(Protocol):
