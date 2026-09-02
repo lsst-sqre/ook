@@ -130,6 +130,8 @@ class PythonDomainInfo(LinkDomainInfo):
             collections={
                 "objects": base_url
                 + _path_template(app, "get_python_objects"),
+                "children": base_url
+                + _path_template(app, "get_python_object_children", "name"),
             },
         )
 

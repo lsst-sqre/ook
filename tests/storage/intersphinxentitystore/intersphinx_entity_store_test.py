@@ -791,3 +791,138 @@ async def test_get_entities_is_scoped_to_one_sphinx_domain(
         assert page.count == 1
         assert [entry.sphinx_domain for entry in page.entries] == ["std"]
         assert page.entries[0].role == "label"
+
+
+@pytest.mark.asyncio
+async def test_get_children_returns_direct_children_with_links(
+    factory: Factory,
+) -> None:
+    """A module's page lists its own members, each with its links."""
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        source_store = factory.create_intersphinx_source_store()
+        source = await source_store.add_source(
+            url="https://a.example/objects.inv", title="A docs"
+        )
+        entity_ids = await entity_store.upsert_entities(
+            [
+                _entity("pkg", role="module"),
+                _entity("pkg.mod", role="module", parent_name="pkg"),
+                _entity("pkg.mod.Thing", parent_name="pkg.mod"),
+            ]
+        )
+        await entity_store.replace_source_links(
+            source.id,
+            [
+                _source_link(
+                    entity_ids["py", "pkg.mod"],
+                    html_url="https://a.example/api.html#pkg.mod",
+                    title="pkg.mod",
+                )
+            ],
+            collection_title=source.title,
+        )
+
+        page = await entity_store.get_children("py", "pkg", limit=10)
+
+        assert page is not None
+        assert page.count == 1
+        assert [entry.name for entry in page.entries] == ["pkg.mod"]
+        assert page.entries[0].links == [
+            Link(
+                html_url="https://a.example/api.html#pkg.mod",
+                type="python_api",
+                title="pkg.mod",
+                collection_title="A docs",
+            )
+        ]
+
+
+@pytest.mark.asyncio
+async def test_get_children_of_unknown_parent_is_none(
+    factory: Factory,
+) -> None:
+    """A name no entity answers to has no children page at all.
+
+    None rather than an empty page, because the two answer different
+    questions: this parent does not exist, versus this parent contains
+    nothing.
+    """
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        await entity_store.upsert_entities([_entity("pkg", role="module")])
+
+        assert await entity_store.get_children("py", "nothing.here") is None
+
+
+@pytest.mark.asyncio
+async def test_get_children_of_a_leaf_is_an_empty_page(
+    factory: Factory,
+) -> None:
+    """An entity that contains nothing has an empty page of children."""
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        await entity_store.upsert_entities(
+            [
+                _entity("pkg", role="module"),
+                _entity("pkg.Thing", parent_name="pkg"),
+            ]
+        )
+
+        page = await entity_store.get_children("py", "pkg.Thing", limit=10)
+
+        assert page is not None
+        assert page.count == 0
+        assert page.entries == []
+
+
+@pytest.mark.asyncio
+async def test_get_children_is_scoped_to_one_parent(factory: Factory) -> None:
+    """Another module's members are neither listed nor counted."""
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        await entity_store.upsert_entities(
+            [
+                _entity("pkg.a", role="module"),
+                _entity("pkg.b", role="module"),
+                _entity("pkg.a.Thing", parent_name="pkg.a"),
+                _entity("pkg.b.Other", parent_name="pkg.b"),
+            ]
+        )
+
+        page = await entity_store.get_children("py", "pkg.a", limit=10)
+
+        assert page is not None
+        assert page.count == 1
+        assert [entry.name for entry in page.entries] == ["pkg.a.Thing"]
+
+
+@pytest.mark.asyncio
+async def test_get_children_pages_without_dropping_or_repeating(
+    factory: Factory,
+) -> None:
+    """Walking every page of children yields each one exactly once."""
+    names = [f"pkg.Thing{index:02d}" for index in range(7)]
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        await entity_store.upsert_entities(
+            [
+                _entity("pkg", role="module"),
+                *(_entity(name, parent_name="pkg") for name in names),
+            ]
+        )
+
+        seen: list[str] = []
+        cursor = None
+        while True:
+            page = await entity_store.get_children(
+                "py", "pkg", limit=3, cursor=cursor
+            )
+            assert page is not None
+            assert page.count == len(names)
+            seen.extend(entry.name for entry in page.entries)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+
+        assert seen == sorted(names)

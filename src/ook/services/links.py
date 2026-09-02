@@ -102,6 +102,45 @@ class LinksService:
             PYTHON_SPHINX_DOMAIN, limit=limit, cursor=cursor
         )
 
+    async def get_python_object_children(
+        self,
+        name: str,
+        *,
+        limit: int | None = None,
+        cursor: IntersphinxEntityCursor | None = None,
+    ) -> (
+        CountedPaginatedList[IntersphinxEntityLinks, IntersphinxEntityCursor]
+        | None
+    ):
+        """Get a page of the objects one Python object directly contains.
+
+        Direct children only -- a module's classes and functions, a class's
+        methods -- so a page describes one level of the hierarchy rather
+        than an unbounded flattening of the subtree beneath it.
+
+        Parameters
+        ----------
+        name
+            The containing object's fully qualified Python name.
+        limit
+            The maximum number of children on the page. `None` returns
+            every child, unpaginated.
+        cursor
+            A keyset cursor naming the child the page starts at. `None`
+            starts at the first child.
+
+        Returns
+        -------
+        CountedPaginatedList or None
+            The page, its neighbouring cursors, and the total number of
+            children the object has -- or None if no stored Python object
+            goes by that name, which is the case that separates an unknown
+            name from an object that simply contains nothing.
+        """
+        return await self._entity_store.get_children(
+            PYTHON_SPHINX_DOMAIN, name, limit=limit, cursor=cursor
+        )
+
     async def get_links_for_sdm_schema(
         self, schema_name: str
     ) -> list[SdmSchemaLink] | None:

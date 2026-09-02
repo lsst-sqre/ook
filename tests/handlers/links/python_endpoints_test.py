@@ -93,6 +93,9 @@ async def test_python_domain_info(client: AsyncClient) -> None:
     assert data["collections"]["objects"].endswith(
         "/ook/links/domains/python/objects"
     )
+    assert data["collections"]["children"].endswith(
+        "/ook/links/domains/python/objects/{name}/children"
+    )
 
 
 @pytest.mark.asyncio
@@ -219,3 +222,140 @@ async def test_python_objects_collection_is_empty_when_nothing_ingested(
     assert response.status_code == 200
     assert response.json() == []
     assert response.headers["X-Total-Count"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_python_object_children(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """A module's children endpoint lists its members with their links."""
+    await _seed_pipelines_source(factory)
+
+    response = await client.get(f"{OBJECTS_URL}/lsst.afw.table/children")
+
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "1"
+    assert "Link" in response.headers
+    data = response.json()
+    assert [entry["entity"]["name"] for entry in data] == [
+        "lsst.afw.table.SourceCatalog"
+    ]
+    assert data[0]["entity"]["domain"] == "python"
+    assert data[0]["entity"]["domain_type"] == "object"
+    assert data[0]["entity"]["self_url"].endswith(
+        "/ook/links/domains/python/objects/lsst.afw.table.SourceCatalog"
+    )
+    assert data[0]["links"] == [
+        {
+            "url": (
+                "https://pipelines.lsst.io/v/weekly/py-api/"
+                "lsst.afw.table.SourceCatalog.html#anchor"
+            ),
+            "title": "lsst.afw.table.SourceCatalog",
+            "type": "python_api",
+            "collection_title": SOURCE_TITLE,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_python_object_children_excludes_grandchildren(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """A module lists its classes, not the methods inside those classes."""
+    await _seed_pipelines_source(factory)
+    async with factory.db_session.begin():
+        await factory.create_intersphinx_entity_store().upsert_entities(
+            [
+                InventoryEntity(
+                    sphinx_domain="py",
+                    role="method",
+                    name="lsst.afw.table.SourceCatalog.find",
+                    dispname="find",
+                    uri="py-api/lsst.afw.table.SourceCatalog.html#find",
+                    parent_name="lsst.afw.table.SourceCatalog",
+                )
+            ]
+        )
+
+    response = await client.get(f"{OBJECTS_URL}/lsst.afw.table/children")
+
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "1"
+    assert [entry["entity"]["name"] for entry in response.json()] == [
+        "lsst.afw.table.SourceCatalog"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_python_object_children_of_a_leaf_is_empty(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """An object that contains nothing answers with an empty page."""
+    await _seed_pipelines_source(factory)
+
+    response = await client.get(
+        f"{OBJECTS_URL}/lsst.afw.table.SourceCatalog/children"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
+    assert response.headers["X-Total-Count"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_python_object_children_of_unknown_object_is_not_found(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """A name no stored Python object answers to is a 404.
+
+    The distinction the empty page above cannot make: nothing here is
+    known, rather than known and empty.
+    """
+    await _seed_pipelines_source(factory)
+
+    response = await client.get(
+        f"{OBJECTS_URL}/lsst.afw.table.NoSuchClass/children"
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_python_object_children_pages(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """Following the Link header's next URL yields the following children."""
+    await _seed_pipelines_source(factory)
+    async with factory.db_session.begin():
+        await factory.create_intersphinx_entity_store().upsert_entities(
+            [
+                InventoryEntity(
+                    sphinx_domain="py",
+                    role="class",
+                    name="lsst.afw.table.BaseCatalog",
+                    dispname="lsst.afw.table.BaseCatalog",
+                    uri="py-api/lsst.afw.table.BaseCatalog.html",
+                    parent_name="lsst.afw.table",
+                )
+            ]
+        )
+
+    response = await client.get(
+        f"{OBJECTS_URL}/lsst.afw.table/children", params={"limit": 1}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "2"
+    assert [entry["entity"]["name"] for entry in response.json()] == [
+        "lsst.afw.table.BaseCatalog"
+    ]
+    links = PaginationLinkData.from_header(response.headers["Link"])
+    assert links.next_url is not None
+
+    next_response = await client.get(links.next_url)
+
+    assert next_response.status_code == 200
+    assert [entry["entity"]["name"] for entry in next_response.json()] == [
+        "lsst.afw.table.SourceCatalog"
+    ]

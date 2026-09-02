@@ -168,12 +168,6 @@ class IntersphinxEntityStore:
     ) -> CountedPaginatedList[IntersphinxEntityLinks, IntersphinxEntityCursor]:
         """Get a page of one Sphinx domain's entities with their links.
 
-        The links are fetched in a second query rather than joined onto the
-        first: a join would return one row per link and so pay out a page
-        of entities as a page of links, breaking the very thing keyset
-        pagination is for. Two queries keep one page one page, however many
-        sites document the entities on it.
-
         Parameters
         ----------
         sphinx_domain
@@ -195,26 +189,68 @@ class IntersphinxEntityStore:
         stmt = self._entity_select().where(
             SqlIntersphinxEntity.sphinx_domain == sphinx_domain
         )
-        runner = CountedPaginatedQueryRunner(
-            entry_type=IntersphinxEntityLinks,
-            cursor_type=IntersphinxEntityCursor,
+        return await self._paginate_entities(
+            sphinx_domain, stmt, limit=limit, cursor=cursor
         )
-        page = await runner.query_row(
-            session=self._session, stmt=stmt, cursor=cursor, limit=limit
+
+    async def get_children(
+        self,
+        sphinx_domain: str,
+        parent_name: str,
+        *,
+        limit: int | None = None,
+        cursor: IntersphinxEntityCursor | None = None,
+    ) -> (
+        CountedPaginatedList[IntersphinxEntityLinks, IntersphinxEntityCursor]
+        | None
+    ):
+        """Get a page of the entities one entity directly contains.
+
+        Direct children only: a module's page lists its classes, not those
+        classes' methods. A caller that wants the whole subtree walks it a
+        level at a time, which is what keeps one page one level of the
+        hierarchy rather than an unbounded flattening of it.
+
+        The parent is looked up before the children are queried so that a
+        name no entity answers to can be told apart from a leaf: the first
+        is None here, the second an empty page. Filtering on ``parent_id``
+        alone would collapse the two into the same empty answer.
+
+        Parameters
+        ----------
+        sphinx_domain
+            The Sphinx domain both the parent and its children belong to.
+        parent_name
+            The fully qualified name of the containing entity.
+        limit
+            The maximum number of children on the page. `None` returns
+            every child, unpaginated.
+        cursor
+            A keyset cursor naming the child the page starts at. `None`
+            starts at the first child.
+
+        Returns
+        -------
+        CountedPaginatedList or None
+            The page, its neighbouring cursors, and the number of direct
+            children the parent has in total -- or None if the pair names
+            no stored entity.
+        """
+        found = await self._lookup_entity_ids({(sphinx_domain, parent_name)})
+        parent_id = found.get((sphinx_domain, parent_name))
+        if parent_id is None:
+            return None
+
+        stmt = self._entity_select().where(
+            # The domain predicate is redundant against ``parent_id`` --
+            # a parent is only ever resolved within its own domain -- but
+            # it is what the ordering key's uniqueness rests on, so it is
+            # stated rather than inferred.
+            SqlIntersphinxEntity.sphinx_domain == sphinx_domain,
+            SqlIntersphinxEntity.parent_id == parent_id,
         )
-        links = await self._get_links_by_entity_name(
-            sphinx_domain, [entry.name for entry in page.entries]
-        )
-        return CountedPaginatedList[
-            IntersphinxEntityLinks, IntersphinxEntityCursor
-        ](
-            entries=[
-                entry.model_copy(update={"links": links.get(entry.name, [])})
-                for entry in page.entries
-            ],
-            next_cursor=page.next_cursor,
-            prev_cursor=page.prev_cursor,
-            count=page.count,
+        return await self._paginate_entities(
+            sphinx_domain, stmt, limit=limit, cursor=cursor
         )
 
     async def get_links_for_entity(self, entity_id: int) -> list[Link]:
@@ -419,6 +455,59 @@ class IntersphinxEntityStore:
             )
             .select_from(SqlIntersphinxEntity)
             .outerjoin(parent, parent.id == SqlIntersphinxEntity.parent_id)
+        )
+
+    async def _paginate_entities(
+        self,
+        sphinx_domain: str,
+        stmt: Select,
+        *,
+        limit: int | None,
+        cursor: IntersphinxEntityCursor | None,
+    ) -> CountedPaginatedList[IntersphinxEntityLinks, IntersphinxEntityCursor]:
+        """Page an entity select and fill each entry's links in.
+
+        The links are fetched in a second query rather than joined onto the
+        first: a join would return one row per link and so pay out a page
+        of entities as a page of links, breaking the very thing keyset
+        pagination is for. Two queries keep one page one page, however many
+        sites document the entities on it.
+
+        Parameters
+        ----------
+        sphinx_domain
+            The Sphinx domain *stmt* is scoped to, which is what makes the
+            entity name a usable key for the links query.
+        stmt
+            A select of the columns `_entity_select` produces, narrowed to
+            the entities the page is drawn from.
+        limit
+            The maximum number of entities on the page, or `None` for all
+            of them.
+        cursor
+            A keyset cursor naming the entity the page starts at, or
+            `None` to start at the first.
+        """
+        runner = CountedPaginatedQueryRunner(
+            entry_type=IntersphinxEntityLinks,
+            cursor_type=IntersphinxEntityCursor,
+        )
+        page = await runner.query_row(
+            session=self._session, stmt=stmt, cursor=cursor, limit=limit
+        )
+        links = await self._get_links_by_entity_name(
+            sphinx_domain, [entry.name for entry in page.entries]
+        )
+        return CountedPaginatedList[
+            IntersphinxEntityLinks, IntersphinxEntityCursor
+        ](
+            entries=[
+                entry.model_copy(update={"links": links.get(entry.name, [])})
+                for entry in page.entries
+            ],
+            next_cursor=page.next_cursor,
+            prev_cursor=page.prev_cursor,
+            count=page.count,
         )
 
     async def _get_links_by_entity_name(

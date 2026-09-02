@@ -425,6 +425,66 @@ async def get_python_objects(
 
 
 @router.get(
+    "/domains/python/objects/{name}/children",
+    summary="List a Python object's children's doc links",
+    response_description=(
+        "List of the objects the named object contains, with their doc links"
+    ),
+    responses={404: {"description": "Not found", "model": ErrorModel}},
+)
+async def get_python_object_children(
+    *,
+    name: python_object_name_path,
+    cursor: Annotated[
+        str | None,
+        Query(
+            title="Pagination cursor",
+            description="Cursor to navigate paginated results",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Query(
+            title="Row limit",
+            description="Maximum number of entries to return",
+            examples=[100],
+            ge=1,
+            le=100,
+        ),
+    ] = 100,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[PythonObjectLinks]:
+    """List the objects one Python object directly contains.
+
+    Direct children only -- a module's classes and functions, a class's
+    methods -- so one page is one level of the hierarchy. Walking a subtree
+    means following this endpoint down it.
+
+    An object that contains nothing answers with an empty page, which is a
+    different answer from the 404 a name nothing in the domain answers to
+    gets.
+    """
+    parsed_cursor = (
+        IntersphinxEntityCursor.from_str(cursor) if cursor else None
+    )
+
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        results = await link_service.get_python_object_children(
+            name, limit=limit, cursor=parsed_cursor
+        )
+        if results is None:
+            raise NotFoundError(f"No Python object named {name} is known.")
+        response = context.response
+        request = context.request
+        response.headers["Link"] = results.link_header(request.url)
+        response.headers["X-Total-Count"] = str(results.count)
+        return PythonObjectLinks.from_domain(
+            domain_collection=results.entries, request=request
+        )
+
+
+@router.get(
     "/domains/python/objects/{name}",
     summary="Get a Python object's doc links",
     response_description="List of doc links for a Python object",
