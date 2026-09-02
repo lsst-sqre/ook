@@ -32,6 +32,7 @@ from .services.glossary import GlossaryService
 from .services.ingest.lssttexmf import LsstTexmfIngestService
 from .services.ingest.sdmschemas import SdmSchemasIngestService
 from .services.intersphinx import IntersphinxCacheService
+from .services.intersphinxsources import IntersphinxSourceService
 from .services.landerjsonldingest import LtdLanderJsonLdIngestService
 from .services.linkcheck import LinkCheckService, UrlChecker
 from .services.links import LinksService
@@ -339,6 +340,13 @@ class Factory:
         """Create an IntersphinxSourceStore."""
         return IntersphinxSourceStore(
             session=self._session,
+            logger=self._logger,
+        )
+
+    def create_intersphinx_source_service(self) -> IntersphinxSourceService:
+        """Create an IntersphinxSourceService."""
+        return IntersphinxSourceService(
+            source_store=self.create_intersphinx_source_store(),
             logger=self._logger,
         )
 

@@ -1,0 +1,207 @@
+"""Service for the registry of intersphinx documentation sources."""
+
+from __future__ import annotations
+
+from sqlalchemy.exc import IntegrityError
+from structlog.stdlib import BoundLogger
+
+from ook.domain.intersphinxsources import IntersphinxSource
+from ook.exceptions import ConflictError
+from ook.storage.intersphinxsourcestore import IntersphinxSourceStore
+
+__all__ = ["IntersphinxSourceService"]
+
+URL_UNIQUE_INDEX = "ix_intersphinx_source_url"
+"""The unique index that makes an inventory URL a source's identity.
+
+Named here so a write that trips *some other* future constraint is not
+reported to the client as a duplicate URL.
+"""
+
+
+class IntersphinxSourceService:
+    """Service for managing the registry of documentation sources Ook
+    ingests intersphinx inventories from.
+
+    The store deliberately leaves a duplicate inventory URL as the
+    database's own `~sqlalchemy.exc.IntegrityError` so the layer with an
+    API to speak for can report it; this service is that layer.
+
+    Parameters
+    ----------
+    source_store
+        The source registry store.
+    logger
+        The logger.
+    """
+
+    def __init__(
+        self, *, source_store: IntersphinxSourceStore, logger: BoundLogger
+    ) -> None:
+        self._source_store = source_store
+        self._logger = logger
+
+    async def register_source(
+        self, *, url: str, title: str, enabled: bool = True
+    ) -> IntersphinxSource:
+        """Register a documentation source.
+
+        Parameters
+        ----------
+        url
+            The full URL of the site's ``objects.inv`` inventory.
+        title
+            The human title of the documentation site.
+        enabled
+            Whether ingest runs should visit the source.
+
+        Returns
+        -------
+        IntersphinxSource
+            The registered source, with its newly assigned ID and its
+            observability fields unset.
+
+        Raises
+        ------
+        ConflictError
+            Raised if the inventory URL is already registered.
+        """
+        try:
+            source = await self._source_store.add_source(
+                url=url, title=title, enabled=enabled
+            )
+        except IntegrityError as e:
+            self._raise_for_duplicate_url(e, url=url)
+            raise
+        self._logger.info(
+            "Registered intersphinx source",
+            source_id=source.id,
+            url=source.url,
+            enabled=source.enabled,
+        )
+        return source
+
+    async def get_source(self, source_id: int) -> IntersphinxSource | None:
+        """Get a registered source by its ID.
+
+        Parameters
+        ----------
+        source_id
+            The registration's ID.
+
+        Returns
+        -------
+        IntersphinxSource or None
+            The source, or None if no source has that ID.
+        """
+        return await self._source_store.get_source(source_id)
+
+    async def list_sources(
+        self, *, enabled_only: bool = False
+    ) -> list[IntersphinxSource]:
+        """List registered sources, ordered by inventory URL.
+
+        Parameters
+        ----------
+        enabled_only
+            If true, list only the sources ingest runs visit.
+
+        Returns
+        -------
+        list of IntersphinxSource
+            The registered sources, ordered by URL.
+        """
+        return await self._source_store.list_sources(enabled_only=enabled_only)
+
+    async def update_source(
+        self,
+        source_id: int,
+        *,
+        url: str | None = None,
+        title: str | None = None,
+        enabled: bool | None = None,
+    ) -> IntersphinxSource | None:
+        """Update a registered source's editable fields.
+
+        Only the fields given are written. The observability fields are not
+        editable here: they are written by ingest runs.
+
+        Parameters
+        ----------
+        source_id
+            The registration's ID.
+        url
+            The new inventory URL, or None to leave it.
+        title
+            The new human title, or None to leave it.
+        enabled
+            The new enabled flag, or None to leave it.
+
+        Returns
+        -------
+        IntersphinxSource or None
+            The updated source, or None if no source has that ID.
+
+        Raises
+        ------
+        ConflictError
+            Raised if the new inventory URL is already registered to a
+            different source.
+        """
+        try:
+            source = await self._source_store.update_source(
+                source_id, url=url, title=title, enabled=enabled
+            )
+        except IntegrityError as e:
+            self._raise_for_duplicate_url(e, url=url)
+            raise
+        if source is not None:
+            self._logger.info(
+                "Updated intersphinx source",
+                source_id=source.id,
+                url=source.url,
+                enabled=source.enabled,
+            )
+        return source
+
+    async def delete_source(self, source_id: int) -> bool:
+        """Delete a registered source and, by cascade, its links.
+
+        The entities those links pointed at are left behind: another source
+        may document the same object, and an entity nothing documents any
+        more is the pruning path's business.
+
+        Parameters
+        ----------
+        source_id
+            The registration's ID.
+
+        Returns
+        -------
+        bool
+            True if a source was deleted, False if none had that ID.
+        """
+        deleted = await self._source_store.delete_source(source_id)
+        if deleted:
+            self._logger.info(
+                "Deleted intersphinx source", source_id=source_id
+            )
+        return deleted
+
+    def _raise_for_duplicate_url(
+        self, error: IntegrityError, *, url: str | None
+    ) -> None:
+        """Re-report a duplicate-URL integrity error as a conflict.
+
+        Returns without raising when the error came from anything but the
+        inventory URL's unique index, so the caller can re-raise it as the
+        server-side failure it is rather than blaming the client's URL.
+        """
+        if URL_UNIQUE_INDEX not in str(error):
+            return
+        raise ConflictError(
+            message=(
+                f"The inventory URL {url!r} is already registered. Update"
+                " or delete the existing registration instead."
+            ),
+        ) from error
