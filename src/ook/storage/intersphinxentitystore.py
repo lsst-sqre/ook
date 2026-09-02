@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import cast
+from typing import Self, cast, override
 
+from safir.database import (
+    CountedPaginatedList,
+    CountedPaginatedQueryRunner,
+    InvalidCursorError,
+    PaginationCursor,
+)
 from sqlalchemy import (
     CursorResult,
+    Select,
     Table,
     bindparam,
     delete,
@@ -30,7 +40,7 @@ from ook.domain.intersphinxentities import (
 )
 from ook.domain.links import Link
 
-__all__ = ["IntersphinxEntityStore"]
+__all__ = ["IntersphinxEntityCursor", "IntersphinxEntityStore"]
 
 
 _UPSERT_CHUNK_SIZE = 1000
@@ -131,23 +141,9 @@ class IntersphinxEntityStore:
             The entity and its links, or None if the pair names no stored
             entity.
         """
-        parent = aliased(SqlIntersphinxEntity)
-        stmt = (
-            select(
-                SqlIntersphinxEntity.id,
-                SqlIntersphinxEntity.sphinx_domain,
-                SqlIntersphinxEntity.name,
-                SqlIntersphinxEntity.role,
-                SqlIntersphinxEntity.dispname,
-                SqlIntersphinxEntity.extras,
-                parent.name.label("parent_name"),
-            )
-            .select_from(SqlIntersphinxEntity)
-            .outerjoin(parent, parent.id == SqlIntersphinxEntity.parent_id)
-            .where(
-                SqlIntersphinxEntity.sphinx_domain == sphinx_domain,
-                SqlIntersphinxEntity.name == name,
-            )
+        stmt = self._entity_select().where(
+            SqlIntersphinxEntity.sphinx_domain == sphinx_domain,
+            SqlIntersphinxEntity.name == name,
         )
         row = (await self._session.execute(stmt)).one_or_none()
         if row is None:
@@ -161,6 +157,64 @@ class IntersphinxEntityStore:
             parent_name=row.parent_name,
             extras=row.extras,
             links=await self.get_links_for_entity(row.id),
+        )
+
+    async def get_entities(
+        self,
+        sphinx_domain: str,
+        *,
+        limit: int | None = None,
+        cursor: IntersphinxEntityCursor | None = None,
+    ) -> CountedPaginatedList[IntersphinxEntityLinks, IntersphinxEntityCursor]:
+        """Get a page of one Sphinx domain's entities with their links.
+
+        The links are fetched in a second query rather than joined onto the
+        first: a join would return one row per link and so pay out a page
+        of entities as a page of links, breaking the very thing keyset
+        pagination is for. Two queries keep one page one page, however many
+        sites document the entities on it.
+
+        Parameters
+        ----------
+        sphinx_domain
+            The Sphinx domain to list, which scopes the ordering key: a
+            name is unique within a domain, not across domains.
+        limit
+            The maximum number of entities on the page. `None` returns
+            every entity in the domain, unpaginated.
+        cursor
+            A keyset cursor naming the entity the page starts at. `None`
+            starts at the first entity.
+
+        Returns
+        -------
+        CountedPaginatedList
+            The page, its neighbouring cursors, and the number of entities
+            the domain holds in total.
+        """
+        stmt = self._entity_select().where(
+            SqlIntersphinxEntity.sphinx_domain == sphinx_domain
+        )
+        runner = CountedPaginatedQueryRunner(
+            entry_type=IntersphinxEntityLinks,
+            cursor_type=IntersphinxEntityCursor,
+        )
+        page = await runner.query_row(
+            session=self._session, stmt=stmt, cursor=cursor, limit=limit
+        )
+        links = await self._get_links_by_entity_name(
+            sphinx_domain, [entry.name for entry in page.entries]
+        )
+        return CountedPaginatedList[
+            IntersphinxEntityLinks, IntersphinxEntityCursor
+        ](
+            entries=[
+                entry.model_copy(update={"links": links.get(entry.name, [])})
+                for entry in page.entries
+            ],
+            next_cursor=page.next_cursor,
+            prev_cursor=page.prev_cursor,
+            count=page.count,
         )
 
     async def get_links_for_entity(self, entity_id: int) -> list[Link]:
@@ -345,6 +399,79 @@ class IntersphinxEntityStore:
         return pruned
 
     @staticmethod
+    def _entity_select() -> Select:
+        """Select the columns an `IntersphinxEntityLinks` is built from.
+
+        ``id`` rides along unused by the model itself: the read path needs
+        it to fetch the entity's links, and Pydantic ignores the extra
+        attribute when it validates the row.
+        """
+        parent = aliased(SqlIntersphinxEntity)
+        return (
+            select(
+                SqlIntersphinxEntity.id,
+                SqlIntersphinxEntity.sphinx_domain,
+                SqlIntersphinxEntity.name,
+                SqlIntersphinxEntity.role,
+                SqlIntersphinxEntity.dispname,
+                SqlIntersphinxEntity.extras,
+                parent.name.label("parent_name"),
+            )
+            .select_from(SqlIntersphinxEntity)
+            .outerjoin(parent, parent.id == SqlIntersphinxEntity.parent_id)
+        )
+
+    async def _get_links_by_entity_name(
+        self, sphinx_domain: str, names: Sequence[str]
+    ) -> dict[str, list[Link]]:
+        """Get the links to each named entity, keyed by entity name.
+
+        Keyed by name rather than by database ID because the caller holds
+        `IntersphinxEntityLinks` models, which carry no ID -- and a name is
+        just as good a key here, being unique within a Sphinx domain.
+
+        Entities nothing links to are simply absent from the mapping.
+        """
+        if not names:
+            return {}
+
+        stmt = (
+            select(
+                SqlIntersphinxEntity.name,
+                SqlIntersphinxLink.html_url,
+                SqlIntersphinxLink.source_type,
+                SqlIntersphinxLink.source_title,
+                SqlIntersphinxLink.source_collection_title,
+            )
+            .select_from(SqlIntersphinxLink)
+            .join(
+                SqlIntersphinxEntity,
+                SqlIntersphinxEntity.id == SqlIntersphinxLink.entity_id,
+            )
+            .where(
+                SqlIntersphinxEntity.sphinx_domain == sphinx_domain,
+                SqlIntersphinxEntity.name.in_(names),
+            )
+            # The same order `get_links_for_entity` reads one entity's
+            # links in, so a link list does not depend on which endpoint
+            # served it.
+            .order_by(
+                SqlIntersphinxLink.source_title, SqlIntersphinxLink.html_url
+            )
+        )
+        links: dict[str, list[Link]] = {}
+        for row in await self._session.execute(stmt):
+            links.setdefault(row.name, []).append(
+                Link(
+                    html_url=row.html_url,
+                    type=row.source_type,
+                    title=row.source_title,
+                    collection_title=row.source_collection_title,
+                )
+            )
+        return links
+
+    @staticmethod
     def _deduplicate(
         entities: Iterable[InventoryEntity],
     ) -> list[InventoryEntity]:
@@ -464,3 +591,65 @@ class IntersphinxEntityStore:
             for row in await self._session.execute(stmt):
                 found[row.sphinx_domain, row.name] = row.id
         return found
+
+
+@dataclass(slots=True)
+class IntersphinxEntityCursor(PaginationCursor[IntersphinxEntityLinks]):
+    """A keyset pagination cursor over entities in one Sphinx domain.
+
+    Ordered by name alone, which is a complete key rather than a prefix of
+    one: ``uq_intersphinx_entity_name`` makes a name unique within its
+    Sphinx domain, and a collection query is always scoped to one domain.
+    That is what makes paging stable -- no tiebreak is needed, so no two
+    rows can swap places between pages and be dropped or served twice.
+    """
+
+    name: str
+    """The name of the entity the page starts at."""
+
+    @override
+    @classmethod
+    def from_entry(
+        cls, entry: IntersphinxEntityLinks, *, reverse: bool = False
+    ) -> Self:
+        """Construct a cursor with an entry as the bound."""
+        return cls(name=entry.name, previous=reverse)
+
+    @override
+    @classmethod
+    def from_str(cls, cursor: str) -> Self:
+        """Build a cursor from its string serialization."""
+        try:
+            decoded = base64.b64decode(cursor).decode("utf-8")
+            data = json.loads(decoded)
+            return cls(name=data["name"], previous=data["previous"])
+        except Exception as e:
+            raise InvalidCursorError(f"Cannot parse cursor: {e!s}") from e
+
+    @override
+    @classmethod
+    def apply_order(cls, stmt: Select, *, reverse: bool = False) -> Select:
+        """Apply the cursor's sort order to a select statement."""
+        column = SqlIntersphinxEntity.name
+        return stmt.order_by(column.desc() if reverse else column.asc())
+
+    @override
+    def apply_cursor(self, stmt: Select) -> Select:
+        """Apply the cursor's bound to a select statement."""
+        column = SqlIntersphinxEntity.name
+        # Inclusive going forwards and exclusive going back, because a
+        # cursor names the first entry of the page it opens: that entry
+        # belongs to the next page and not to the previous one.
+        if self.previous:
+            return stmt.where(column < self.name)
+        return stmt.where(column >= self.name)
+
+    @override
+    def invert(self) -> Self:
+        return type(self)(name=self.name, previous=not self.previous)
+
+    def __str__(self) -> str:
+        """Serialize to a string, the inverse of `from_str`."""
+        data = {"name": self.name, "previous": self.previous}
+        encoded = base64.b64encode(json.dumps(data).encode("utf-8"))
+        return encoded.decode("utf-8")

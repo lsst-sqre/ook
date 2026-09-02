@@ -673,3 +673,121 @@ async def test_prune_deletes_a_whole_undocumented_subtree(
         assert await entity_store.prune_orphan_entities() == 2
         assert await entity_store.get_entity("py", "pkg") is None
         assert await entity_store.get_entity("py", "pkg.Thing") is None
+
+
+@pytest.mark.asyncio
+async def test_get_entities_returns_entities_with_links(
+    factory: Factory,
+) -> None:
+    """A page of entities carries each one's links and the total count."""
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        source_store = factory.create_intersphinx_source_store()
+        source = await source_store.add_source(
+            url="https://a.example/objects.inv", title="A docs"
+        )
+        entity_ids = await entity_store.upsert_entities(
+            [
+                _entity("pkg", role="module"),
+                _entity("pkg.Thing", parent_name="pkg"),
+            ]
+        )
+        await entity_store.replace_source_links(
+            source.id,
+            [
+                _source_link(
+                    entity_ids["py", "pkg.Thing"],
+                    html_url="https://a.example/api.html#pkg.Thing",
+                )
+            ],
+            collection_title=source.title,
+        )
+
+        page = await entity_store.get_entities("py", limit=10)
+
+        assert page.count == 2
+        assert [entry.name for entry in page.entries] == ["pkg", "pkg.Thing"]
+        # The package holds no page of its own, which is a real state
+        # rather than missing data: it is kept alive by the class beneath.
+        assert page.entries[0].links == []
+        assert page.entries[1].links == [
+            Link(
+                html_url="https://a.example/api.html#pkg.Thing",
+                type="python_api",
+                title="pkg.Thing",
+                collection_title="A docs",
+            )
+        ]
+
+
+@pytest.mark.asyncio
+async def test_get_entities_pages_without_dropping_or_repeating(
+    factory: Factory,
+) -> None:
+    """Walking every page yields each entity exactly once, in name order."""
+    names = [f"pkg.Thing{index:02d}" for index in range(7)]
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        await entity_store.upsert_entities(
+            [_entity("pkg", role="module"), *(_entity(n) for n in names)]
+        )
+        expected = sorted(["pkg", *names])
+
+        seen: list[str] = []
+        cursor = None
+        while True:
+            page = await entity_store.get_entities(
+                "py", limit=3, cursor=cursor
+            )
+            assert page.count == len(expected)
+            seen.extend(entry.name for entry in page.entries)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+
+        assert seen == expected
+
+
+@pytest.mark.asyncio
+async def test_get_entities_pages_backwards(factory: Factory) -> None:
+    """A previous cursor returns the page before it, in forward order."""
+    names = [f"pkg.Thing{index:02d}" for index in range(5)]
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        await entity_store.upsert_entities([_entity(n) for n in names])
+
+        first = await entity_store.get_entities("py", limit=2)
+        assert first.next_cursor is not None
+        second = await entity_store.get_entities(
+            "py", limit=2, cursor=first.next_cursor
+        )
+        assert second.prev_cursor is not None
+
+        back = await entity_store.get_entities(
+            "py", limit=2, cursor=second.prev_cursor
+        )
+
+        assert [entry.name for entry in back.entries] == [
+            entry.name for entry in first.entries
+        ]
+
+
+@pytest.mark.asyncio
+async def test_get_entities_is_scoped_to_one_sphinx_domain(
+    factory: Factory,
+) -> None:
+    """Another Sphinx domain's entities are neither listed nor counted."""
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        await entity_store.upsert_entities(
+            [
+                _entity("pkg.Thing"),
+                _entity("pkg.Thing", role="label", sphinx_domain="std"),
+            ]
+        )
+
+        page = await entity_store.get_entities("std", limit=10)
+
+        assert page.count == 1
+        assert [entry.sphinx_domain for entry in page.entries] == ["std"]
+        assert page.entries[0].role == "label"

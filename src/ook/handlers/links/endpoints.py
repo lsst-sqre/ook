@@ -8,13 +8,20 @@ from safir.models import ErrorModel
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 from ook.exceptions import NotFoundError
+from ook.storage.intersphinxentitystore import IntersphinxEntityCursor
 from ook.storage.linkstore import (
     SdmColumnLinksCollectionCursor,
     SdmLinksCollectionCursor,
     SdmTableLinksCollectionCursor,
 )
 
-from .models import Link, PythonDomainInfo, SdmDomainInfo, SdmLinks
+from .models import (
+    Link,
+    PythonDomainInfo,
+    PythonObjectLinks,
+    SdmDomainInfo,
+    SdmLinks,
+)
 
 router = APIRouter(prefix=f"{config.path_prefix}/links", tags=["links"])
 """FastAPI router for the links API."""
@@ -365,6 +372,56 @@ async def get_python_domain_info(
 ) -> PythonDomainInfo:
     """Get information about the Python domain."""
     return PythonDomainInfo.create(request=context.request)
+
+
+@router.get(
+    "/domains/python/objects",
+    summary="List Python objects' doc links",
+    response_description="List of Python objects and their doc links",
+)
+async def get_python_objects(
+    *,
+    cursor: Annotated[
+        str | None,
+        Query(
+            title="Pagination cursor",
+            description="Cursor to navigate paginated results",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Query(
+            title="Row limit",
+            description="Maximum number of entries to return",
+            examples=[100],
+            ge=1,
+            le=100,
+        ),
+    ] = 100,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[PythonObjectLinks]:
+    """List every Python object Ook knows, with its documentation links.
+
+    A domain nothing has been ingested into is an empty collection rather
+    than a 404: the endpoint answers about a domain, which exists whether
+    or not any source has been registered for it yet.
+    """
+    parsed_cursor = (
+        IntersphinxEntityCursor.from_str(cursor) if cursor else None
+    )
+
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        results = await link_service.get_python_objects(
+            limit=limit, cursor=parsed_cursor
+        )
+        response = context.response
+        request = context.request
+        response.headers["Link"] = results.link_header(request.url)
+        response.headers["X-Total-Count"] = str(results.count)
+        return PythonObjectLinks.from_domain(
+            domain_collection=results.entries, request=request
+        )
 
 
 @router.get(

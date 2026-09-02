@@ -22,10 +22,11 @@ the question "where is this object documented?" is answered in.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Protocol
 
+from pydantic import BaseModel, Field
 from sphobjinv import Inventory
 
 from ..exceptions import InventoryParseError
@@ -124,14 +125,19 @@ class InventoryEntity:
     """
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class IntersphinxEntityLinks:
+class IntersphinxEntityLinks(BaseModel):
     """A stored entity together with the documentation links to it.
 
     An entity is stored once per ``(sphinx_domain, name)`` however many
     sites document it, so `links` is the union across sources rather than
     one site's view. It is empty for an entity that exists only to hold
     documented descendants -- a package whose own page no source publishes.
+
+    A Pydantic model, unlike the inventory-side models above, because this
+    is the read side: Safir's keyset pagination validates query rows into
+    the entry type it is given, so a collection of these entities is
+    paginated by handing this class to a
+    `~safir.database.CountedPaginatedQueryRunner`.
     """
 
     sphinx_domain: str
@@ -157,9 +163,14 @@ class IntersphinxEntityLinks:
     extras: dict[str, Any] | None
     """Domain-specific attributes with no field of their own, or None."""
 
-    links: list[Link] = field(default_factory=list)
+    links: list[Link] = Field(default_factory=list)
     """The documentation links to this entity, from every source that
     documents it.
+
+    Defaulted rather than required because the entity row and its links
+    are two queries: the paginated read validates a page of entity rows
+    into these models and then fills the links in, which a required field
+    would leave nowhere to stand.
     """
 
 

@@ -8,6 +8,7 @@ from typing import Literal, Self
 from fastapi import FastAPI, Request
 from pydantic import AnyHttpUrl, BaseModel, Field
 
+from ook.domain.intersphinxentities import IntersphinxEntityLinks
 from ook.domain.links import Link as DomainLink
 from ook.domain.links import (
     SdmColumnLinksCollection,
@@ -21,6 +22,8 @@ __all__ = [
     "LinkDomainInfo",
     "LinkedEntityInfo",
     "PythonDomainInfo",
+    "PythonObjectLinkedEntityInfo",
+    "PythonObjectLinks",
     "SdmColumnLinkedEntityInfo",
     "SdmLinks",
     "SdmSchemaLinkedEntityInfo",
@@ -124,7 +127,10 @@ class PythonDomainInfo(LinkDomainInfo):
                 "object": base_url
                 + _path_template(app, "get_python_object_links", "name"),
             },
-            collections={},
+            collections={
+                "objects": base_url
+                + _path_template(app, "get_python_objects"),
+            },
         )
 
 
@@ -361,3 +367,68 @@ class SdmLinks(BaseModel):
                 )
             case _:
                 raise TypeError(f"Unknown domain type: {type(domain)}")
+
+
+class PythonObjectLinkedEntityInfo(LinkedEntityInfo):
+    """Information about a Python object links entity."""
+
+    domain: Literal["python"] = "python"
+
+    domain_type: Literal["object"] = "object"
+
+    name: str = Field(
+        ...,
+        title="Fully qualified name of the object",
+        description=(
+            "The name a Sphinx cross-reference targets, which is the "
+            "object's identity in this domain."
+        ),
+    )
+
+    @classmethod
+    def from_domain(
+        cls, *, domain: IntersphinxEntityLinks, request: Request
+    ) -> Self:
+        """Create a `PythonObjectLinkedEntityInfo` from a stored entity."""
+        return cls(
+            name=domain.name,
+            self_url=str(
+                request.url_for("get_python_object_links", name=domain.name)
+            ),
+        )
+
+
+class PythonObjectLinks(BaseModel):
+    """Documentation links for one Python object."""
+
+    entity: PythonObjectLinkedEntityInfo = Field(
+        ..., title="Identity about the linked entity"
+    )
+
+    links: list[Link] = Field(
+        ...,
+        title="Documentation links",
+        description=(
+            "Empty for an object Ook knows but no source currently gives a "
+            "page -- a package held in place by the documented objects "
+            "beneath it."
+        ),
+    )
+
+    @classmethod
+    def from_domain(
+        cls,
+        *,
+        domain_collection: Sequence[IntersphinxEntityLinks],
+        request: Request,
+    ) -> list[Self]:
+        """Create a `PythonObjectLinks` list from stored entities."""
+        return [
+            cls(
+                entity=PythonObjectLinkedEntityInfo.from_domain(
+                    domain=domain, request=request
+                ),
+                links=[Link.from_domain_link(link) for link in domain.links],
+            )
+            for domain in domain_collection
+        ]

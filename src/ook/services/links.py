@@ -17,7 +17,10 @@ from ook.domain.links import (
     SdmTableLink,
     SdmTableLinksCollection,
 )
-from ook.storage.intersphinxentitystore import IntersphinxEntityStore
+from ook.storage.intersphinxentitystore import (
+    IntersphinxEntityCursor,
+    IntersphinxEntityStore,
+)
 from ook.storage.linkstore import (
     LinkStore,
     SdmColumnLinksCollectionCursor,
@@ -65,6 +68,39 @@ class LinksService:
             None if no stored Python object goes by that name.
         """
         return await self._entity_store.get_entity(PYTHON_SPHINX_DOMAIN, name)
+
+    async def get_python_objects(
+        self,
+        *,
+        limit: int | None = None,
+        cursor: IntersphinxEntityCursor | None = None,
+    ) -> CountedPaginatedList[IntersphinxEntityLinks, IntersphinxEntityCursor]:
+        """Get a page of Python objects and the documentation links to them.
+
+        Every stored object is listed, including the ones no source gives a
+        page -- for the same reason `get_python_object` returns them: such
+        an object is a name held in place by the documented objects beneath
+        it, and hiding it here would make the collection disagree with the
+        per-object endpoint about what exists.
+
+        Parameters
+        ----------
+        limit
+            The maximum number of objects on the page. `None` returns every
+            object, unpaginated.
+        cursor
+            A keyset cursor naming the object the page starts at. `None`
+            starts at the first object.
+
+        Returns
+        -------
+        CountedPaginatedList
+            The page, its neighbouring cursors, and the total number of
+            Python objects Ook stores.
+        """
+        return await self._entity_store.get_entities(
+            PYTHON_SPHINX_DOMAIN, limit=limit, cursor=cursor
+        )
 
     async def get_links_for_sdm_schema(
         self, schema_name: str

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
+from safir.http import PaginationLinkData
 
 from ook.config import config
 from ook.domain.intersphinxentities import (
@@ -89,6 +90,9 @@ async def test_python_domain_info(client: AsyncClient) -> None:
     assert data["entities"]["object"].endswith(
         "/ook/links/domains/python/objects/{name}"
     )
+    assert data["collections"]["objects"].endswith(
+        "/ook/links/domains/python/objects"
+    )
 
 
 @pytest.mark.asyncio
@@ -142,3 +146,76 @@ async def test_python_object_without_links(
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_python_objects_collection(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """The collection lists every object with its links and a total count."""
+    await _seed_pipelines_source(factory)
+
+    response = await client.get(OBJECTS_URL)
+
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "2"
+    assert "Link" in response.headers
+    data = response.json()
+    assert [entry["entity"]["name"] for entry in data] == [
+        "lsst.afw.table",
+        "lsst.afw.table.SourceCatalog",
+    ]
+    assert data[0]["entity"]["domain"] == "python"
+    assert data[0]["entity"]["domain_type"] == "object"
+    assert data[0]["entity"]["self_url"].endswith(
+        "/ook/links/domains/python/objects/lsst.afw.table"
+    )
+    # The module holds no page of its own, and the collection says so the
+    # same way the single-object endpoint does: an empty list, not a gap.
+    assert data[0]["links"] == []
+    assert data[1]["links"] == [
+        {
+            "url": (
+                "https://pipelines.lsst.io/v/weekly/py-api/"
+                "lsst.afw.table.SourceCatalog.html#anchor"
+            ),
+            "title": "lsst.afw.table.SourceCatalog",
+            "type": "python_api",
+            "collection_title": SOURCE_TITLE,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_python_objects_collection_pages(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """Following the Link header's next URL yields the following objects."""
+    await _seed_pipelines_source(factory)
+
+    response = await client.get(OBJECTS_URL, params={"limit": 1})
+
+    assert response.status_code == 200
+    first = response.json()
+    assert [entry["entity"]["name"] for entry in first] == ["lsst.afw.table"]
+    links = PaginationLinkData.from_header(response.headers["Link"])
+    assert links.next_url is not None
+
+    next_response = await client.get(links.next_url)
+
+    assert next_response.status_code == 200
+    assert [entry["entity"]["name"] for entry in next_response.json()] == [
+        "lsst.afw.table.SourceCatalog"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_python_objects_collection_is_empty_when_nothing_ingested(
+    client: AsyncClient,
+) -> None:
+    """An unpopulated domain is an empty collection, not a 404."""
+    response = await client.get(OBJECTS_URL)
+
+    assert response.status_code == 200
+    assert response.json() == []
+    assert response.headers["X-Total-Count"] == "0"
