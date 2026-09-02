@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal, Self
+from typing import ClassVar, Literal, Self
 
 from fastapi import FastAPI, Request
 from pydantic import AnyHttpUrl, BaseModel, Field
@@ -18,13 +18,17 @@ from ook.domain.links import (
 )
 
 __all__ = [
+    "LINK_DOMAIN_TYPES",
     "Link",
     "LinkDomainInfo",
+    "LinkDomainSummary",
+    "LinkDomainTemplates",
     "LinkedEntityInfo",
     "PythonDomainInfo",
     "PythonObjectLinkedEntityInfo",
     "PythonObjectLinks",
     "SdmColumnLinkedEntityInfo",
+    "SdmDomainInfo",
     "SdmLinks",
     "SdmSchemaLinkedEntityInfo",
     "SdmTableLinkedEntityInfo",
@@ -41,13 +45,14 @@ def _path_template(app: FastAPI, route_name: str, *param_names: str) -> str:
     return str(app.url_path_for(route_name, **placeholders))
 
 
-class LinkDomainInfo(BaseModel):
+class LinkDomainTemplates(BaseModel):
     """The URI templates one link domain publishes.
 
     Every link domain answers the same two questions -- how to address one
     of its entities, and how to page through a collection of them -- so the
     shape is shared and each domain fills in its own templates. A client
-    that has read one domain's info can therefore read any of them.
+    that has read one domain's templates can therefore read any of them,
+    whether it read them from the domain itself or from the domains index.
     """
 
     entities: dict[str, str] = Field(
@@ -69,8 +74,47 @@ class LinkDomainInfo(BaseModel):
     )
 
 
+class LinkDomainInfo(LinkDomainTemplates):
+    """What one link domain's own info endpoint answers.
+
+    Subclasses name themselves and build their own templates; this class is
+    the shared behavior rather than a domain in its own right.
+    """
+
+    domain_name: ClassVar[str]
+    """This domain's name in the ``/links/domains/`` namespace."""
+
+    info_route_name: ClassVar[str]
+    """Name of the route serving this domain's own info endpoint."""
+
+    @classmethod
+    def create(cls, request: Request) -> Self:
+        """Build this domain's URI templates against the request's base URL."""
+        raise NotImplementedError
+
+    @classmethod
+    def create_summary(cls, request: Request) -> LinkDomainSummary:
+        """Summarize this domain for the cross-domain index.
+
+        A domain describes itself the same way wherever it is asked, so the
+        index reuses each domain's own ``create`` rather than restating its
+        templates in a second place that could drift.
+        """
+        info = cls.create(request)
+        return LinkDomainSummary(
+            name=cls.domain_name,
+            self_url=str(request.url_for(cls.info_route_name)),
+            entities=info.entities,
+            collections=info.collections,
+        )
+
+
 class SdmDomainInfo(LinkDomainInfo):
     """Links for the SDM domain APIs."""
+
+    domain_name: ClassVar[str] = "sdm"
+
+    info_route_name: ClassVar[str] = "get_sdm_domain_info"
 
     @classmethod
     def create(cls, request: Request) -> Self:
@@ -117,6 +161,10 @@ class SdmDomainInfo(LinkDomainInfo):
 class PythonDomainInfo(LinkDomainInfo):
     """Links for the Python domain APIs."""
 
+    domain_name: ClassVar[str] = "python"
+
+    info_route_name: ClassVar[str] = "get_python_domain_info"
+
     @classmethod
     def create(cls, request: Request) -> Self:
         """Create a `PythonDomainInfo` object."""
@@ -134,6 +182,50 @@ class PythonDomainInfo(LinkDomainInfo):
                 + _path_template(app, "get_python_object_children", "name"),
             },
         )
+
+
+LINK_DOMAIN_TYPES: tuple[type[LinkDomainInfo], ...] = (
+    SdmDomainInfo,
+    PythonDomainInfo,
+)
+"""Every link domain the API publishes, in the order the index lists them.
+
+The index is generated from this tuple, so a new domain becomes discoverable
+by being registered here rather than by remembering to extend a hand-written
+listing.
+"""
+
+
+class LinkDomainSummary(LinkDomainTemplates):
+    """One link domain's entry in the cross-domain index.
+
+    Carries the domain's own URI templates, so a client can address entities
+    in any domain straight from the index, plus the two things that only
+    mean something alongside the domain's siblings: which domain this is,
+    and where its own info endpoint lives.
+    """
+
+    name: str = Field(
+        ...,
+        title="Name of the domain",
+        description=(
+            "The domain's name in the ``/links/domains/`` namespace, which "
+            "is also what entities in it report as their ``domain``."
+        ),
+        examples=["sdm"],
+    )
+
+    self_url: str = Field(
+        ..., title="API URL to this domain's own info endpoint"
+    )
+
+    @classmethod
+    def create_all(cls, request: Request) -> list[LinkDomainSummary]:
+        """Summarize every registered link domain, in registration order."""
+        return [
+            domain_type.create_summary(request)
+            for domain_type in LINK_DOMAIN_TYPES
+        ]
 
 
 class Link(BaseModel):

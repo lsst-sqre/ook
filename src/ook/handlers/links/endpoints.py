@@ -17,6 +17,7 @@ from ook.storage.linkstore import (
 
 from .models import (
     Link,
+    LinkDomainSummary,
     PythonDomainInfo,
     PythonObjectLinks,
     SdmDomainInfo,
@@ -49,6 +50,23 @@ python_object_name_path = Annotated[
         examples=["lsst.afw.table.SourceCatalog"],
     ),
 ]
+
+
+@router.get(
+    "/domains",
+    summary="List the link domains",
+    response_description="The link domains and their URI templates",
+)
+async def get_link_domains(
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[LinkDomainSummary]:
+    """List every link domain, with the URI templates each one publishes.
+
+    This is the entry point to the Links API: a client discovers which
+    domains exist and how to address their entities here, instead of
+    hard-coding a path per domain.
+    """
+    return LinkDomainSummary.create_all(request=context.request)
 
 
 @router.get(
