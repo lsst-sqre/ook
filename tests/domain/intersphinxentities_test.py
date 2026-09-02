@@ -140,19 +140,19 @@ def test_uris_without_the_abbreviation_are_untouched(
     assert synthetic_objects["example.pkg.func"].uri == "api.html#example-func"
 
 
-def test_abbreviated_dispnames_are_expanded(
+def test_abbreviated_display_names_are_expanded(
     synthetic_objects: dict[str, InventoryObject],
 ) -> None:
-    assert synthetic_objects["example.pkg.Thing"].dispname == (
+    assert synthetic_objects["example.pkg.Thing"].display_name == (
         "example.pkg.Thing"
     )
 
 
-def test_explicit_dispnames_are_preserved(
+def test_explicit_display_names_are_preserved(
     synthetic_objects: dict[str, InventoryObject],
 ) -> None:
-    assert synthetic_objects["orphan.pkg.Widget"].dispname == "Widget"
-    assert synthetic_objects["example.pkg.func"].dispname == "A function"
+    assert synthetic_objects["orphan.pkg.Widget"].display_name == "Widget"
+    assert synthetic_objects["example.pkg.func"].display_name == "A function"
 
 
 @pytest.mark.parametrize(
@@ -245,7 +245,7 @@ def test_build_entities_carries_the_parsed_object_through(
         sphinx_domain="py",
         role="class",
         name="example.pkg.Thing",
-        dispname="example.pkg.Thing",
+        display_name="example.pkg.Thing",
         uri="api.html#example.pkg.Thing",
         parent_name="example.pkg",
     )
@@ -258,14 +258,14 @@ def test_build_entities_ignores_a_parent_in_another_sphinx_domain() -> None:
             sphinx_domain="std",
             role="doc",
             name="example.pkg",
-            dispname="Example",
+            display_name="Example",
             uri="index.html",
         ),
         InventoryObject(
             sphinx_domain="py",
             role="class",
             name="example.pkg.Thing",
-            dispname="example.pkg.Thing",
+            display_name="example.pkg.Thing",
             uri="api.html#example.pkg.Thing",
         ),
     ]
@@ -284,7 +284,7 @@ def test_parses_the_real_pipelines_inventory(
     source_catalog = objects["lsst.afw.table.SourceCatalog"]
     assert source_catalog.sphinx_domain == "py"
     assert source_catalog.role == "class"
-    assert source_catalog.dispname == "lsst.afw.table.SourceCatalog"
+    assert source_catalog.display_name == "lsst.afw.table.SourceCatalog"
     assert source_catalog.uri == (
         "api/lsst.afw.table.SourceCatalog.html#lsst.afw.table.SourceCatalog"
     )

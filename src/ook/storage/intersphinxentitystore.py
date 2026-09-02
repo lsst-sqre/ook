@@ -153,7 +153,7 @@ class IntersphinxEntityStore:
             sphinx_domain=row.sphinx_domain,
             name=row.name,
             role=row.role,
-            dispname=row.dispname,
+            display_name=row.display_name,
             parent_name=row.parent_name,
             extras=row.extras,
             links=await self.get_links_for_entity(row.id),
@@ -449,7 +449,7 @@ class IntersphinxEntityStore:
                 SqlIntersphinxEntity.sphinx_domain,
                 SqlIntersphinxEntity.name,
                 SqlIntersphinxEntity.role,
-                SqlIntersphinxEntity.dispname,
+                SqlIntersphinxEntity.display_name,
                 SqlIntersphinxEntity.extras,
                 parent.name.label("parent_name"),
             )
@@ -589,7 +589,7 @@ class IntersphinxEntityStore:
                         "sphinx_domain": entity.sphinx_domain,
                         "name": entity.name,
                         "role": entity.role,
-                        "dispname": entity.dispname,
+                        "display_name": entity.display_name,
                     }
                     for entity in chunk
                 ]
@@ -599,7 +599,7 @@ class IntersphinxEntityStore:
                     constraint="uq_intersphinx_entity_name",
                     set_={
                         "role": statement.excluded.role,
-                        "dispname": statement.excluded.dispname,
+                        "display_name": statement.excluded.display_name,
                     },
                 ).returning(
                     SqlIntersphinxEntity.id,

@@ -75,7 +75,7 @@ class InventoryObject:
     targets.
     """
 
-    dispname: str
+    display_name: str
     """The name to display for the object.
 
     Sphinx abbreviates this to ``-`` when it equals `name`; that
@@ -105,7 +105,7 @@ class InventoryEntity:
     name: str
     """The object's fully qualified name."""
 
-    dispname: str
+    display_name: str
     """The name to display for the object."""
 
     uri: str
@@ -149,7 +149,7 @@ class IntersphinxEntityLinks(BaseModel):
     role: str
     """The Sphinx role the entity was declared with."""
 
-    dispname: str
+    display_name: str
     """The name to display for the entity."""
 
     parent_name: str | None
@@ -324,7 +324,7 @@ def parse_inventory(content: bytes) -> list[InventoryObject]:
             sphinx_domain=obj.domain,
             role=obj.role,
             name=obj.name,
-            dispname=obj.dispname_expanded,
+            display_name=obj.dispname_expanded,
             uri=obj.uri_expanded,
         )
         for obj in inventory.objects
@@ -383,7 +383,7 @@ def build_entities(
                 sphinx_domain=obj.sphinx_domain,
                 role=obj.role,
                 name=obj.name,
-                dispname=obj.dispname,
+                display_name=obj.display_name,
                 uri=obj.uri,
                 parent_name=parent_name,
             )

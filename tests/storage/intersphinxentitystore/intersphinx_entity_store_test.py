@@ -21,7 +21,7 @@ def _entity(
     name: str,
     *,
     role: str = "class",
-    dispname: str | None = None,
+    display_name: str | None = None,
     uri: str = "py-api/index.html#anchor",
     parent_name: str | None = None,
     sphinx_domain: str = "py",
@@ -30,7 +30,7 @@ def _entity(
         sphinx_domain=sphinx_domain,
         role=role,
         name=name,
-        dispname=dispname or name,
+        display_name=display_name or name,
         uri=uri,
         parent_name=parent_name,
     )
@@ -56,7 +56,7 @@ async def test_upsert_entities_resolves_parent(factory: Factory) -> None:
         assert child is not None
         assert child.name == "lsst.afw.table.SourceCatalog"
         assert child.role == "class"
-        assert child.dispname == "lsst.afw.table.SourceCatalog"
+        assert child.display_name == "lsst.afw.table.SourceCatalog"
         assert child.parent_name == "lsst.afw.table"
         assert child.extras is None
         assert child.links == []
@@ -140,7 +140,7 @@ async def test_upsert_entities_updates_in_place(factory: Factory) -> None:
                 _entity(
                     "lsst.afw.table.SourceCatalog",
                     role="attribute",
-                    dispname="SourceCatalog",
+                    display_name="SourceCatalog",
                 )
             ]
         )
@@ -149,7 +149,7 @@ async def test_upsert_entities_updates_in_place(factory: Factory) -> None:
         stored = await store.get_entity("py", "lsst.afw.table.SourceCatalog")
         assert stored is not None
         assert stored.role == "attribute"
-        assert stored.dispname == "SourceCatalog"
+        assert stored.display_name == "SourceCatalog"
 
 
 @pytest.mark.asyncio

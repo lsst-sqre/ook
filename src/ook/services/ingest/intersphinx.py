@@ -386,7 +386,7 @@ class IntersphinxIngestService:
                     # holding the inventory, which is what the inventory
                     # URL's own directory is.
                     html_url=urljoin(source.url, entity.uri),
-                    title=entity.dispname,
+                    title=entity.display_name,
                     type=SPHINX_DOMAIN_LINK_TYPES[entity.sphinx_domain],
                 )
             )

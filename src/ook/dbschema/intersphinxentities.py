@@ -60,7 +60,7 @@ class SqlIntersphinxEntity(Base):
     the entity instead of forking it.
     """
 
-    dispname: Mapped[str] = mapped_column(UnicodeText, nullable=False)
+    display_name: Mapped[str] = mapped_column(UnicodeText, nullable=False)
     """The name to display for the object."""
 
     parent_id: Mapped[int | None] = mapped_column(

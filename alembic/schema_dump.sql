@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 0rGZUjQFyPSpK1IjYNHT3UbhhbHopgWXyAPFGxKgtOqBUf1nd5Jp2jtYDZkrL5I
+\restrict C555keMu6wxq5d527qyxRPzOgpdx38yzPm03lSdZ9ahHMiyToBjeMDyX46zBdlw
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -338,7 +338,7 @@ CREATE TABLE public.intersphinx_entity (
     sphinx_domain text NOT NULL,
     name text NOT NULL,
     role text NOT NULL,
-    dispname text NOT NULL,
+    display_name text NOT NULL,
     parent_id bigint,
     extras jsonb
 );
@@ -1072,7 +1072,7 @@ COPY public.external_reference (id, url, doi, arxiv_id, isbn, issn, ads_bibcode,
 -- Data for Name: intersphinx_entity; Type: TABLE DATA; Schema: public; Owner: test
 --
 
-COPY public.intersphinx_entity (id, sphinx_domain, name, role, dispname, parent_id, extras) FROM stdin;
+COPY public.intersphinx_entity (id, sphinx_domain, name, role, display_name, parent_id, extras) FROM stdin;
 \.
 
 
@@ -2298,5 +2298,5 @@ ALTER TABLE ONLY public.url_occurrence
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 0rGZUjQFyPSpK1IjYNHT3UbhhbHopgWXyAPFGxKgtOqBUf1nd5Jp2jtYDZkrL5I
+\unrestrict C555keMu6wxq5d527qyxRPzOgpdx38yzPm03lSdZ9ahHMiyToBjeMDyX46zBdlw
 

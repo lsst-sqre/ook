@@ -27,7 +27,7 @@ def upgrade() -> None:
         sa.Column("sphinx_domain", sa.UnicodeText(), nullable=False),
         sa.Column("name", sa.UnicodeText(), nullable=False),
         sa.Column("role", sa.UnicodeText(), nullable=False),
-        sa.Column("dispname", sa.UnicodeText(), nullable=False),
+        sa.Column("display_name", sa.UnicodeText(), nullable=False),
         sa.Column("parent_id", sa.BigInteger(), nullable=True),
         sa.Column(
             "extras", postgresql.JSONB(astext_type=sa.Text()), nullable=True
