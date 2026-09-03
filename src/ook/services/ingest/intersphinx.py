@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from types import MappingProxyType
 from urllib.parse import urljoin
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
 
@@ -81,8 +82,41 @@ _INGEST_FAILURES = (
 
 Everything a *site* can do wrong: unreachable, refused by the SSRF guard,
 or serving bytes that are not an inventory. A database error is not in the
-list -- that is Ook's own failure, it is not per-source, and recording it
-on one registry row while the run continues would hide it.
+list -- that is Ook's own failure rather than the site's, and recording it
+here, where nothing has been written yet, would say the site failed when
+Ook did. `_WRITE_FAILURES` covers the one database error that is genuinely
+about one source.
+"""
+
+
+_WRITE_FAILURES = (IntegrityError,)
+"""The database failures that cost one source its ingest and no more.
+
+An integrity error from a source's write phase is a statement about that
+source alone: the links it was inserting no longer agree with the rows they
+point at, because something else changed the entity graph underneath. The
+graph's own lock makes that vanishingly unlikely, and a failure here is
+worth looking at -- but the run it happened in is a sweep over every other
+site, and taking those down with it would turn one lost race into a fleet
+with no refresh at all.
+
+The rollback that has to precede the recording is why this is caught apart
+from `_INGEST_FAILURES` rather than added to it: those are raised before
+any write, on a transaction still fit to use.
+"""
+
+
+_WRITE_CONFLICT_MESSAGE = (
+    "The database refused this site's links, so the links it already had"
+    " are kept. Something else changed the entities they point at while"
+    " they were being written; the next ingest run rewrites them."
+)
+"""What a source's registry row says about a refused write.
+
+The database's own message names a statement and its bind parameters, which
+tells an operator reading the sources API nothing they can act on and
+crowds a thousand characters of the row. The full error goes to the log,
+where it can be read against the rest of the run.
 """
 
 
@@ -164,14 +198,17 @@ class IntersphinxIngestSummary:
     """Each visited source's outcome, in the order they were visited."""
 
     sweep_pruned_count: int = 0
-    """The number of entities the run pruned outside any one source's ingest.
+    """The number of entities the run's own convergence pass deleted.
 
-    A sweep in which every source recognized its inventory replaces no
-    links, so no source's ingest reaches the convergence that follows a
-    replace -- and entities a *deregistered* source left behind would sit
-    there until some site happened to republish. The sweep converges on its
-    own account, and this is what that pass removed; it belongs to the run
-    rather than to any source in it.
+    Names half of what that pass does, and usually the smaller half: it
+    recomputes every entity's containment before it prunes anything, and on
+    a settled fleet the recompute is the whole of its work while this stays
+    zero. The prune is what gets counted because a deletion is the one
+    outcome a run has to attribute to itself -- a source that replaced its
+    own links reports its own.
+
+    See `~IntersphinxIngestService._converge_after_sweep` for why a run that
+    replaced nothing converges at all.
     """
 
     @property
@@ -422,12 +459,12 @@ class IntersphinxIngestService:
         read is recognized rather than re-read, which is the ordinary
         outcome for a scheduled sweep and the reason the run also converges
         stored entities on its own account. That convergence normally rides
-        on a source's replace, and a sweep in which every source is
-        recognized performs none -- so entities a *deregistered* source left
-        behind would outlive it until some unrelated site happened to
-        republish. This method therefore runs one final convergence pass, in
-        a short transaction of its own, whenever no source in the run
-        replaced its links. See `_converge_after_sweep`.
+        on a source's replace, and a settled fleet performs none at all --
+        so a change to how containment is *derived* would never reach the
+        rows it describes, and an entity somehow left with no link would
+        never be collected. This method therefore runs one final convergence
+        pass, in a short transaction of its own, whenever no source in the
+        run replaced its links. See `_converge_after_sweep`.
 
         Returns
         -------
@@ -545,6 +582,15 @@ class IntersphinxIngestService:
         by then the cache has recorded upstream's refusal and that record is
         what keeps a broken origin from being hammered on the next run.
 
+        A database's refusal of the write itself is recorded the same way,
+        after rolling the half-written transaction back. It is not a fact
+        about the site and it should be looked at -- it is logged with its
+        traceback -- but the run it happens in is a sweep over every other
+        site, and letting it escape would cost all of them their refresh
+        over one source's lost race. The registration is left recording a
+        failure, which is also what stops the next run from recognizing the
+        digest and skipping the site that never wrote its links.
+
         An inventory that hashes to the one this source's last successful
         ingest read is recognized rather than re-read: the parse, the
         entity upsert, the link replacement, and the pruning that follows
@@ -627,16 +673,31 @@ class IntersphinxIngestService:
         except _INGEST_FAILURES as exc:
             return await self._record_failure(locked, exc, logger=logger)
 
-        replaced = await self._store_links(locked, parsed)
-        pruned_count = await self._converge_entities()
-        await self._source_store.record_ingest_outcome(
-            locked.id,
-            date_ingested=datetime.now(tz=UTC),
-            status=SourceIngestStatus.success,
-            error=None,
-            content_digest=fetched.digest,
-        )
-        await self._session.commit()
+        try:
+            replaced = await self._store_links(locked, parsed)
+            pruned_count = await self._converge_entities()
+            await self._source_store.record_ingest_outcome(
+                locked.id,
+                date_ingested=datetime.now(tz=UTC),
+                status=SourceIngestStatus.success,
+                error=None,
+                content_digest=fetched.digest,
+            )
+            await self._session.commit()
+        except _WRITE_FAILURES as exc:
+            # Logged with its traceback here, because what the registry row
+            # is given instead says nothing about which statement the
+            # database refused.
+            logger.exception(
+                "The database refused an intersphinx source's links"
+            )
+            # The transaction is aborted, so nothing can be recorded on it:
+            # the rollback throws away this site's half-written links and
+            # gives the stamp below a transaction to be written in.
+            await self._session.rollback()
+            return await self._record_failure(
+                locked, exc, logger=logger, detail=_WRITE_CONFLICT_MESSAGE
+            )
         logger.info(
             "Ingested intersphinx source",
             entity_count=replaced.entity_count,
@@ -709,6 +770,14 @@ class IntersphinxIngestService:
         makes the replace's delete-then-insert safe against a concurrent
         ingest of the same site.
 
+        The entity graph's own lock is taken here too, before the first
+        write, and covers the convergence that follows this replace in the
+        same transaction. It is what stands between this site's links and
+        another site's global prune; see
+        `~ook.storage.intersphinxentitystore.IntersphinxEntityStore.lock_entity_graph`.
+        Taken after the registration lock, never before, so every writer
+        that holds both takes them in the same order.
+
         Parameters
         ----------
         source
@@ -724,6 +793,7 @@ class IntersphinxIngestService:
             What the replace wrote, and how fresh the inventory it was
             built from was.
         """
+        await self._entity_store.lock_entity_graph()
         entity_ids = await self._entity_store.upsert_entities(parsed.entities)
         links = self._build_links(parsed, entity_ids)
         link_count = await self._entity_store.replace_source_links(
@@ -783,39 +853,65 @@ class IntersphinxIngestService:
         documenting may still be documented by another, and the classes
         nested under it belong to whichever sites do.
 
+        That global scope is exactly why the entity graph's lock is taken
+        first. A caller that reached here through `_store_links` already
+        holds it and takes it again for nothing; one that did not -- the
+        sweep's own pass -- takes it here, which is the only place it could.
+        Asking for it before the first write is what keeps a writer holding
+        entity row locks from ever waiting on it, and so what keeps the two
+        locks free of a cycle.
+
         Returns
         -------
         int
             The number of entities pruned.
         """
+        await self._entity_store.lock_entity_graph()
         await self._entity_store.recompute_containment()
         return await self._entity_store.prune_orphan_entities()
 
     async def _converge_after_sweep(
         self, results: list[SourceIngestResult]
     ) -> int:
-        """Converge entities no source's own ingest could have converged.
+        """Converge stored entities on a run that replaced no links.
 
-        Convergence normally rides on a source's link replacement, which is
-        the only thing that can orphan an entity *within* a run. Deleting a
-        registration orphans entities too, and outside any run -- so a sweep
-        in which every source recognized its inventory would leave them
-        behind, since none of them replaced anything to converge after. This
-        pass covers that, in a transaction of its own so it neither extends
-        nor is rolled back with any source's ingest.
+        Convergence normally rides on a source's link replacement, and a
+        fleet whose sites have all stopped republishing performs none --
+        which is the settled state of the system rather than an edge case.
+        This is what such a run still owes, and it owes it twice over.
 
-        It is skipped when some source in the run did replace its links,
-        because that source's convergence was global: it read every
-        source's links rather than its own, so a pass late in a run has
-        already answered for the whole of it. Keyed on a replace having
-        happened rather than on its having pruned anything, since a replace
-        that pruned nothing still recomputed containment over everything.
+        Containment is *derived*, so its derivation can change with no site
+        changing. A release that alters the rule
+        `~ook.storage.intersphinxentitystore.IntersphinxEntityStore.recompute_containment`
+        applies ships with no migration on the understanding that the next
+        run rewrites the rows it describes; the digest skip is exactly what
+        would make that untrue, since no source would ever replace and no
+        replace would ever recompute. This pass is what makes a
+        no-migration deploy converge on its own.
+
+        And it is the backstop under the entity graph's lock. Every writer
+        takes that lock and converges before it commits, so an entity left
+        with no link is not a state the application reaches -- but a
+        recompute and a prune over a settled fleet cost one pass of two
+        statements that write nothing, which is a cheap way not to have to
+        be certain of that.
+
+        It runs in a transaction of its own, so it neither extends nor is
+        rolled back with any source's ingest, and it takes the graph's lock
+        like any other writer -- through `_converge_entities`. It is skipped
+        when some source in the run did replace its links, because that
+        source's convergence was global: it read every source's links rather
+        than its own, so a pass late in a run has already answered for the
+        whole of it. Keyed on a replace having happened rather than on its
+        having pruned anything, since a replace that pruned nothing still
+        recomputed containment over everything.
 
         Returns
         -------
         int
             The number of entities this pass deleted, which is zero when it
-            was skipped.
+            was skipped -- and zero on a healthy settled fleet when it ran,
+            where what it does is the recompute.
         """
         if any(
             result.status is SourceIngestStatus.success
@@ -890,9 +986,16 @@ class IntersphinxIngestService:
         error: Exception,
         *,
         logger: BoundLogger,
+        detail: str | None = None,
     ) -> SourceIngestResult:
-        """Stamp a source's failed ingest on its registry row and commit."""
-        detail = str(error)[:_MAX_ERROR_LENGTH] or type(error).__name__
+        """Stamp a source's failed ingest on its registry row and commit.
+
+        The failure's own text describes the row unless *detail* replaces
+        it, which is for the errors whose text describes Ook's SQL rather
+        than the site. The log gets the full error either way.
+        """
+        described = detail or str(error)
+        detail = described[:_MAX_ERROR_LENGTH] or type(error).__name__
         await self._source_store.record_ingest_outcome(
             source.id,
             date_ingested=datetime.now(tz=UTC),

@@ -15,7 +15,7 @@ import sphobjinv
 import structlog
 from httpx import Response
 from safir.database import create_async_session, create_database_engine
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from ook.config import config
@@ -26,12 +26,16 @@ from ook.domain.intersphinx import (
     InventoryCacheStatus,
     InventoryFetchStatus,
 )
-from ook.domain.intersphinxentities import SPHINX_DOMAIN_HIERARCHIES
+from ook.domain.intersphinxentities import (
+    SPHINX_DOMAIN_HIERARCHIES,
+    IntersphinxSourceLink,
+)
 from ook.domain.intersphinxsources import IntersphinxSource, SourceIngestStatus
 from ook.domain.links import Link
 from ook.exceptions import NotFoundError
 from ook.factory import Factory
 from ook.services.ingest.intersphinx import SPHINX_DOMAIN_LINK_TYPES
+from ook.storage.intersphinxentitystore import IntersphinxEntityStore
 from ook.storage.intersphinxsourcestore import IntersphinxSourceStore
 
 INVENTORY_URL = "https://a.example/en/latest/objects.inv"
@@ -87,6 +91,37 @@ NARROWED_INVENTORY = _inventory(
 ``pkg.Standalone`` is gone outright and ``pkg.mod`` keeps only the class
 inside it, which is the ordinary way a site drops a module's own page while
 still documenting its contents.
+"""
+
+
+A_ONLY_INVENTORY = _inventory([("apkg", "module", "api.html#module-apkg")])
+"""One site's inventory before it also documented the shared object."""
+
+
+A_AND_SHARED_INVENTORY = _inventory(
+    [
+        ("apkg", "module", "api.html#module-apkg"),
+        ("shared", "module", "api.html#module-shared"),
+    ]
+)
+"""`A_ONLY_INVENTORY` after the site started documenting ``shared`` too.
+
+The second site documents ``shared`` already, so ingesting this is what
+makes ``shared`` an object two sites link -- the state a prune racing that
+ingest can destroy.
+"""
+
+
+SHARED_INVENTORY = _inventory([("shared", "module", "api.html#module-shared")])
+"""A second site's inventory, documenting only the shared object."""
+
+
+B_ONLY_INVENTORY = _inventory([("bpkg", "module", "api.html#module-bpkg")])
+"""`SHARED_INVENTORY` after the second site dropped the shared object.
+
+Every name in these four inventories is top level, so a recompute of
+containment rewrites no row: what a test built on them observes is the
+prune alone.
 """
 
 
@@ -152,6 +187,34 @@ async def _get_source(factory: Factory, source_id: int) -> IntersphinxSource:
         )
     assert source is not None
     return source
+
+
+async def _store_parent(
+    factory: Factory, name: str, *, parent_name: str
+) -> None:
+    """Write one entity's stored parent directly, bypassing the derivation.
+
+    What a release with a different containment rule would have left in the
+    table, which is the one way to have a row disagree with what the links
+    say without touching the links themselves.
+    """
+    async with factory.db_session.begin():
+        parent_id = (
+            await factory.db_session.execute(
+                select(SqlIntersphinxEntity.id).where(
+                    SqlIntersphinxEntity.sphinx_domain == "py",
+                    SqlIntersphinxEntity.name == parent_name,
+                )
+            )
+        ).scalar_one()
+        await factory.db_session.execute(
+            update(SqlIntersphinxEntity)
+            .where(
+                SqlIntersphinxEntity.sphinx_domain == "py",
+                SqlIntersphinxEntity.name == name,
+            )
+            .values(parent_id=parent_id)
+        )
 
 
 async def _link_row_ids(factory: Factory) -> list[int]:
@@ -271,6 +334,83 @@ def _delete_source_while_serving(
         )
 
     return respx_mock.get(url).mock(side_effect=handler)
+
+
+MISSING_ENTITY_ID = -1
+"""An entity ID no row can ever hold, for provoking a real write failure."""
+
+
+def _link_to_a_missing_entity(
+    monkeypatch: pytest.MonkeyPatch, *, source_id: int
+) -> None:
+    """Make one site's link write violate the entity foreign key.
+
+    The database's own refusal rather than a raised stand-in, so what the
+    ingest has to recover from is a genuinely aborted transaction -- which
+    is the part of losing this race that is easy to get wrong.
+    """
+    replace_source_links = IntersphinxEntityStore.replace_source_links
+
+    async def broken(
+        self: IntersphinxEntityStore,
+        replaced_source_id: int,
+        links: Sequence[IntersphinxSourceLink],
+        *,
+        collection_title: str | None,
+    ) -> int:
+        if replaced_source_id == source_id:
+            links = [
+                replace(link, entity_id=MISSING_ENTITY_ID) for link in links
+            ]
+        return await replace_source_links(
+            self, replaced_source_id, links, collection_title=collection_title
+        )
+
+    monkeypatch.setattr(IntersphinxEntityStore, "replace_source_links", broken)
+
+
+def _pause_after_link_replace(
+    monkeypatch: pytest.MonkeyPatch, *, source_id: int
+) -> tuple[asyncio.Event, asyncio.Event]:
+    """Hold one source's ingest open between writing its links and committing.
+
+    The window every race in this section is about. An ingest that has
+    replaced its links but not committed them is invisible to any other
+    transaction, so a convergence running beside it judges the entity graph
+    on links that are about to exist -- and that is the only moment at which
+    a prune can decide an entity nobody documents.
+
+    Patched on the store class rather than on one instance because the
+    ingest service builds its own store; the source ID is what keeps the
+    pause to the one ingest a test means to hold.
+
+    Returns
+    -------
+    tuple of asyncio.Event
+        The event set once the links are written, and the event the test
+        sets to let the ingest commit.
+    """
+    written = asyncio.Event()
+    release = asyncio.Event()
+    replace_source_links = IntersphinxEntityStore.replace_source_links
+
+    async def paused(
+        self: IntersphinxEntityStore,
+        replaced_source_id: int,
+        links: Sequence[IntersphinxSourceLink],
+        *,
+        collection_title: str | None,
+    ) -> int:
+        count = await replace_source_links(
+            self, replaced_source_id, links, collection_title=collection_title
+        )
+        if replaced_source_id == source_id:
+            written.set()
+            await release.wait()
+        return count
+
+    monkeypatch.setattr(IntersphinxEntityStore, "replace_source_links", paused)
+    return written, release
 
 
 async def _expire_cached_inventory(factory: Factory, url: str) -> None:
@@ -780,14 +920,18 @@ async def test_a_retitled_source_is_reingested(
 
 
 @pytest.mark.asyncio
-async def test_a_sweep_of_skipped_sources_still_prunes_orphans(
+async def test_a_sweep_of_skipped_sources_prunes_an_orphan_the_store_left(
     factory: Factory, respx_mock: respx.Router
 ) -> None:
-    """A deregistered site's entities go even when no source is re-ingested.
+    """The sweep's own pass collects an entity no source's links keep alive.
 
-    Deleting a registration takes its links with it and leaves the entities
-    they pointed at behind for the pruning path. Every other source
-    recognizing its inventory must not be what keeps those entities alive.
+    A lower-layer contract test, and deliberately so: the source *service*
+    converges a deletion inline and under the entity graph's lock, so an
+    orphaned entity is not a state the application produces any more. The
+    *store*'s ``delete_source`` leaves exactly that state by contract, which
+    makes driving it directly the only way to reach it -- and what this pins
+    is that a run which replaces nothing still collects such an entity,
+    however it came to be there.
     """
     _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
     _serve_inventory(
@@ -811,6 +955,39 @@ async def test_a_sweep_of_skipped_sources_still_prunes_orphans(
     entity_store = factory.create_intersphinx_entity_store()
     assert await entity_store.get_entity("py", "other.Thing") is None
     assert await entity_store.get_entity("py", "pkg.mod.Thing") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_of_skipped_sources_recomputes_stale_containment(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """The sweep's own pass rewrites containment no source's ingest would.
+
+    Containment is derived, so a release that changes the derivation changes
+    what every stored row should say without any site publishing anything
+    new. Such a release ships with no migration because the next run
+    recomputes what it finds -- and a settled fleet, whose sites all
+    recognize their inventories, gives no source's ingest the chance. This
+    pass is what makes that decision true, and it is the half of the pass
+    ``sweep_pruned_count`` does not count.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+    # The shape a previous release's rule could have written: a class filed
+    # under a name that is not its own dotted parent.
+    await _store_parent(factory, "pkg.Standalone", parent_name="pkg.mod")
+
+    summary = await service.ingest_sources()
+
+    assert summary.unchanged_count == 1
+    assert summary.pruned_count == 0
+    standalone = await factory.create_intersphinx_entity_store().get_entity(
+        "py", "pkg.Standalone"
+    )
+    assert standalone is not None
+    assert standalone.parent_name == "pkg"
 
 
 @pytest.mark.asyncio
@@ -1226,6 +1403,197 @@ async def test_concurrent_ingests_leave_one_link_per_entity(
         entity = await entity_store.get_entity("py", name)
         assert entity is not None
         assert len(entity.links) == 1
+
+
+async def _ingest_two_sites_documenting_one_object(
+    factory: Factory, respx_mock: respx.Router
+) -> tuple[int, int]:
+    """Register and ingest two sites, one of which documents ``shared``.
+
+    The starting state both write-race tests race from: site A documents
+    ``apkg``, site B documents ``shared``, and both sites' inventories are
+    then replaced by the ones the race re-ingests.
+
+    Returns
+    -------
+    tuple of int
+        The two registrations' IDs, site A's first.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, A_ONLY_INVENTORY)
+    _serve_inventory(respx_mock, OTHER_INVENTORY_URL, SHARED_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    other_id = await _register_source(
+        factory, url=OTHER_INVENTORY_URL, title="B docs"
+    )
+    await factory.create_intersphinx_ingest_service().ingest_sources()
+
+    await _expire_cached_inventory(factory, INVENTORY_URL)
+    await _expire_cached_inventory(factory, OTHER_INVENTORY_URL)
+    _serve_inventory(respx_mock, INVENTORY_URL, A_AND_SHARED_INVENTORY)
+    return source_id, other_id
+
+
+@pytest.mark.asyncio
+async def test_a_write_failure_costs_one_source_and_not_the_run(
+    factory: Factory, respx_mock: respx.Router, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source whose write the database refuses is recorded and stepped over.
+
+    The one way a source can fail that is not the site's fault and that the
+    ingest cannot foresee: a link whose entity is gone by the time it is
+    written. Losing that race must cost the site its refresh and nothing
+    more -- not the sweep it was part of, and not the sources after it,
+    which is what an escaping exception would take with it.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    _serve_inventory(
+        respx_mock,
+        OTHER_INVENTORY_URL,
+        _inventory([("other.Thing", "class", "api.html#other.Thing")]),
+    )
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    await _register_source(factory, url=OTHER_INVENTORY_URL, title="B docs")
+    _link_to_a_missing_entity(monkeypatch, source_id=source_id)
+
+    summary = (
+        await factory.create_intersphinx_ingest_service().ingest_sources()
+    )
+
+    assert summary.failed == 1
+    assert summary.succeeded == 1
+    failed = next(
+        result for result in summary.results if result.url == INVENTORY_URL
+    )
+    assert failed.status is SourceIngestStatus.failure
+    assert failed.error is not None
+    # The registry says so too, and the site after it was ingested.
+    assert (
+        await _get_source(factory, source_id)
+    ).last_status is SourceIngestStatus.failure
+    entity_store = factory.create_intersphinx_entity_store()
+    assert await entity_store.get_entity("py", "other.Thing") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_deregistration_cannot_prune_an_entity_an_ingest_linked(
+    factory: Factory,
+    database_engine: AsyncEngine,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deregistering one site keeps the links another site just committed.
+
+    Site A picks up an object only site B documented, and site B is
+    deregistered while A's ingest holds those links uncommitted. The
+    deletion converges the whole entity graph, so it reaches an object whose
+    only visible link is the one it is itself withdrawing -- and pruning it
+    would cascade away A's link, which by then is committed and is the only
+    record that A documents the object at all.
+
+    Nothing recovers from that on its own: A's registration is stamped with
+    the digest of the inventory it just ingested, so every later sweep
+    recognizes those bytes and rewrites nothing.
+    """
+    source_id, other_id = await _ingest_two_sites_documenting_one_object(
+        factory, respx_mock
+    )
+    source = await _get_source(factory, source_id)
+    written, release = _pause_after_link_replace(
+        monkeypatch, source_id=source_id
+    )
+
+    async with _second_factory(database_engine) as other:
+
+        async def deregister() -> None:
+            async with other.db_session.begin():
+                service = other.create_intersphinx_source_service()
+                assert await service.delete_source(other_id) is True
+
+        ingest = asyncio.create_task(
+            factory.create_intersphinx_ingest_service().ingest_source(source)
+        )
+        await asyncio.wait_for(written.wait(), timeout=UNBLOCKED_TIMEOUT)
+        deletion = asyncio.create_task(deregister())
+        # The deletion cannot finish while the ingest holds its links open:
+        # its convergence has to be judged on what that ingest wrote.
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(
+                asyncio.shield(deletion), timeout=BLOCKED_GRACE
+            )
+        release.set()
+        assert await asyncio.wait_for(ingest, timeout=UNBLOCKED_TIMEOUT)
+        await asyncio.wait_for(deletion, timeout=UNBLOCKED_TIMEOUT)
+
+    entity_store = factory.create_intersphinx_entity_store()
+    shared = await entity_store.get_entity("py", "shared")
+    assert shared is not None
+    assert [link.collection_title for link in shared.links] == ["A docs"]
+
+
+@pytest.mark.asyncio
+async def test_an_ingest_cannot_prune_an_entity_another_ingest_linked(
+    factory: Factory,
+    database_engine: AsyncEngine,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two sites' ingests racing keep the links each of them wrote.
+
+    The same window as a deregistration's, reached without deleting
+    anything: every ingest converges the whole entity graph after replacing
+    its own links, so site B's ingest prunes on a view of the links that
+    predates site A's. Different sites lock different registrations, so
+    nothing but the entity graph's own serialization stands between them.
+
+    The two ingests must still overlap for the length of a fetch, which is
+    what the origin's call count during the pause asserts: whatever
+    serializes the writes must be taken after the inventory is in hand.
+    """
+    source_id, other_id = await _ingest_two_sites_documenting_one_object(
+        factory, respx_mock
+    )
+    other_route = _serve_inventory(
+        respx_mock, OTHER_INVENTORY_URL, B_ONLY_INVENTORY
+    )
+    # respx keys a route by its pattern, so this one already carries the
+    # setup ingest's call; the fetch under test is the next one.
+    fetches_before = other_route.call_count
+    source = await _get_source(factory, source_id)
+    other_source = await _get_source(factory, other_id)
+    written, release = _pause_after_link_replace(
+        monkeypatch, source_id=source_id
+    )
+
+    async with _second_factory(database_engine) as other:
+        ingest = asyncio.create_task(
+            factory.create_intersphinx_ingest_service().ingest_source(source)
+        )
+        await asyncio.wait_for(written.wait(), timeout=UNBLOCKED_TIMEOUT)
+        other_ingest = asyncio.create_task(
+            other.create_intersphinx_ingest_service().ingest_source(
+                other_source
+            )
+        )
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(
+                asyncio.shield(other_ingest), timeout=BLOCKED_GRACE
+            )
+        # It reached its origin before it started waiting, so no ingest is
+        # held up by another one's fetch.
+        assert other_route.call_count == fetches_before + 1
+        release.set()
+        assert await asyncio.wait_for(ingest, timeout=UNBLOCKED_TIMEOUT)
+        assert await asyncio.wait_for(other_ingest, timeout=UNBLOCKED_TIMEOUT)
+
+    entity_store = factory.create_intersphinx_entity_store()
+    shared = await entity_store.get_entity("py", "shared")
+    assert shared is not None
+    assert [link.collection_title for link in shared.links] == ["A docs"]
+    assert await entity_store.get_entity("py", "bpkg") is not None
 
 
 @pytest.mark.asyncio

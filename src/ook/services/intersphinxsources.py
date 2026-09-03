@@ -189,6 +189,16 @@ class IntersphinxSourceService:
         scheduled, and until it happened the Links API would keep serving a
         hierarchy propped up by a site nobody is ingesting any more.
 
+        Two locks are taken before anything is written, in the order every
+        ingest takes them: the registration row, then the entity graph. The
+        registration lock is what answers whether there is a source to
+        delete at all -- a row it cannot find is one no longer there --
+        and the graph lock is what keeps this convergence from pruning an
+        entity a concurrent ingest has linked but not yet committed. Taking
+        them the other way round would deadlock against an ingest of the
+        same site, which holds the registration while it waits for the
+        graph.
+
         Parameters
         ----------
         source_id
@@ -199,10 +209,11 @@ class IntersphinxSourceService:
         bool
             True if a source was deleted, False if none had that ID.
         """
-        deleted = await self._source_store.delete_source(source_id)
-        if not deleted:
+        if await self._source_store.lock_source(source_id) is None:
             return False
 
+        await self._entity_store.lock_entity_graph()
+        await self._source_store.delete_source(source_id)
         await self._entity_store.recompute_containment()
         pruned = await self._entity_store.prune_orphan_entities()
         self._logger.info(

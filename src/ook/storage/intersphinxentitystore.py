@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -52,6 +53,21 @@ __all__ = [
     "IntersphinxEntityCursor",
     "IntersphinxEntityStore",
 ]
+
+
+_ENTITY_GRAPH_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"ook.intersphinx.entity_graph").digest()[:8],
+    "big",
+    signed=True,
+)
+"""The advisory lock key every writer of the entity graph serializes on.
+
+Derived from a name rather than written as a literal, so the key is
+self-describing and cannot silently collide with another advisory lock
+someone gives a hand-picked number. ``pg_advisory_xact_lock`` takes a
+signed 64-bit integer, which is what the first eight bytes of the digest
+are read as.
+"""
 
 
 _UPSERT_CHUNK_SIZE = 1000
@@ -127,6 +143,40 @@ class IntersphinxEntityStore:
     def __init__(self, session: AsyncSession, logger: BoundLogger) -> None:
         self._session = session
         self._logger = logger
+
+    async def lock_entity_graph(self) -> None:
+        """Take the lock that serializes every write to the entity graph.
+
+        A transaction-scoped advisory lock on one key for the whole graph,
+        held until the caller's transaction ends. Every writer takes it
+        before its first write: an ingest replacing one site's links, and
+        the deletion of a registration.
+
+        One lock for everything, rather than one per source, because the
+        convergence that follows any of those writes is global by design --
+        `recompute_containment` reads every source's links and
+        `prune_orphan_entities` deletes on the strength of every source's
+        absence. Nothing narrower can serialize a statement whose scope is
+        the whole table. Without it, ``READ COMMITTED`` lets a prune blocked
+        on a row another transaction is linking re-check that row against
+        the snapshot its statement began with, delete an entity that by then
+        has a committed link, and cascade that link away with it.
+
+        The scope this costs is deliberately small: sites are fetched, and
+        an inventory recognized as unchanged is skipped, entirely outside
+        this lock, so a sweep still overlaps every site's fetch with every
+        other's. What serializes is the write phase alone, which is
+        milliseconds of local work and which a sweep already performs one
+        source at a time.
+
+        Callers that also lock a source's registration row must take that
+        row lock *first*: the ingest path locks the registration and then
+        this, so a deletion that took them the other way round would
+        deadlock against it.
+        """
+        await self._session.execute(
+            select(func.pg_advisory_xact_lock(_ENTITY_GRAPH_LOCK_KEY))
+        )
 
     async def upsert_entities(
         self, entities: Sequence[InventoryEntity]
@@ -537,6 +587,11 @@ class IntersphinxEntityStore:
         considered, for the same reason the recompute is so scoped: an
         entity kind whose links live in another subtype table would look
         undocumented here and is not this store's to delete.
+
+        Run under `lock_entity_graph`, always. This statement decides what
+        to delete from the *absence* of a link, which is the one judgment a
+        concurrent writer can invalidate and which ``READ COMMITTED`` will
+        not re-make once the row it blocked on is free.
 
         Returns
         -------

@@ -251,8 +251,13 @@ class IntersphinxSourceStore:
         """Delete a registered source and, by cascade, its links.
 
         The entities those links pointed at are left behind: another source
-        may document the same object, and an entity nothing documents any
-        more is the pruning path's business rather than this one's.
+        may document the same object, and deciding which of them nothing
+        documents any more is a question about every source's links rather
+        than about this one's.
+        `~ook.services.intersphinxsources.IntersphinxSourceService.delete_source`
+        is what answers it, in the same transaction as this call and under
+        the entity graph's lock -- so the state this method leaves behind is
+        one nothing outside that service ever observes.
 
         Parameters
         ----------
