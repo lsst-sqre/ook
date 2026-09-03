@@ -1407,6 +1407,109 @@ async def test_a_held_lock_does_not_block_another_source(
 
 
 @pytest.mark.asyncio
+async def test_a_cache_read_does_not_wait_on_a_first_ingest(
+    factory: Factory,
+    database_engine: AsyncEngine,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A site's first ingest does not hold its cache row against a reader.
+
+    An inventory URL nothing has fetched before is inserted by the ingest's
+    own cold miss, and that insert reserves the unique index on ``url``
+    until it commits. Everything else asking the cache for the same URL
+    cold-misses too and queues on that index -- so the public ``GET`` would
+    wait out a registration lock and an entity-graph write it has nothing to
+    do with. Committing the fetch before the lock is taken is what frees it,
+    and is why the reader sees a hit rather than missing again.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    source = await _get_source(factory, source_id)
+    written, release = _pause_after_link_replace(
+        monkeypatch, source_id=source_id
+    )
+
+    async with _second_factory(database_engine) as reader:
+        ingest = asyncio.create_task(
+            factory.create_intersphinx_ingest_service().ingest_source(source)
+        )
+        await asyncio.wait_for(written.wait(), timeout=UNBLOCKED_TIMEOUT)
+        # The ingest is held open with its links written and uncommitted,
+        # and only this test can release it -- so a reader that queued
+        # behind the ingest's inventory row would not be slow, it would
+        # never finish at all.
+        served = await asyncio.wait_for(
+            reader.create_intersphinx_cache_service().get_inventory(
+                INVENTORY_URL
+            ),
+            timeout=UNBLOCKED_TIMEOUT,
+        )
+        await reader.db_session.rollback()
+        release.set()
+        assert await asyncio.wait_for(ingest, timeout=UNBLOCKED_TIMEOUT)
+
+    assert served.cache_status is InventoryCacheStatus.hit
+    assert served.inventory.content == PACKAGE_INVENTORY
+
+
+@pytest.mark.asyncio
+async def test_a_cache_read_does_not_wait_on_a_reingest(
+    factory: Factory,
+    database_engine: AsyncEngine,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ingest served from the cache does not hold the row it bumped.
+
+    Every serve stamps the cached row's ``date_requested``, and a serve
+    inside the freshness TTL revalidates nothing -- so that ``UPDATE`` and
+    its row lock are all the ingest has pending when it goes on to wait for
+    the registration lock and replace the site's links. Any client asking
+    for the same inventory takes the same bump, and would wait out the whole
+    write for a stamp neither of them needs held.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    await factory.create_intersphinx_ingest_service().ingest_source(
+        await _get_source(factory, source_id)
+    )
+    # Retitling clears the ingested digest, so the next ingest rebuilds the
+    # site's links from the copy it already has cached and fresh: the serve
+    # that revalidates nothing and so commits nothing of its own.
+    async with factory.db_session.begin():
+        await factory.create_intersphinx_source_store().update_source(
+            source_id, title="A docs, renamed"
+        )
+    source = await _get_source(factory, source_id)
+    written, release = _pause_after_link_replace(
+        monkeypatch, source_id=source_id
+    )
+
+    async with _second_factory(database_engine) as reader:
+        ingest = asyncio.create_task(
+            factory.create_intersphinx_ingest_service().ingest_source(source)
+        )
+        await asyncio.wait_for(written.wait(), timeout=UNBLOCKED_TIMEOUT)
+        served = await asyncio.wait_for(
+            reader.create_intersphinx_cache_service().get_inventory(
+                INVENTORY_URL
+            ),
+            timeout=UNBLOCKED_TIMEOUT,
+        )
+        await reader.db_session.rollback()
+        release.set()
+        assert await asyncio.wait_for(ingest, timeout=UNBLOCKED_TIMEOUT)
+
+    assert served.cache_status is InventoryCacheStatus.hit
+    assert served.inventory.content == PACKAGE_INVENTORY
+
+
+@pytest.mark.asyncio
 async def test_concurrent_ingests_leave_one_link_per_entity(
     factory: Factory,
     database_engine: AsyncEngine,

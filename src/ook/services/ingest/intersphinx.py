@@ -577,16 +577,22 @@ class IntersphinxIngestService:
         The registry stamp is committed with it, which is what makes
         ``last_status`` a description of the links actually stored.
 
-        The inventory's own revalidation is deliberately *not* part of that
-        transaction. It is committed on its own, before this method opens
-        the one it writes links in, because it is an HTTP fetch: holding the
-        row lock its bookkeeping takes across an origin that may spend the
-        whole fetch budget is the invariant the cache service's docstrings
-        keep, and it would be broken here rather than there. The split also
-        matches what the two writes mean -- a revalidated inventory is a
-        fact about the cache whether or not this site's links then replace
-        cleanly -- and it is why nothing about this ingest is written until
-        the inventory is in hand, so a fetch failure deletes no links.
+        The inventory's own serve is deliberately *not* part of that
+        transaction. Whatever it wrote about the cache -- a cold miss's
+        stored inventory, a revalidation's outcome, or just the bumped
+        ``date_requested`` every serve stamps -- is committed by this method
+        the moment the inventory is in hand, before the registration lock is
+        waited on. The cache service commits only what it must (the bump
+        ahead of a conditional GET, so no row lock outlives an HTTP fetch)
+        and leaves the rest of the boundary to its caller, which is here.
+        The split matches what the two writes mean -- what the cache
+        recorded is a fact about the cache whether or not this site's links
+        then replace cleanly -- and it is what keeps everything else that
+        touches that row, the public ``GET`` and the refresh job included,
+        from queueing behind a registration lock and an entity-graph write
+        it has nothing to do with. It is also why nothing about this ingest
+        is written until the inventory is in hand, so a fetch failure
+        deletes no links.
 
         A fetch or parse failure is recorded and returned rather than
         raised: the site's previous links are kept (nothing was deleted
@@ -678,24 +684,29 @@ class IntersphinxIngestService:
             fetched = await self._read_inventory(source, revalidate=revalidate)
         except _INGEST_FAILURES as exc:
             return await self._record_failure(source, exc, logger=logger)
+        # Whatever the serve above wrote about the cache -- a cold miss's
+        # stored inventory, or a bumped date_requested -- is committed here
+        # and not held into the wait below. It is a fact about the cache
+        # whatever becomes of this site's links, and everything else that
+        # touches the row (the public GET, the refresh job) would otherwise
+        # queue behind a registration lock and an entity-graph write it has
+        # nothing to do with.
+        await self._session.commit()
 
         locked = await self._source_store.lock_source(source.id)
         if locked is None:
-            # Committed rather than rolled back: the ingest wrote nothing of
-            # its own, and what is pending is the cache's record of a fetch
-            # that really did happen, which the deregistration of one site
-            # is no reason to throw away.
-            await self._session.commit()
+            # Nothing of this ingest's own is pending -- the cache's
+            # bookkeeping was committed above -- so this only closes the
+            # transaction the lock read opened.
+            await self._session.rollback()
             logger.info("Skipped intersphinx source deleted during its ingest")
             return None
 
         if locked.url != fetched.url:
-            # Committed rather than rolled back for the same reason the
-            # deregistration above is: nothing of this ingest's own is
-            # pending, and the cache's record of a fetch that really did
-            # happen is worth keeping. Checked before the digest so this one
-            # comparison covers the skip and the replace alike.
-            await self._session.commit()
+            # Rolled back for the same reason the deregistration above is,
+            # and checked before the digest so this one comparison covers
+            # the skip and the replace alike.
+            await self._session.rollback()
             logger.info(
                 "Skipped intersphinx source repointed during its ingest",
                 fetched_url=fetched.url,
