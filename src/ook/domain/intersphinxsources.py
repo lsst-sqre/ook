@@ -62,3 +62,14 @@ class IntersphinxSource:
     """A description of the most recent ingest failure, or None when the
     last attempt succeeded or none has been made.
     """
+
+    ingested_content_digest: str | None
+    """The SHA-256 hex digest of the inventory the last successful ingest
+    read, or None if none has succeeded since the digest last stopped
+    describing the links.
+
+    Ingest's own bookkeeping, and not part of the registry API: an
+    inventory that hashes to this has already been turned into the links
+    the source is serving, so re-reading it would replace them with
+    themselves.
+    """

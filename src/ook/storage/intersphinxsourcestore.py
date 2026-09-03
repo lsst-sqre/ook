@@ -72,6 +72,7 @@ class IntersphinxSourceStore:
             date_ingested=None,
             last_status=None,
             last_error=None,
+            ingested_content_digest=None,
         )
         self._session.add(row)
         await self._session.flush()
@@ -200,6 +201,13 @@ class IntersphinxSourceStore:
         observability columns are not editable here -- they are written by
         an ingest run through `record_ingest_outcome`.
 
+        Changing the URL or the title clears the ingested content digest,
+        because both change what the source's stored links should say: the
+        URL is where they came from, and the title is the
+        ``collection_title`` each of them carries. Clearing it is what makes
+        the next ingest rebuild them instead of recognizing the inventory
+        and leaving them as they are.
+
         Parameters
         ----------
         source_id
@@ -219,6 +227,17 @@ class IntersphinxSourceStore:
         row = await self._session.get(SqlIntersphinxSource, source_id)
         if row is None:
             return None
+        # A new URL means the stored links came from an inventory this
+        # registration no longer names, and a new title means they carry a
+        # ``collection_title`` it no longer has. Either way the digest has
+        # stopped describing the links, so it is cleared and the next ingest
+        # rebuilds them from whatever the inventory now says. An assignment
+        # of the value a field already holds changes nothing and is left
+        # alone, so a PATCH that restates a source is not a re-ingest.
+        if (url is not None and url != row.url) or (
+            title is not None and title != row.title
+        ):
+            row.ingested_content_digest = None
         if url is not None:
             row.url = url
         if title is not None:
@@ -260,6 +279,7 @@ class IntersphinxSourceStore:
         date_ingested: datetime,
         status: SourceIngestStatus,
         error: str | None = None,
+        content_digest: str | None = None,
     ) -> bool:
         """Stamp the outcome of an ingest run onto a source's row.
 
@@ -267,6 +287,12 @@ class IntersphinxSourceStore:
         question about a source is when Ook last *tried* it: a row whose
         ``date_ingested`` is old is stale regardless of what its last
         attempt returned.
+
+        The ingested digest is the exception: it describes the links the
+        source is serving, and a failed attempt neither wrote nor deleted
+        any of them. It is therefore written only by a success and is left
+        as it stands otherwise, so a site that fails and then recovers with
+        the inventory it already had costs one needless re-ingest less.
 
         Parameters
         ----------
@@ -279,6 +305,10 @@ class IntersphinxSourceStore:
         error
             A description of the failure, or None on success. Passing None
             on success is what clears a previous run's error.
+        content_digest
+            The SHA-256 hex digest of the inventory a successful ingest
+            read. Ignored for a failure, which has no links of its own to
+            describe.
 
         Returns
         -------
@@ -286,14 +316,17 @@ class IntersphinxSourceStore:
             True if the outcome was recorded, False if no source had that
             ID.
         """
+        values: dict[str, object] = {
+            "date_ingested": date_ingested,
+            "last_status": status.value,
+            "last_error": error,
+        }
+        if status is SourceIngestStatus.success:
+            values["ingested_content_digest"] = content_digest
         result = await self._session.execute(
             update(SqlIntersphinxSource)
             .where(SqlIntersphinxSource.id == source_id)
-            .values(
-                date_ingested=date_ingested,
-                last_status=status.value,
-                last_error=error,
-            )
+            .values(**values)
         )
         await self._session.flush()
         return cast("CursorResult", result).rowcount > 0
@@ -312,4 +345,5 @@ class IntersphinxSourceStore:
                 else SourceIngestStatus(row.last_status)
             ),
             last_error=row.last_error,
+            ingested_content_digest=row.ingested_content_digest,
         )

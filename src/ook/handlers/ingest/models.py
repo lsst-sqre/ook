@@ -432,12 +432,27 @@ class IntersphinxSourceIngestResult(BaseModel):
         ),
     ]
 
+    unchanged: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether the source's inventory was recognized as the one "
+                "its last successful ingest read, so nothing was rewritten. "
+                "The ingest still succeeded and the registration is still "
+                "stamped; the counts below are zero because nothing was "
+                "written, not because nothing was found. Always false on a "
+                "failure."
+            ),
+            examples=[False],
+        ),
+    ]
+
     entity_count: Annotated[
         int,
         Field(
             description=(
                 "The number of entities the source's inventory contributed. "
-                "Zero on a failure."
+                "Zero on a failure, and zero when `unchanged` is true."
             ),
             examples=[1204],
         ),
@@ -448,7 +463,9 @@ class IntersphinxSourceIngestResult(BaseModel):
         Field(
             description=(
                 "The number of links written for the source. Zero on a "
-                "failure, which leaves the previous links in place."
+                "failure, which leaves the previous links in place, and "
+                "zero when `unchanged` is true, which leaves them in place "
+                "because they already describe the inventory."
             ),
             examples=[1204],
         ),
@@ -504,6 +521,7 @@ class IntersphinxSourceIngestResult(BaseModel):
             url=result.url,
             title=result.title,
             status=result.status,
+            unchanged=result.unchanged,
             entity_count=result.entity_count,
             link_count=result.link_count,
             pruned_count=result.pruned_count,
@@ -550,6 +568,20 @@ class IntersphinxIngestResponse(BaseModel):
         ),
     ]
 
+    unchanged_count: Annotated[
+        int,
+        Field(
+            description=(
+                "The number of sources whose inventory was recognized as "
+                "the one their last successful ingest read, so their links "
+                "were left alone. Counted within `success_count`, not "
+                "beside it: an unchanged source ended the run with its "
+                "links current."
+            ),
+            examples=[3],
+        ),
+    ]
+
     @classmethod
     def from_domain(
         cls, summary: IntersphinxIngestSummary
@@ -562,4 +594,5 @@ class IntersphinxIngestResponse(BaseModel):
             ],
             success_count=summary.succeeded,
             failure_count=summary.failed,
+            unchanged_count=summary.unchanged_count,
         )

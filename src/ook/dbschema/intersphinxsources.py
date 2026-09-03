@@ -90,6 +90,21 @@ class SqlIntersphinxSource(Base):
     last attempt succeeded or none has been made.
     """
 
+    ingested_content_digest: Mapped[str | None] = mapped_column(
+        UnicodeText, nullable=True
+    )
+    """The SHA-256 hex digest of the inventory the last successful ingest
+    read, or null if none has succeeded since the digest last stopped
+    describing the links.
+
+    Internal bookkeeping, deliberately absent from the registry API: it
+    says nothing an operator asks a registration about, and it is only
+    meaningful against the exact bytes Ook happens to be holding. Ingest
+    compares it with the digest of the inventory it has just been served
+    and, on a match, leaves the site's links alone rather than replacing
+    them with a byte-for-byte copy of themselves.
+    """
+
     links: Mapped[list[SqlIntersphinxLink]] = relationship(
         "SqlIntersphinxLink", back_populates="source"
     )

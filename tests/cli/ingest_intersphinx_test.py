@@ -44,6 +44,7 @@ def _result(
     status: SourceIngestStatus,
     *,
     cache_status: InventoryCacheStatus | None = InventoryCacheStatus.hit,
+    unchanged: bool = False,
 ) -> SourceIngestResult:
     """Build a source outcome for the reporting tests."""
     return SourceIngestResult(
@@ -51,8 +52,9 @@ def _result(
         url=INVENTORY_URL,
         title="Example docs",
         status=status,
-        entity_count=1,
-        link_count=1,
+        unchanged=unchanged,
+        entity_count=0 if unchanged else 1,
+        link_count=0 if unchanged else 1,
         pruned_count=0,
         error=None if status is SourceIngestStatus.success else "boom",
         cache_status=(
@@ -154,3 +156,24 @@ def test_report_ingest_intersphinx_counts_unrevalidated_sources(
     )
 
     assert "1 served stale" in capsys.readouterr().out
+
+
+def test_report_ingest_intersphinx_counts_unchanged_sources(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A source whose inventory was recognized is counted, not failed.
+
+    Its links were left as the last ingest wrote them, so the run's zero
+    entities and zero links describe work that did not need doing rather
+    than a site that has stopped publishing.
+    """
+    report_ingest_intersphinx(
+        IntersphinxIngestSummary(
+            results=[
+                _result(SourceIngestStatus.success),
+                _result(SourceIngestStatus.success, unchanged=True),
+            ]
+        )
+    )
+
+    assert "1 unchanged" in capsys.readouterr().out

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict iWrSwSsF2M2es25vRymNjrp7GFZzvcRMTi9UR82TA57xLnipD62AAFgM5burCEn
+\restrict WDbkGviQzZ9I0qTYmiBeShaXIc6tlHw3XlVLPK1fOylGvhYbzJlEVqD91tFVvrE
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -422,7 +422,8 @@ CREATE TABLE public.intersphinx_source (
     enabled boolean NOT NULL,
     date_ingested timestamp with time zone,
     last_status text,
-    last_error text
+    last_error text,
+    ingested_content_digest text
 );
 
 
@@ -1060,7 +1061,7 @@ COPY public.intersphinx_inventory (id, url, content, content_type, etag, last_mo
 -- Data for Name: intersphinx_source; Type: TABLE DATA; Schema: public; Owner: test
 --
 
-COPY public.intersphinx_source (id, url, title, enabled, date_ingested, last_status, last_error) FROM stdin;
+COPY public.intersphinx_source (id, url, title, enabled, date_ingested, last_status, last_error, ingested_content_digest) FROM stdin;
 \.
 
 
@@ -2263,5 +2264,5 @@ ALTER TABLE ONLY public.url_occurrence
 -- PostgreSQL database dump complete
 --
 
-\unrestrict iWrSwSsF2M2es25vRymNjrp7GFZzvcRMTi9UR82TA57xLnipD62AAFgM5burCEn
+\unrestrict WDbkGviQzZ9I0qTYmiBeShaXIc6tlHw3XlVLPK1fOylGvhYbzJlEVqD91tFVvrE
 

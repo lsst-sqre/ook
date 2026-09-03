@@ -13,6 +13,7 @@ that one method, as a Kafka consumer reacting to a published site would be.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -109,6 +110,17 @@ class SourceIngestResult:
     status: SourceIngestStatus
     """Whether the source's links were replaced or the attempt failed."""
 
+    unchanged: bool
+    """Whether the site's inventory was recognized and nothing rewritten.
+
+    True when the inventory hashed to the one the last successful ingest
+    read, so the links already stored were built from exactly these bytes
+    under exactly this registration and rewriting them would have replaced
+    them with themselves. The ingest still succeeded and the registration is
+    still stamped; the counts below are all zero because nothing was
+    written, not because nothing was found. Always False on a failure.
+    """
+
     entity_count: int
     """The number of entities the inventory contributed.
 
@@ -152,9 +164,25 @@ class IntersphinxIngestSummary:
     results: list[SourceIngestResult] = field(default_factory=list)
     """Each visited source's outcome, in the order they were visited."""
 
+    sweep_pruned_count: int = 0
+    """The number of entities the run pruned outside any one source's ingest.
+
+    A sweep in which every source recognized its inventory replaces no
+    links, so no source's ingest reaches the pruning that follows a
+    replace -- and entities a *deregistered* source left behind would sit
+    there until some site happened to republish. The sweep prunes them
+    itself, and this is what that pass removed; it belongs to the run
+    rather than to any source in it.
+    """
+
     @property
     def succeeded(self) -> int:
-        """The number of sources whose links were replaced."""
+        """The number of sources whose ingest succeeded.
+
+        Counts a source whose links were replaced and one whose inventory
+        was recognized alike: both ended with the site's links current with
+        what its inventory says. `unchanged_count` is what separates them.
+        """
         return sum(
             1
             for result in self.results
@@ -169,6 +197,17 @@ class IntersphinxIngestSummary:
             for result in self.results
             if result.status is SourceIngestStatus.failure
         )
+
+    @property
+    def unchanged_count(self) -> int:
+        """The number of sources whose inventory was already ingested.
+
+        Counted apart from `succeeded`, which includes them: they are the
+        cheap outcome a healthy scheduled sweep is mostly made of, and a run
+        that replaced every site's links looks the same in every other
+        count.
+        """
+        return sum(1 for result in self.results if result.unchanged)
 
     @property
     def stale_count(self) -> int:
@@ -196,27 +235,53 @@ class IntersphinxIngestSummary:
 
     @property
     def pruned_count(self) -> int:
-        """The number of entities the run pruned."""
-        return sum(result.pruned_count for result in self.results)
+        """The number of entities the run pruned, however it pruned them."""
+        return (
+            sum(result.pruned_count for result in self.results)
+            + self.sweep_pruned_count
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class _ParsedInventory:
-    """One site's inventory, fetched and parsed but not yet stored.
+class _FetchedInventory:
+    """One site's inventory, in hand but not yet read.
 
     An ingest is split into this half and the write that follows it because
     the registration lock that serializes concurrent ingests belongs between
     them: everything that talks to the site happens before the lock is
-    taken, and everything that writes happens under it.
+    taken, and everything that writes -- and the parse whose result is only
+    ever written -- happens under it.
     """
 
     url: str
-    """The inventory URL these entities were read from.
+    """The inventory URL these bytes were read from.
 
-    Carried alongside them because every one of their links is resolved
-    against this URL's directory, and the registration it came from is free
-    to name a different one by the time the links are written.
+    Carried alongside them because every link parsed out of them is
+    resolved against this URL's directory, and the registration it came
+    from is free to name a different one by the time the links are written.
     """
+
+    content: bytes
+    """The raw ``objects.inv`` payload the cache served."""
+
+    digest: str
+    """The SHA-256 hex digest of `content`.
+
+    Compared with the digest the source's last successful ingest recorded,
+    which is what lets a run recognize an inventory it has already turned
+    into links rather than rebuilding them from it.
+    """
+
+    cache_status: InventoryCacheStatus
+    """How fresh the copy of the inventory these bytes came from was."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _ParsedInventory:
+    """One site's inventory, read into the entities it declares."""
+
+    url: str
+    """The inventory URL these entities were read from."""
 
     entities: list[InventoryEntity]
     """The entities the inventory declares, in the order it declares them."""
@@ -243,6 +308,52 @@ class _ReplacedLinks:
 
     cache_status: InventoryCacheStatus
     """How fresh the inventory those links were built from was."""
+
+
+def _is_already_ingested(
+    source: IntersphinxSource, fetched: _FetchedInventory
+) -> bool:
+    """Report whether a source's stored links were built from these bytes.
+
+    Three things have to hold, and each rules out a different way the
+    stored links could disagree with the inventory just fetched. The
+    digests must match, or the site republished. A digest must have been
+    recorded at all, since the source store's ``update_source`` clears it
+    when a registration is retitled or repointed -- the links carry the
+    title as their ``collection_title``, so a rename leaves them
+    describing a site that no longer exists under that name. And the last
+    attempt must have *succeeded*: the digest survives a failure because a
+    failed ingest deletes nothing, but the run after a failure is the one
+    an operator is watching, and it should prove the site's recovery rather
+    than assert it from bookkeeping.
+    """
+    return (
+        source.last_status is SourceIngestStatus.success
+        and source.ingested_content_digest is not None
+        and source.ingested_content_digest == fetched.digest
+    )
+
+
+def _parse_fetched_inventory(fetched: _FetchedInventory) -> _ParsedInventory:
+    """Read a fetched inventory into the entities it declares.
+
+    Called under the source's registration lock rather than beside the
+    fetch, because its only consumer is the write that follows it: an
+    inventory `_is_already_ingested` recognizes is never parsed at all,
+    which is most of what skipping an unchanged source saves. The parse is
+    local work with no origin to wait on, so holding the lock across it
+    costs nothing the lock was taken to protect.
+
+    Raises
+    ------
+    InventoryParseError
+        Raised if the payload is not a readable inventory.
+    """
+    return _ParsedInventory(
+        url=fetched.url,
+        entities=build_entities(parse_inventory(fetched.content)),
+        cache_status=fetched.cache_status,
+    )
 
 
 class IntersphinxIngestService:
@@ -308,6 +419,17 @@ class IntersphinxIngestService:
         origin will not answer is ingested from the copy Ook holds and
         reported as `~ook.domain.intersphinx.InventoryCacheStatus.stale`.
 
+        A site whose inventory hashes to the one its last successful ingest
+        read is recognized rather than re-read, which is the ordinary
+        outcome for a scheduled sweep and the reason the run also prunes on
+        its own account. Pruning normally rides on a source's replace, and a
+        sweep in which every source is recognized performs none -- so
+        entities a *deregistered* source left behind would outlive it until
+        some unrelated site happened to republish. This method therefore
+        runs one final orphan-pruning pass, in a short transaction of its
+        own, whenever no source's own ingest pruned anything. See
+        `_prune_after_sweep`.
+
         Returns
         -------
         IntersphinxIngestSummary
@@ -330,12 +452,16 @@ class IntersphinxIngestService:
             # site the run no longer has anything to say about.
             if result is not None:
                 results.append(result)
-        summary = IntersphinxIngestSummary(results=results)
+        summary = IntersphinxIngestSummary(
+            results=results,
+            sweep_pruned_count=await self._prune_after_sweep(results),
+        )
         self._logger.info(
             "Completed intersphinx ingest",
             considered=len(results),
             succeeded=summary.succeeded,
             failed=summary.failed,
+            unchanged_count=summary.unchanged_count,
             stale_count=summary.stale_count,
             entity_count=summary.entity_count,
             link_count=summary.link_count,
@@ -420,6 +546,19 @@ class IntersphinxIngestService:
         by then the cache has recorded upstream's refusal and that record is
         what keeps a broken origin from being hammered on the next run.
 
+        An inventory that hashes to the one this source's last successful
+        ingest read is recognized rather than re-read: the parse, the
+        entity upsert, the link replacement, and the pruning that follows
+        one are all skipped, the registration is stamped as it always is,
+        and the result comes back flagged
+        `~SourceIngestResult.unchanged` with every count zero. That is the
+        ordinary outcome of a scheduled sweep over sites that have not
+        republished, and it is also what keeps two overlapping runs from
+        each rewriting a site's links behind the other. See
+        `_is_already_ingested` for the three conditions, and
+        `ingest_sources` for the pruning a run of nothing-but-skips still
+        owes.
+
         Concurrent ingests of *one* source are serialized on that source's
         registration row, locked with a ``SELECT ... FOR UPDATE`` once the
         inventory is in hand. Without it the two replaces interleave: under
@@ -465,7 +604,7 @@ class IntersphinxIngestService:
         """
         logger = self._logger.bind(source_id=source.id, url=source.url)
         try:
-            parsed = await self._read_inventory(source, revalidate=revalidate)
+            fetched = await self._read_inventory(source, revalidate=revalidate)
         except _INGEST_FAILURES as exc:
             return await self._record_failure(source, exc, logger=logger)
 
@@ -479,6 +618,16 @@ class IntersphinxIngestService:
             logger.info("Skipped intersphinx source deleted during its ingest")
             return None
 
+        if _is_already_ingested(locked, fetched):
+            return await self._record_unchanged(
+                locked, fetched, url=source.url, logger=logger
+            )
+
+        try:
+            parsed = _parse_fetched_inventory(fetched)
+        except _INGEST_FAILURES as exc:
+            return await self._record_failure(locked, exc, logger=logger)
+
         replaced = await self._store_links(locked, parsed)
         pruned_count = await self._entity_store.prune_orphan_entities()
         await self._source_store.record_ingest_outcome(
@@ -486,6 +635,7 @@ class IntersphinxIngestService:
             date_ingested=datetime.now(tz=UTC),
             status=SourceIngestStatus.success,
             error=None,
+            content_digest=fetched.digest,
         )
         await self._session.commit()
         logger.info(
@@ -505,6 +655,7 @@ class IntersphinxIngestService:
             url=source.url,
             title=locked.title,
             status=SourceIngestStatus.success,
+            unchanged=False,
             entity_count=replaced.entity_count,
             link_count=replaced.link_count,
             pruned_count=pruned_count,
@@ -514,18 +665,21 @@ class IntersphinxIngestService:
 
     async def _read_inventory(
         self, source: IntersphinxSource, *, revalidate: RevalidationMode
-    ) -> _ParsedInventory:
-        """Fetch and parse one site's inventory, writing nothing of Ook's.
+    ) -> _FetchedInventory:
+        """Fetch one site's inventory, writing nothing of Ook's.
 
         Everything that can reach the origin lives here, and nothing that
         writes an entity or a link does, so `ingest_source` can put the
-        registration lock between the two.
+        registration lock between the two. The bytes are hashed but not yet
+        parsed: the digest is what decides whether they need parsing at all,
+        and it can only be compared against the registration once that is
+        locked.
 
         Returns
         -------
-        _ParsedInventory
-            The entities the inventory declares, and how fresh the copy
-            they were parsed from was.
+        _FetchedInventory
+            The inventory's bytes, their digest, and how fresh the copy
+            they came from was.
         """
         served = await self._cache_service.get_inventory(
             source.url, revalidate=revalidate
@@ -540,9 +694,10 @@ class IntersphinxIngestService:
                 f"The cached inventory for {source.url} holds no content."
             )
 
-        return _ParsedInventory(
+        return _FetchedInventory(
             url=source.url,
-            entities=build_entities(parse_inventory(content)),
+            content=content,
+            digest=hashlib.sha256(content).hexdigest(),
             cache_status=served.cache_status,
         )
 
@@ -561,7 +716,8 @@ class IntersphinxIngestService:
             The source as it stands under the lock, whose title every link
             written here carries.
         parsed
-            The inventory `_read_inventory` fetched and parsed.
+            The inventory `_read_inventory` fetched and
+            `_parse_fetched_inventory` read.
 
         Returns
         -------
@@ -613,6 +769,93 @@ class IntersphinxIngestService:
             )
         return links
 
+    async def _prune_after_sweep(
+        self, results: list[SourceIngestResult]
+    ) -> int:
+        """Prune orphan entities no source's own ingest could have pruned.
+
+        Pruning normally rides on a source's link replacement, which is the
+        only thing that can orphan an entity *within* a run. Deleting a
+        registration orphans entities too, though, and outside any run --
+        so a sweep in which every source recognized its inventory would
+        leave them behind, since none of them replaced anything to prune
+        after. This pass covers that, in a transaction of its own so it
+        neither extends nor is rolled back with any source's ingest.
+
+        It is skipped when a source in the run already pruned, because that
+        source's pass was global: an entity is pruned when no source
+        documents it or anything below it, so one pass late in a run has
+        already answered for every source in it.
+
+        Returns
+        -------
+        int
+            The number of entities this pass deleted, which is zero when it
+            was skipped.
+        """
+        if any(result.pruned_count for result in results):
+            return 0
+        pruned = await self._entity_store.prune_orphan_entities()
+        await self._session.commit()
+        return pruned
+
+    async def _record_unchanged(
+        self,
+        source: IntersphinxSource,
+        fetched: _FetchedInventory,
+        *,
+        url: str,
+        logger: BoundLogger,
+    ) -> SourceIngestResult:
+        """Stamp a recognized inventory as ingested without rewriting links.
+
+        The registration is stamped exactly as a replacing ingest stamps
+        it -- ``date_ingested`` answers "when did Ook last check this
+        site?", which this run answered -- and the digest is rewritten to
+        the value it already held, so the row says the same thing whichever
+        path reached it.
+
+        Parameters
+        ----------
+        source
+            The source as it stands under its registration lock.
+        fetched
+            The inventory whose digest matched what the source last
+            ingested.
+        url
+            The inventory URL that was actually fetched, which the
+            registration is free to have moved off since.
+        logger
+            The logger, already bound to this source.
+        """
+        await self._source_store.record_ingest_outcome(
+            source.id,
+            date_ingested=datetime.now(tz=UTC),
+            status=SourceIngestStatus.success,
+            error=None,
+            content_digest=fetched.digest,
+        )
+        await self._session.commit()
+        logger.info(
+            "Skipped an intersphinx source whose inventory is unchanged",
+            cache_status=fetched.cache_status,
+        )
+        return SourceIngestResult(
+            source_id=source.id,
+            url=url,
+            title=source.title,
+            status=SourceIngestStatus.success,
+            unchanged=True,
+            # Nothing was written, and these count writes rather than
+            # contents: what the site documents is whatever the last
+            # replacing ingest stored, and is not re-counted here.
+            entity_count=0,
+            link_count=0,
+            pruned_count=0,
+            error=None,
+            cache_status=fetched.cache_status,
+        )
+
     async def _record_failure(
         self,
         source: IntersphinxSource,
@@ -639,6 +882,7 @@ class IntersphinxIngestService:
             url=source.url,
             title=source.title,
             status=SourceIngestStatus.failure,
+            unchanged=False,
             entity_count=0,
             link_count=0,
             pruned_count=0,

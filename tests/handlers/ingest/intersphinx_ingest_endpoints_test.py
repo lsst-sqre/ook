@@ -221,3 +221,49 @@ async def test_post_ingest_intersphinx_reports_no_cache_status_on_failure(
     data = response.json()
     assert data["failure_count"] == 1
     assert data["sources"][0]["cache_status"] is None
+
+
+@pytest.mark.asyncio
+async def test_post_ingest_intersphinx_reports_an_unchanged_source(
+    client: AsyncClient, respx_mock: respx.Router
+) -> None:
+    """A run that recognized a site's inventory says so rather than lying.
+
+    Nothing else in the response separates "this site publishes nothing"
+    from "this site publishes what Ook already ingested": both report zero
+    entities and zero links under a successful status.
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=_inventory("pkg.Thing"))
+    )
+    await _register(client, url=INVENTORY_URL, title="A docs")
+    assert (await client.post(INGEST_URL)).status_code == 200
+
+    response = await client.post(INGEST_URL)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["unchanged_count"] == 1
+    assert data["success_count"] == 1
+    source = data["sources"][0]
+    assert source["unchanged"] is True
+    assert source["entity_count"] == 0
+    assert source["link_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_post_ingest_intersphinx_reports_a_changed_source(
+    client: AsyncClient, respx_mock: respx.Router
+) -> None:
+    """A source whose links the run replaced is not reported as unchanged."""
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=_inventory("pkg.Thing"))
+    )
+    await _register(client, url=INVENTORY_URL, title="A docs")
+
+    response = await client.post(INGEST_URL)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["unchanged_count"] == 0
+    assert data["sources"][0]["unchanged"] is False

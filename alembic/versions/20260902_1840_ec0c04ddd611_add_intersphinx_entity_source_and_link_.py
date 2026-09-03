@@ -55,6 +55,7 @@ def upgrade() -> None:
         sa.Column("date_ingested", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_status", sa.UnicodeText(), nullable=True),
         sa.Column("last_error", sa.UnicodeText(), nullable=True),
+        sa.Column("ingested_content_digest", sa.UnicodeText(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(

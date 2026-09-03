@@ -15,9 +15,12 @@ import sphobjinv
 import structlog
 from httpx import Response
 from safir.database import create_async_session, create_database_engine
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from ook.config import config
+from ook.dbschema.intersphinxentities import SqlIntersphinxEntity
+from ook.dbschema.links import SqlIntersphinxLink
 from ook.domain.intersphinx import (
     IntersphinxInventory,
     InventoryCacheStatus,
@@ -105,6 +108,34 @@ async def _get_source(factory: Factory, source_id: int) -> IntersphinxSource:
         )
     assert source is not None
     return source
+
+
+async def _link_row_ids(factory: Factory) -> list[int]:
+    """Read the primary key of every stored intersphinx link row.
+
+    A replace is a delete followed by inserts, so these IDs are what tells
+    "the links were left alone" apart from "the links were rebuilt to look
+    exactly as they did".
+    """
+    async with factory.db_session.begin():
+        rows = await factory.db_session.execute(
+            select(SqlIntersphinxLink.id).order_by(SqlIntersphinxLink.id)
+        )
+        return list(rows.scalars().all())
+
+
+async def _entity_row_ids(factory: Factory) -> list[int]:
+    """Read the primary key of every stored entity row.
+
+    Entities are upserted rather than replaced, so these survive a
+    re-ingest either way -- what they catch is an ingest that ran the upsert
+    at all, since a name whose row is re-created gets a new ID.
+    """
+    async with factory.db_session.begin():
+        rows = await factory.db_session.execute(
+            select(SqlIntersphinxEntity.id).order_by(SqlIntersphinxEntity.id)
+        )
+        return list(rows.scalars().all())
 
 
 BLOCKED_GRACE = 0.5
@@ -296,15 +327,29 @@ async def test_ingest_records_success_on_the_registry_row(
 
 
 @pytest.mark.asyncio
-async def test_reingest_is_idempotent(
+async def test_a_full_reingest_is_idempotent(
     factory: Factory, respx_mock: respx.Router
 ) -> None:
-    """Running ingest twice leaves one link per object, not two."""
-    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
-    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+    """Replacing a site's links a second time leaves one link per object.
 
+    A sweep over a site that has not republished recognizes its inventory
+    and never reaches the replace, so this drives it there deliberately --
+    by retitling the registration, which invalidates the stored links
+    without touching the inventory behind them. What runs is the same
+    replace a republished site, a recovered failure, and a retitle all end
+    up running.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
     service = factory.create_intersphinx_ingest_service()
     first = await service.ingest_sources()
+    async with factory.db_session.begin():
+        await factory.create_intersphinx_source_store().update_source(
+            source_id, title="A docs, renamed"
+        )
+
     second = await service.ingest_sources()
 
     assert first.link_count == second.link_count == 4
@@ -357,6 +402,224 @@ async def test_reingest_prunes_objects_the_site_dropped(
     thing = await entity_store.get_entity("py", "pkg.mod.Thing")
     assert thing is not None
     assert thing.parent_name == "pkg.mod"
+
+
+@pytest.mark.asyncio
+async def test_reingest_skips_an_unchanged_inventory(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """A second ingest of the same bytes reports that it did nothing.
+
+    The common case for a scheduled sweep is a site that has not
+    republished, and rewriting its links into an identical copy of
+    themselves is work with no result -- so the run says so instead, with
+    the counts of what it wrote, which is nothing.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+
+    summary = await service.ingest_sources()
+
+    result = summary.results[0]
+    assert result.unchanged is True
+    assert result.status is SourceIngestStatus.success
+    assert result.entity_count == 0
+    assert result.link_count == 0
+    assert result.pruned_count == 0
+    assert summary.unchanged_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_source_keeps_the_rows_it_already_had(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """Skipping an unchanged inventory writes no entity or link rows."""
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+    link_ids = await _link_row_ids(factory)
+    entity_ids = await _entity_row_ids(factory)
+
+    await service.ingest_sources()
+
+    assert await _link_row_ids(factory) == link_ids
+    assert await _entity_row_ids(factory) == entity_ids
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_source_is_still_stamped_as_ingested(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """A skipped source was visited, so its registration says when.
+
+    ``date_ingested`` answers "when did Ook last check this site?", which a
+    run that recognized the inventory answered as much as one that replaced
+    every link from it.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+    first = (await _get_source(factory, source_id)).date_ingested
+
+    await service.ingest_sources()
+
+    source = await _get_source(factory, source_id)
+    assert first is not None
+    assert source.date_ingested is not None
+    assert source.date_ingested > first
+    assert source.last_status is SourceIngestStatus.success
+
+
+@pytest.mark.asyncio
+async def test_a_changed_inventory_is_reingested(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """A site that republished is read in full, not recognized."""
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+
+    await _expire_cached_inventory(factory, INVENTORY_URL)
+    _serve_inventory(
+        respx_mock,
+        INVENTORY_URL,
+        _inventory(
+            [
+                ("pkg", "module", "api.html#module-pkg"),
+                ("pkg.Added", "class", "api.html#pkg.Added"),
+            ]
+        ),
+    )
+
+    summary = await service.ingest_sources()
+
+    assert summary.results[0].unchanged is False
+    assert summary.unchanged_count == 0
+    entity_store = factory.create_intersphinx_entity_store()
+    assert await entity_store.get_entity("py", "pkg.Added") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_ingest_forces_the_next_one_to_do_the_work(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """A source recovering from a failure is re-ingested, not recognized.
+
+    The digest describes the links the last *success* wrote, and a failure
+    does not disturb them -- but the run after a failure is the one an
+    operator is watching, and skipping it on a digest match would leave the
+    site's recovery unproven.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+
+    await _expire_cached_inventory(factory, INVENTORY_URL)
+    respx_mock.get(INVENTORY_URL).mock(return_value=Response(503))
+    assert (await service.ingest_sources()).failed == 1
+
+    await _expire_cached_inventory(factory, INVENTORY_URL)
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+
+    summary = await service.ingest_sources()
+
+    assert summary.succeeded == 1
+    assert summary.results[0].unchanged is False
+    assert summary.results[0].link_count == 4
+
+
+@pytest.mark.asyncio
+async def test_a_retitled_source_is_reingested(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """Renaming a site rebuilds its links even though it did not republish.
+
+    Every link carries the registration's title as its
+    ``collection_title``, so the stored links stop describing the site the
+    moment it is retitled.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+
+    async with factory.db_session.begin():
+        await factory.create_intersphinx_source_store().update_source(
+            source_id, title="A better docs"
+        )
+
+    summary = await service.ingest_sources()
+
+    assert summary.results[0].unchanged is False
+    thing = await factory.create_intersphinx_entity_store().get_entity(
+        "py", "pkg.mod.Thing"
+    )
+    assert thing is not None
+    assert [link.collection_title for link in thing.links] == ["A better docs"]
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_of_skipped_sources_still_prunes_orphans(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """A deregistered site's entities go even when no source is re-ingested.
+
+    Deleting a registration takes its links with it and leaves the entities
+    they pointed at behind for the pruning path. Every other source
+    recognizing its inventory must not be what keeps those entities alive.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    _serve_inventory(
+        respx_mock,
+        OTHER_INVENTORY_URL,
+        _inventory([("other.Thing", "class", "api.html#other.Thing")]),
+    )
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+    other_id = await _register_source(
+        factory, url=OTHER_INVENTORY_URL, title="B docs"
+    )
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+    async with factory.db_session.begin():
+        await factory.create_intersphinx_source_store().delete_source(other_id)
+
+    summary = await service.ingest_sources()
+
+    assert summary.unchanged_count == 1
+    assert summary.pruned_count == 1
+    entity_store = factory.create_intersphinx_entity_store()
+    assert await entity_store.get_entity("py", "other.Thing") is None
+    assert await entity_store.get_entity("py", "pkg.mod.Thing") is not None
+
+
+@pytest.mark.asyncio
+async def test_ingest_source_url_skips_an_unchanged_inventory(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """Naming one source revalidates it, then still recognizes its bytes.
+
+    The manual trigger buys a fresh read of the site; what it does not buy
+    is rewriting links the fresh read proved identical.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+
+    result = await service.ingest_source_url(INVENTORY_URL)
+
+    assert result.unchanged is True
+    assert result.link_count == 0
 
 
 @pytest.mark.asyncio

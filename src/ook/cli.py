@@ -492,6 +492,13 @@ def report_ingest_intersphinx(summary: IntersphinxIngestSummary) -> None:
     printed, since the run deliberately continues past a failing source
     rather than aborting on it.
 
+    A source whose inventory was *unchanged* is reported and does not fail
+    the run either. Its links were left exactly as the last ingest wrote
+    them, because the inventory hashed to the one they were built from --
+    the ordinary outcome for a site that has not republished since the
+    previous run. Counting them tells an operator that a run reporting no
+    entities and no links did its job rather than finding nothing.
+
     A source *served stale* is reported but does not fail the run. Its links
     were replaced, from the copy of its inventory Ook already held, because
     the origin could not be reached to revalidate it -- so the links are
@@ -512,6 +519,7 @@ def report_ingest_intersphinx(summary: IntersphinxIngestSummary) -> None:
     click.echo(
         f"Ingested intersphinx sources: {len(summary.results)} considered, "
         f"{summary.succeeded} succeeded, {summary.failed} failed, "
+        f"{summary.unchanged_count} unchanged, "
         f"{summary.stale_count} served stale, "
         f"{summary.entity_count} entities, {summary.link_count} links, "
         f"{summary.pruned_count} pruned."

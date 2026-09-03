@@ -24,6 +24,14 @@ The store speaks integers -- the Base32 form is the API's business -- so
 this is just an ID the registry does not hold.
 """
 
+DIGEST = "a" * 64
+"""A stand-in for the SHA-256 hex digest of an ingested inventory.
+
+The store never hashes anything itself -- it records whatever the ingest
+path hands it -- so a recognizable string says more here than a real
+digest would.
+"""
+
 BLOCKED_GRACE = 0.5
 """How long a lock a test expects to be blocked is given to prove it.
 
@@ -147,6 +155,155 @@ async def test_record_ingest_outcome_clears_error(factory: Factory) -> None:
         assert recovered is not None
         assert recovered.last_status is SourceIngestStatus.success
         assert recovered.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_record_ingest_outcome_stores_the_ingested_digest(
+    factory: Factory,
+) -> None:
+    """A successful ingest records the digest of what it ingested."""
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_source_store()
+        source = await store.add_source(
+            url="https://pipelines.lsst.io/objects.inv",
+            title="LSST Science Pipelines",
+        )
+        assert source.ingested_content_digest is None
+
+        await store.record_ingest_outcome(
+            source.id,
+            date_ingested=datetime.now(tz=UTC),
+            status=SourceIngestStatus.success,
+            content_digest=DIGEST,
+        )
+
+        ingested = await store.get_source(source.id)
+        assert ingested is not None
+        assert ingested.ingested_content_digest == DIGEST
+
+
+@pytest.mark.asyncio
+async def test_record_ingest_outcome_keeps_the_digest_on_failure(
+    factory: Factory,
+) -> None:
+    """A failed ingest leaves the digest the last success recorded.
+
+    The links a failed ingest did not touch are still the ones that success
+    wrote, so the digest describing them is still true. Clearing it would
+    only buy a needless full re-ingest once the site comes back.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_source_store()
+        source = await store.add_source(
+            url="https://pipelines.lsst.io/objects.inv",
+            title="LSST Science Pipelines",
+        )
+        await store.record_ingest_outcome(
+            source.id,
+            date_ingested=datetime.now(tz=UTC),
+            status=SourceIngestStatus.success,
+            content_digest=DIGEST,
+        )
+
+        await store.record_ingest_outcome(
+            source.id,
+            date_ingested=datetime.now(tz=UTC),
+            status=SourceIngestStatus.failure,
+            error="Connection timed out",
+        )
+
+        failed = await store.get_source(source.id)
+        assert failed is not None
+        assert failed.ingested_content_digest == DIGEST
+
+
+@pytest.mark.asyncio
+async def test_update_source_clears_the_digest_on_a_title_change(
+    factory: Factory,
+) -> None:
+    """Retitling a source makes its ingested inventory worth re-reading.
+
+    Every link the source contributed carries the title as its
+    ``collection_title``, so the links no longer describe the registration
+    even though the inventory behind them has not moved.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_source_store()
+        source = await store.add_source(
+            url="https://pipelines.lsst.io/objects.inv",
+            title="LSST Science Pipelines",
+        )
+        await store.record_ingest_outcome(
+            source.id,
+            date_ingested=datetime.now(tz=UTC),
+            status=SourceIngestStatus.success,
+            content_digest=DIGEST,
+        )
+
+        updated = await store.update_source(source.id, title="Rubin Pipelines")
+
+        assert updated is not None
+        assert updated.ingested_content_digest is None
+
+
+@pytest.mark.asyncio
+async def test_update_source_clears_the_digest_on_a_url_change(
+    factory: Factory,
+) -> None:
+    """Repointing a source at another inventory invalidates its digest.
+
+    The links it holds were built from the old inventory, and the new one
+    has to be read even if the two happen to hash alike.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_source_store()
+        source = await store.add_source(
+            url="https://pipelines.lsst.io/objects.inv",
+            title="LSST Science Pipelines",
+        )
+        await store.record_ingest_outcome(
+            source.id,
+            date_ingested=datetime.now(tz=UTC),
+            status=SourceIngestStatus.success,
+            content_digest=DIGEST,
+        )
+
+        updated = await store.update_source(
+            source.id, url="https://pipelines.lsst.io/v/weekly/objects.inv"
+        )
+
+        assert updated is not None
+        assert updated.ingested_content_digest is None
+
+
+@pytest.mark.asyncio
+async def test_update_source_keeps_the_digest_when_nothing_links_change(
+    factory: Factory,
+) -> None:
+    """Parking a source does not invalidate the links it already holds.
+
+    ``enabled`` says nothing about what the links contain, and neither does
+    a title or URL rewritten to the value it already had.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_source_store()
+        source = await store.add_source(
+            url="https://pipelines.lsst.io/objects.inv",
+            title="LSST Science Pipelines",
+        )
+        await store.record_ingest_outcome(
+            source.id,
+            date_ingested=datetime.now(tz=UTC),
+            status=SourceIngestStatus.success,
+            content_digest=DIGEST,
+        )
+
+        updated = await store.update_source(
+            source.id, enabled=False, title="LSST Science Pipelines"
+        )
+
+        assert updated is not None
+        assert updated.ingested_content_digest == DIGEST
 
 
 @pytest.mark.asyncio
