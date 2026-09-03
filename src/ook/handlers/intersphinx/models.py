@@ -8,6 +8,7 @@ from typing import Annotated, Self
 from fastapi import Request
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, HttpUrl
 
+from ook.domain.base32id import Base32Id, serialize_ook_base32_id
 from ook.domain.intersphinxsources import (
     IntersphinxSource as IntersphinxSourceDomain,
 )
@@ -139,10 +140,12 @@ class IntersphinxSource(BaseModel):
     """A documentation site registered for intersphinx ingest."""
 
     id: Annotated[
-        int,
+        Base32Id,
         Field(
-            description="The registration's identifier.",
-            examples=[1],
+            description=(
+                "The Crockford Base32 identifier of the registration."
+            ),
+            examples=["1234-5678-90ab-cd2f"],
         ),
     ]
 
@@ -215,7 +218,10 @@ class IntersphinxSource(BaseModel):
         return cls(
             id=source.id,
             self_url=str(
-                request.url_for("get_intersphinx_source", source_id=source.id)
+                request.url_for(
+                    "get_intersphinx_source",
+                    source_id=serialize_ook_base32_id(source.id),
+                )
             ),
             url=source.url,
             title=source.title,

@@ -8,6 +8,7 @@ import pytest
 from httpx import AsyncClient
 
 from ook.config import config
+from ook.domain.base32id import serialize_ook_base32_id, validate_base32_id
 from ook.domain.intersphinxsources import SourceIngestStatus
 from ook.factory import Factory
 
@@ -16,6 +17,9 @@ SOURCES_URL = f"{config.path_prefix}/intersphinx/sources"
 
 INVENTORY_URL = "https://pipelines.lsst.io/v/weekly/objects.inv"
 """An inventory URL used across the registry tests."""
+
+UNKNOWN_SOURCE_ID = serialize_ook_base32_id(12345)
+"""A well-formed registration ID no test registers."""
 
 
 @pytest.mark.asyncio
@@ -41,6 +45,34 @@ async def test_register_source_returns_the_registration(
     assert data["last_error"] is None
     assert data["self_url"].endswith(f"{SOURCES_URL}/{data['id']}")
     assert response.headers["Location"] == data["self_url"]
+
+
+@pytest.mark.asyncio
+async def test_registration_id_is_a_base32_id(client: AsyncClient) -> None:
+    """A registration is published by a Crockford Base32 ID, like every
+    other identifier in Ook's API, and that same string is what addresses
+    it.
+    """
+    response = await client.post(
+        SOURCES_URL,
+        json={"url": INVENTORY_URL, "title": "Rubin Science Pipelines"},
+    )
+
+    assert response.status_code == 201
+    source_id = response.json()["id"]
+    # The hyphenated Base32 string form, not a raw integer.
+    assert isinstance(source_id, str)
+    assert "-" in source_id
+    # It decodes with a valid checksum and re-serializes to the same form.
+    # That checksum is what makes a mistyped ID a 422 rather than a lookup
+    # that misses.
+    assert serialize_ook_base32_id(validate_base32_id(source_id)) == source_id
+    assert response.json()["self_url"].endswith(f"{SOURCES_URL}/{source_id}")
+
+    # The published ID is the one the routes answer to.
+    fetched = await client.get(f"{SOURCES_URL}/{source_id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["id"] == source_id
 
 
 @pytest.mark.asyncio
@@ -150,9 +182,26 @@ async def test_get_source_returns_the_registration(
 @pytest.mark.asyncio
 async def test_get_unknown_source_is_not_found(client: AsyncClient) -> None:
     """An unregistered ID is a 404 rather than an empty registration."""
-    response = await client.get(f"{SOURCES_URL}/12345")
+    response = await client.get(f"{SOURCES_URL}/{UNKNOWN_SOURCE_ID}")
 
     assert response.status_code == 404
+    # The message names the ID the client addressed the route with, not
+    # the integer it decodes to.
+    assert UNKNOWN_SOURCE_ID in response.text
+
+
+@pytest.mark.asyncio
+async def test_malformed_source_id_is_unprocessable(
+    client: AsyncClient,
+) -> None:
+    """A mistyped ID fails its checksum in path validation, so it is a 422
+    rather than a lookup that quietly misses.
+    """
+    for path in (f"{SOURCES_URL}/not-a-valid-id", f"{SOURCES_URL}/12345"):
+        assert (await client.get(path)).status_code == 422, path
+        patched = await client.patch(path, json={"title": "Nowhere"})
+        assert patched.status_code == 422, path
+        assert (await client.delete(path)).status_code == 422, path
 
 
 @pytest.mark.asyncio
@@ -218,7 +267,7 @@ async def test_update_unknown_source_is_not_found(
 ) -> None:
     """Updating an unregistered ID is a 404 rather than a registration."""
     response = await client.patch(
-        f"{SOURCES_URL}/12345", json={"title": "Nowhere"}
+        f"{SOURCES_URL}/{UNKNOWN_SOURCE_ID}", json={"title": "Nowhere"}
     )
 
     assert response.status_code == 404
@@ -246,7 +295,7 @@ async def test_delete_unknown_source_is_not_found(
     client: AsyncClient,
 ) -> None:
     """Deleting an unregistered ID is a 404 rather than a silent success."""
-    response = await client.delete(f"{SOURCES_URL}/12345")
+    response = await client.delete(f"{SOURCES_URL}/{UNKNOWN_SOURCE_ID}")
 
     assert response.status_code == 404
 
@@ -265,7 +314,8 @@ async def test_ingest_outcome_surfaces_on_the_registration(
     date_ingested = datetime(2026, 9, 2, 17, 5, tzinfo=UTC)
     store = factory.create_intersphinx_source_store()
     recorded = await store.record_ingest_outcome(
-        created.json()["id"],
+        # The store speaks the integer the published Base32 ID decodes to.
+        validate_base32_id(created.json()["id"]),
         date_ingested=date_ingested,
         status=SourceIngestStatus.failure,
         error="404 Not Found",

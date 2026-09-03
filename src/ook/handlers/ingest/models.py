@@ -9,6 +9,7 @@ from typing import Annotated, Self
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 
+from ook.domain.base32id import Base32Id
 from ook.domain.intersphinxsources import SourceIngestStatus
 from ook.domain.resources import (
     Contributor,
@@ -393,9 +394,12 @@ class IntersphinxSourceIngestResult(BaseModel):
     """The outcome of ingesting one documentation source."""
 
     source_id: Annotated[
-        int,
+        Base32Id,
         Field(
-            description="The ID of the source's registration.", examples=[1]
+            description=(
+                "The Crockford Base32 identifier of the source's registration."
+            ),
+            examples=["1234-5678-90ab-cd2f"],
         ),
     ]
 

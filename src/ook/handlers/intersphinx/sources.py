@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, Path, Query, Response
 from safir.models import ErrorModel
 
 from ook.dependencies.context import RequestContext, context_dependency
+from ook.domain.base32id import Base32Id, serialize_ook_base32_id
 from ook.exceptions import NotFoundError
 
 from .models import (
@@ -45,14 +46,36 @@ OBSERVABILITY_NOTE = (
 """The sentence describing the fields a client cannot write."""
 
 SourceIdPath = Annotated[
-    int,
+    Base32Id,
     Path(
         title="Source ID",
-        description="The identifier of the registered source.",
-        examples=[1],
+        description=(
+            "The Crockford Base32 identifier of the registered source."
+        ),
+        examples=["1234-5678-90ab-cd2f"],
     ),
 ]
-"""The registration ID a single-source route is addressed by."""
+"""The registration ID a single-source route is addressed by.
+
+Carried in the URL as the Base32 string the registration publishes, so the
+checksum it holds makes a mistyped ID a ``422`` rather than a lookup that
+quietly misses.
+"""
+
+
+def _source_not_found(source_id: int) -> NotFoundError:
+    """Build the 404 for a registration ID nothing answers to.
+
+    The ID is rendered back in the Base32 form the client addressed the
+    route with, so the message names the identifier the client holds rather
+    than the integer it decodes to.
+    """
+    return NotFoundError(
+        message=(
+            f"Intersphinx source {serialize_ook_base32_id(source_id)} not"
+            " found"
+        )
+    )
 
 
 @router.post(
@@ -166,9 +189,7 @@ async def get_intersphinx_source(
         service = context.factory.create_intersphinx_source_service()
         source = await service.get_source(source_id)
         if source is None:
-            raise NotFoundError(
-                message=f"Intersphinx source {source_id} not found"
-            )
+            raise _source_not_found(source_id)
         return IntersphinxSource.from_domain(source, request=context.request)
 
 
@@ -218,9 +239,7 @@ async def update_intersphinx_source(
             enabled=update_request.enabled,
         )
         if source is None:
-            raise NotFoundError(
-                message=f"Intersphinx source {source_id} not found"
-            )
+            raise _source_not_found(source_id)
         return IntersphinxSource.from_domain(source, request=context.request)
 
 
@@ -253,7 +272,5 @@ async def delete_intersphinx_source(
         service = context.factory.create_intersphinx_source_service()
         deleted = await service.delete_source(source_id)
         if not deleted:
-            raise NotFoundError(
-                message=f"Intersphinx source {source_id} not found"
-            )
+            raise _source_not_found(source_id)
     return Response(status_code=204)

@@ -40,12 +40,19 @@ def _inventory(name: str) -> bytes:
     return sphobjinv.compress(inventory.data_file())
 
 
-async def _register(client: AsyncClient, *, url: str, title: str) -> None:
-    """Register a documentation source through the registry API."""
+async def _register(client: AsyncClient, *, url: str, title: str) -> str:
+    """Register a documentation source through the registry API.
+
+    Returns
+    -------
+    str
+        The registration's published Crockford Base32 ID.
+    """
     response = await client.post(
         SOURCES_URL, json={"url": url, "title": title}
     )
     assert response.status_code == 201
+    return response.json()["id"]
 
 
 @pytest.mark.asyncio
@@ -78,6 +85,26 @@ async def test_post_ingest_intersphinx_ingests_every_source(
     assert [source["last_status"] for source in listing.json()] == [
         "success",
         "success",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_post_ingest_intersphinx_reports_the_registration_id(
+    client: AsyncClient, respx_mock: respx.Router
+) -> None:
+    """A result names its source by the Base32 ID the registry published,
+    so an outcome can be carried straight back to the registration.
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=_inventory("pkg.Thing"))
+    )
+    source_id = await _register(client, url=INVENTORY_URL, title="A docs")
+
+    response = await client.post(INGEST_URL)
+
+    assert response.status_code == 200
+    assert [source["source_id"] for source in response.json()["sources"]] == [
+        source_id
     ]
 
 

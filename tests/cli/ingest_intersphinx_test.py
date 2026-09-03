@@ -9,6 +9,7 @@ import sphobjinv
 from httpx import Response
 
 from ook.cli import main, report_ingest_intersphinx, run_ingest_intersphinx
+from ook.domain.base32id import generate_base32_id, validate_base32_id
 from ook.domain.intersphinxsources import SourceIngestStatus
 from ook.factory import Factory
 from ook.services.ingest.intersphinx import (
@@ -41,7 +42,7 @@ def _inventory() -> bytes:
 def _result(status: SourceIngestStatus) -> SourceIngestResult:
     """Build a source outcome for the reporting tests."""
     return SourceIngestResult(
-        source_id=1,
+        source_id=validate_base32_id(generate_base32_id()),
         url=INVENTORY_URL,
         title="Example docs",
         status=status,

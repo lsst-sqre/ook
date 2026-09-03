@@ -48,7 +48,7 @@ def upgrade() -> None:
     )
     op.create_table(
         "intersphinx_source",
-        sa.Column("id", sa.BigInteger(), autoincrement=True, nullable=False),
+        sa.Column("id", sa.BigInteger(), autoincrement=False, nullable=False),
         sa.Column("url", sa.UnicodeText(), nullable=False),
         sa.Column("title", sa.UnicodeText(), nullable=False),
         sa.Column("enabled", sa.Boolean(), nullable=False),

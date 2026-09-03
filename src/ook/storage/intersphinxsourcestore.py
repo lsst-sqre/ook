@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
 
 from ook.dbschema.intersphinxsources import SqlIntersphinxSource
+from ook.domain.base32id import generate_base32_id, validate_base32_id
 from ook.domain.intersphinxsources import IntersphinxSource, SourceIngestStatus
 
 __all__ = ["IntersphinxSourceStore"]
@@ -48,7 +49,8 @@ class IntersphinxSourceStore:
         Returns
         -------
         IntersphinxSource
-            The registered source, with its newly assigned ID.
+            The registered source, with its newly minted Crockford Base32
+            ID (held as the integer it decodes to).
 
         Raises
         ------
@@ -57,7 +59,13 @@ class IntersphinxSourceStore:
             caller so the API layer can report the conflict in its own
             terms.
         """
+        # Mint the primary key from the shared Base32 ID generator rather
+        # than a database sequence, so the registration is published by a
+        # public identifier instead of an auto-increment PK. A random ID is
+        # enough here: the registry is small and is never paged through in
+        # ID order, so it has no use for a time-ordered one.
         row = SqlIntersphinxSource(
+            id=validate_base32_id(generate_base32_id()),
             url=url,
             title=title,
             enabled=enabled,

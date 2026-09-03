@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict C555keMu6wxq5d527qyxRPzOgpdx38yzPm03lSdZ9ahHMiyToBjeMDyX46zBdlw
+\restrict iWrSwSsF2M2es25vRymNjrp7GFZzvcRMTi9UR82TA57xLnipD62AAFgM5burCEn
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -427,27 +427,6 @@ CREATE TABLE public.intersphinx_source (
 
 
 ALTER TABLE public.intersphinx_source OWNER TO test;
-
---
--- Name: intersphinx_source_id_seq; Type: SEQUENCE; Schema: public; Owner: test
---
-
-CREATE SEQUENCE public.intersphinx_source_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.intersphinx_source_id_seq OWNER TO test;
-
---
--- Name: intersphinx_source_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: test
---
-
-ALTER SEQUENCE public.intersphinx_source_id_seq OWNED BY public.intersphinx_source.id;
-
 
 --
 -- Name: link; Type: TABLE; Schema: public; Owner: test
@@ -933,13 +912,6 @@ ALTER TABLE ONLY public.intersphinx_inventory ALTER COLUMN id SET DEFAULT nextva
 
 
 --
--- Name: intersphinx_source id; Type: DEFAULT; Schema: public; Owner: test
---
-
-ALTER TABLE ONLY public.intersphinx_source ALTER COLUMN id SET DEFAULT nextval('public.intersphinx_source_id_seq'::regclass);
-
-
---
 -- Name: link id; Type: DEFAULT; Schema: public; Owner: test
 --
 
@@ -1274,13 +1246,6 @@ SELECT pg_catalog.setval('public.intersphinx_entity_id_seq', 1, false);
 --
 
 SELECT pg_catalog.setval('public.intersphinx_inventory_id_seq', 1, false);
-
-
---
--- Name: intersphinx_source_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
---
-
-SELECT pg_catalog.setval('public.intersphinx_source_id_seq', 1, false);
 
 
 --
@@ -2298,5 +2263,5 @@ ALTER TABLE ONLY public.url_occurrence
 -- PostgreSQL database dump complete
 --
 
-\unrestrict C555keMu6wxq5d527qyxRPzOgpdx38yzPm03lSdZ9ahHMiyToBjeMDyX46zBdlw
+\unrestrict iWrSwSsF2M2es25vRymNjrp7GFZzvcRMTi9UR82TA57xLnipD62AAFgM5burCEn
 

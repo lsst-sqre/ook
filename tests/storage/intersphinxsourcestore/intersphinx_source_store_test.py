@@ -9,6 +9,13 @@ import pytest
 from ook.domain.intersphinxsources import SourceIngestStatus
 from ook.factory import Factory
 
+UNREGISTERED_SOURCE_ID = 12345
+"""A primary key no test registers.
+
+The store speaks integers -- the Base32 form is the API's business -- so
+this is just an ID the registry does not hold.
+"""
+
 
 @pytest.mark.asyncio
 async def test_add_source_roundtrip(factory: Factory) -> None:
@@ -97,7 +104,7 @@ async def test_record_ingest_outcome_unknown_source(factory: Factory) -> None:
         store = factory.create_intersphinx_source_store()
 
         assert not await store.record_ingest_outcome(
-            12345,
+            UNREGISTERED_SOURCE_ID,
             date_ingested=datetime.now(tz=UTC),
             status=SourceIngestStatus.success,
         )
@@ -127,7 +134,10 @@ async def test_update_source_unknown_id(factory: Factory) -> None:
     async with factory.db_session.begin():
         store = factory.create_intersphinx_source_store()
 
-        assert await store.update_source(12345, title="Nowhere") is None
+        assert (
+            await store.update_source(UNREGISTERED_SOURCE_ID, title="Nowhere")
+            is None
+        )
 
 
 @pytest.mark.asyncio

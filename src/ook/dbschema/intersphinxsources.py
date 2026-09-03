@@ -36,9 +36,14 @@ class SqlIntersphinxSource(Base):
     __tablename__ = "intersphinx_source"
 
     id: Mapped[int] = mapped_column(
-        BigInteger, primary_key=True, autoincrement=True
+        BigInteger, primary_key=True, autoincrement=False
     )
-    """The primary key."""
+    """The primary key, minted by the store as a Crockford Base32 ID.
+
+    Not a database sequence: this ID is the registration's public
+    identifier, and every ID in Ook's public API is a Base32 ID carrying a
+    checksum, so a mistyped one is refused rather than looked up.
+    """
 
     url: Mapped[str] = mapped_column(
         UnicodeText, nullable=False, index=True, unique=True
