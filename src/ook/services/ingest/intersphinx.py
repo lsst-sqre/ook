@@ -135,8 +135,7 @@ class SourceIngestResult:
     """The number of entities pruned after this source's links changed.
 
     Attributed to the source whose replace exposed them, though pruning
-    itself is global: an entity is pruned when *no* source documents it or
-    anything below it.
+    itself is global: an entity is pruned when *no* source links to it.
     """
 
     error: str | None
@@ -168,10 +167,10 @@ class IntersphinxIngestSummary:
     """The number of entities the run pruned outside any one source's ingest.
 
     A sweep in which every source recognized its inventory replaces no
-    links, so no source's ingest reaches the pruning that follows a
+    links, so no source's ingest reaches the convergence that follows a
     replace -- and entities a *deregistered* source left behind would sit
-    there until some site happened to republish. The sweep prunes them
-    itself, and this is what that pass removed; it belongs to the run
+    there until some site happened to republish. The sweep converges on its
+    own account, and this is what that pass removed; it belongs to the run
     rather than to any source in it.
     """
 
@@ -421,14 +420,14 @@ class IntersphinxIngestService:
 
         A site whose inventory hashes to the one its last successful ingest
         read is recognized rather than re-read, which is the ordinary
-        outcome for a scheduled sweep and the reason the run also prunes on
-        its own account. Pruning normally rides on a source's replace, and a
-        sweep in which every source is recognized performs none -- so
-        entities a *deregistered* source left behind would outlive it until
-        some unrelated site happened to republish. This method therefore
-        runs one final orphan-pruning pass, in a short transaction of its
-        own, whenever no source's own ingest pruned anything. See
-        `_prune_after_sweep`.
+        outcome for a scheduled sweep and the reason the run also converges
+        stored entities on its own account. That convergence normally rides
+        on a source's replace, and a sweep in which every source is
+        recognized performs none -- so entities a *deregistered* source left
+        behind would outlive it until some unrelated site happened to
+        republish. This method therefore runs one final convergence pass, in
+        a short transaction of its own, whenever no source in the run
+        replaced its links. See `_converge_after_sweep`.
 
         Returns
         -------
@@ -454,7 +453,7 @@ class IntersphinxIngestService:
                 results.append(result)
         summary = IntersphinxIngestSummary(
             results=results,
-            sweep_pruned_count=await self._prune_after_sweep(results),
+            sweep_pruned_count=await self._converge_after_sweep(results),
         )
         self._logger.info(
             "Completed intersphinx ingest",
@@ -629,7 +628,7 @@ class IntersphinxIngestService:
             return await self._record_failure(locked, exc, logger=logger)
 
         replaced = await self._store_links(locked, parsed)
-        pruned_count = await self._entity_store.prune_orphan_entities()
+        pruned_count = await self._converge_entities()
         await self._source_store.record_ingest_outcome(
             locked.id,
             date_ingested=datetime.now(tz=UTC),
@@ -769,23 +768,48 @@ class IntersphinxIngestService:
             )
         return links
 
-    async def _prune_after_sweep(
+    async def _converge_entities(self) -> int:
+        """Bring stored entities back in line with the links that exist.
+
+        Two statements that only mean anything together, which is why they
+        are never called apart: containment is recomputed from the links
+        every source currently contributes, and then every entity left
+        without a link is deleted. Run after any change to the links -- a
+        per-source replace here, or a registration's deletion in
+        `~ook.services.intersphinxsources.IntersphinxSourceService`.
+
+        Both passes are global rather than scoped to the source whose links
+        just changed, because both questions are: a module one site stopped
+        documenting may still be documented by another, and the classes
+        nested under it belong to whichever sites do.
+
+        Returns
+        -------
+        int
+            The number of entities pruned.
+        """
+        await self._entity_store.recompute_containment()
+        return await self._entity_store.prune_orphan_entities()
+
+    async def _converge_after_sweep(
         self, results: list[SourceIngestResult]
     ) -> int:
-        """Prune orphan entities no source's own ingest could have pruned.
+        """Converge entities no source's own ingest could have converged.
 
-        Pruning normally rides on a source's link replacement, which is the
-        only thing that can orphan an entity *within* a run. Deleting a
-        registration orphans entities too, though, and outside any run --
-        so a sweep in which every source recognized its inventory would
-        leave them behind, since none of them replaced anything to prune
-        after. This pass covers that, in a transaction of its own so it
-        neither extends nor is rolled back with any source's ingest.
+        Convergence normally rides on a source's link replacement, which is
+        the only thing that can orphan an entity *within* a run. Deleting a
+        registration orphans entities too, and outside any run -- so a sweep
+        in which every source recognized its inventory would leave them
+        behind, since none of them replaced anything to converge after. This
+        pass covers that, in a transaction of its own so it neither extends
+        nor is rolled back with any source's ingest.
 
-        It is skipped when a source in the run already pruned, because that
-        source's pass was global: an entity is pruned when no source
-        documents it or anything below it, so one pass late in a run has
-        already answered for every source in it.
+        It is skipped when some source in the run did replace its links,
+        because that source's convergence was global: it read every
+        source's links rather than its own, so a pass late in a run has
+        already answered for the whole of it. Keyed on a replace having
+        happened rather than on its having pruned anything, since a replace
+        that pruned nothing still recomputed containment over everything.
 
         Returns
         -------
@@ -793,9 +817,13 @@ class IntersphinxIngestService:
             The number of entities this pass deleted, which is zero when it
             was skipped.
         """
-        if any(result.pruned_count for result in results):
+        if any(
+            result.status is SourceIngestStatus.success
+            and not result.unchanged
+            for result in results
+        ):
             return 0
-        pruned = await self._entity_store.prune_orphan_entities()
+        pruned = await self._converge_entities()
         await self._session.commit()
         return pruned
 

@@ -348,6 +348,7 @@ class Factory:
         """Create an IntersphinxSourceService."""
         return IntersphinxSourceService(
             source_store=self.create_intersphinx_source_store(),
+            entity_store=self.create_intersphinx_entity_store(),
             logger=self._logger,
         )
 

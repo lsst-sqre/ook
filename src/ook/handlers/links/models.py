@@ -503,9 +503,9 @@ class PythonObjectLinks(BaseModel):
         ...,
         title="Documentation links",
         description=(
-            "Empty for an object Ook knows but no source currently gives a "
-            "page -- a package held in place by the documented objects "
-            "beneath it."
+            "Never empty. Ook stores an object only while some registered "
+            "site documents it, so an object that answers at all answers "
+            "with the sites that document it."
         ),
     )
 

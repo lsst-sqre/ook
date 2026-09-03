@@ -19,6 +19,7 @@ from ook.services.intersphinxsources import (
     URL_UNIQUE_INDEX,
     IntersphinxSourceService,
 )
+from ook.storage.intersphinxentitystore import IntersphinxEntityStore
 from ook.storage.intersphinxsourcestore import IntersphinxSourceStore
 
 
@@ -32,6 +33,18 @@ class _RaisingSourceStore(IntersphinxSourceStore):
         self, *, url: str, title: str, enabled: bool = True
     ) -> IntersphinxSource:
         raise self._error
+
+
+class _UnusedEntityStore(IntersphinxEntityStore):
+    """An entity store these tests never reach.
+
+    Only ``IntersphinxSourceService.delete_source`` touches the entity
+    store, and every test here fails on a write before reaching it, so the
+    service can be built without a session to give it.
+    """
+
+    def __init__(self) -> None:
+        pass
 
 
 def _integrity_error(constraint: str) -> IntegrityError:
@@ -49,6 +62,7 @@ def _service(error: IntegrityError) -> IntersphinxSourceService:
     """Return a service over a store that raises ``error`` on every write."""
     return IntersphinxSourceService(
         source_store=_RaisingSourceStore(error),
+        entity_store=_UnusedEntityStore(),
         logger=structlog.get_logger("test"),
     )
 

@@ -115,6 +115,12 @@ class InventoryEntity:
     """The name of the entity that contains this one, or None when it has
     none in this inventory.
 
+    One inventory's proposal, not the stored relation. Containment is
+    recomputed across every source once a site's links are written, by
+    ``IntersphinxEntityStore.recompute_containment``, so a class this
+    inventory leaves top level still nests under a module another site
+    documents.
+
     None covers both kinds of top-level entity, and deliberately does not
     distinguish them: a name the domain's hierarchy says has no parent at
     all (a root package), and a name whose parent the inventory simply does
@@ -130,8 +136,8 @@ class IntersphinxEntityLinks(BaseModel):
 
     An entity is stored once per ``(sphinx_domain, name)`` however many
     sites document it, so `links` is the union across sources rather than
-    one site's view. It is empty for an entity that exists only to hold
-    documented descendants -- a package whose own page no source publishes.
+    one site's view. It is never empty: an entity no source links to is
+    pruned, so every stored entity has at least one link.
 
     A Pydantic model, unlike the inventory-side models above, because this
     is the read side: Safir's keyset pagination validates query rows into
@@ -158,6 +164,12 @@ class IntersphinxEntityLinks(BaseModel):
 
     The name rather than the ID, because the ID is a storage detail and the
     name is what a caller can look the parent up by.
+
+    Derived from the links every source currently contributes rather than
+    written once at ingest: an entity is contained by the entity its
+    domain's hierarchy names as its immediate parent, and only while some
+    source documents that parent. See
+    ``IntersphinxEntityStore.recompute_containment``.
     """
 
     extras: dict[str, Any] | None
@@ -165,7 +177,7 @@ class IntersphinxEntityLinks(BaseModel):
 
     links: list[Link] = Field(default_factory=list)
     """The documentation links to this entity, from every source that
-    documents it.
+    documents it, and never empty.
 
     Defaulted rather than required because the entity row and its links
     are two queries: the paginated read validates a page of entity rows

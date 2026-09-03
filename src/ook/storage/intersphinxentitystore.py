@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import Self, cast, override
 
 from safir.database import (
@@ -16,12 +17,17 @@ from safir.database import (
     PaginationCursor,
 )
 from sqlalchemy import (
+    ColumnElement,
     CursorResult,
     Select,
     Table,
-    bindparam,
+    case,
     delete,
+    exists,
+    func,
     insert,
+    literal,
+    null,
     select,
     tuple_,
     update,
@@ -34,13 +40,18 @@ from structlog.stdlib import BoundLogger
 from ook.dbschema.intersphinxentities import SqlIntersphinxEntity
 from ook.dbschema.links import SqlIntersphinxLink, SqlLink
 from ook.domain.intersphinxentities import (
+    PYTHON_SPHINX_DOMAIN,
     IntersphinxEntityLinks,
     IntersphinxSourceLink,
     InventoryEntity,
 )
 from ook.domain.links import Link
 
-__all__ = ["IntersphinxEntityCursor", "IntersphinxEntityStore"]
+__all__ = [
+    "SPHINX_DOMAIN_PARENT_NAME_SQL",
+    "IntersphinxEntityCursor",
+    "IntersphinxEntityStore",
+]
 
 
 _UPSERT_CHUNK_SIZE = 1000
@@ -66,6 +77,46 @@ by.
 """
 
 
+_DOTTED_PARENT_PATTERN = r"^(.*)\.[^.]*$"
+"""A POSIX pattern capturing everything before a name's last dot.
+
+Greedy, so it splits at the *last* dot: ``lsst.afw.table.SourceCatalog``
+captures ``lsst.afw.table``. A name with no dot matches nothing and the
+extraction is null, and a name whose prefix is empty (a leading dot)
+captures the empty string, which `_dotted_parent_name` maps to null too.
+"""
+
+
+def _dotted_parent_name(name: ColumnElement[str]) -> ColumnElement[str | None]:
+    """Name the entity a dotted name sits inside, as a SQL expression.
+
+    The SQL half of
+    `~ook.domain.intersphinxentities.PythonHierarchy.parent_name`, which is
+    the readable statement of the same rule. Two implementations because
+    containment is *derived* over the whole table rather than decided row by
+    row: pulling every stored name into Python to split it would be a round
+    trip per recompute of a corpus that runs to tens of thousands of names.
+    They are pinned to each other by test.
+    """
+    return func.nullif(
+        func.substring(name, literal(_DOTTED_PARENT_PATTERN)), literal("")
+    )
+
+
+SPHINX_DOMAIN_PARENT_NAME_SQL: Mapping[
+    str, Callable[[ColumnElement[str]], ColumnElement[str | None]]
+] = MappingProxyType({PYTHON_SPHINX_DOMAIN: _dotted_parent_name})
+"""How each Sphinx domain's containment reads in SQL, keyed by domain.
+
+The recompute's scope as well as its rule: a row in a domain absent from
+this mapping is never touched, which is what keeps a future entity kind
+whose containment comes from somewhere other than its name -- SDM's, from
+Felis -- out of the recompute's way. Its keys must match
+`~ook.domain.intersphinxentities.SPHINX_DOMAIN_HIERARCHIES`, whose
+strategies state the same rule in Python.
+"""
+
+
 class IntersphinxEntityStore:
     """An interface to stored Sphinx-domain entities and their links.
 
@@ -80,23 +131,17 @@ class IntersphinxEntityStore:
     async def upsert_entities(
         self, entities: Sequence[InventoryEntity]
     ) -> dict[tuple[str, str], int]:
-        """Insert or update entities, resolving each one's parent by name.
+        """Insert or update the entities an inventory declares.
 
-        Entities are written in two passes because a batch routinely names
-        parents it also contains: every row is upserted first, so the second
-        pass can resolve a parent name against the database whether the
-        parent arrived in this batch, in an earlier one, or from another
-        source entirely.
-
-        An entity with no parent name leaves the stored ``parent_id``
-        alone rather than clearing it. Entities are shared across sources,
-        so a site that documents a class without its module must not
-        withdraw the containment a site documenting both established.
-        Withdrawing a relationship is the pruning path's business.
-
-        `InventoryEntity.uri` is not read here: it locates the object on
+        Only the identity and the descriptive columns are written. Neither
+        `InventoryEntity.parent_name` nor `InventoryEntity.uri` is read
+        here, for the same kind of reason: the URI locates the object on
         one particular site, which makes it a property of that site's link
-        rather than of the entity every site shares.
+        rather than of the entity every site shares, and the parent one
+        inventory proposes is not the stored relation either. Containment
+        is derived from every source's links at once, by
+        `recompute_containment`, which the caller runs after replacing the
+        links this batch belongs to.
 
         Parameters
         ----------
@@ -119,7 +164,6 @@ class IntersphinxEntityStore:
             return {}
 
         entity_ids = await self._upsert_rows(deduplicated)
-        await self._resolve_parents(deduplicated, entity_ids)
         await self._session.flush()
         return entity_ids
 
@@ -306,9 +350,10 @@ class IntersphinxEntityStore:
         same entity.
 
         Entities are not touched here. A replace that leaves an entity with
-        no links from anyone does not delete it -- that is
-        `prune_orphan_entities`' decision, and it needs the whole picture
-        rather than one source's.
+        no links from anyone neither deletes it nor unnests what it
+        contained: both are decided by `recompute_containment` and
+        `prune_orphan_entities`, which the caller runs afterwards and which
+        need every source's links rather than this one's.
 
         Parameters
         ----------
@@ -384,18 +429,114 @@ class IntersphinxEntityStore:
         await self._session.flush()
         return written
 
+    async def recompute_containment(self) -> int:
+        """Derive every entity's parent from the links stored right now.
+
+        Containment is a *derived* fact, not a record of what some past
+        ingest saw: an entity's parent is the entity its Sphinx domain's
+        hierarchy names as its immediate parent -- the dotted prefix, for
+        ``py`` -- and only while at least one source, any source,
+        documents that parent. Everything else is top level.
+
+        That rule is what makes stored state independent of ingest order.
+        Written parent by parent as each inventory arrived, containment
+        would depend on which site was ingested first and would never
+        withdraw: a module whose only site stopped publishing its page
+        would keep its classes nested under a name nothing documents. Here
+        the whole relation is recomputed from the links that exist, so
+        ingesting site A then site B leaves exactly what ingesting B alone
+        would leave, and a module that loses its last link unnests its
+        classes on the spot.
+
+        Deriving containment from links also crosses sites, which is the
+        point of storing one entity per name: a class documented by one
+        site nests under a module documented by another.
+
+        Run this after every change to the links -- a per-source replace,
+        or a source's deletion -- and run `prune_orphan_entities` after it,
+        which the ordering matters for: the entities the prune removes are
+        exactly the ones with no link, and this statement has already
+        refused to point anybody at them.
+
+        Only the Sphinx domains in `SPHINX_DOMAIN_PARENT_NAME_SQL` are
+        touched. An entity kind stored here whose containment comes from
+        somewhere other than its own name is left entirely alone.
+
+        Returns
+        -------
+        int
+            The number of entities whose parent changed. Rows already
+            holding the derived value are not rewritten, so a recompute
+            after a sweep that changed nothing costs no writes at all.
+        """
+        entity_table = cast("Table", SqlIntersphinxEntity.__table__)
+        subtype_table = cast("Table", SqlIntersphinxLink.__table__)
+        parent = entity_table.alias("parent_entity")
+
+        # One CASE over the domains rather than one statement each, so the
+        # recompute stays a single pass however many domains have a rule.
+        parent_name = case(
+            *[
+                (
+                    entity_table.c.sphinx_domain == sphinx_domain,
+                    parent_name_sql(entity_table.c.name),
+                )
+                for sphinx_domain, parent_name_sql in (
+                    SPHINX_DOMAIN_PARENT_NAME_SQL.items()
+                )
+            ],
+            else_=null(),
+        )
+        # Null when the name has no parent, when no entity answers to that
+        # parent's name, or when nothing documents the one that does --
+        # each of which is a top-level entity, and none of which this
+        # statement needs to tell apart.
+        parent_id = (
+            select(parent.c.id)
+            .where(
+                parent.c.sphinx_domain == entity_table.c.sphinx_domain,
+                parent.c.name == parent_name,
+                exists().where(subtype_table.c.entity_id == parent.c.id),
+            )
+            .scalar_subquery()
+        )
+
+        result = await self._session.execute(
+            update(entity_table)
+            .where(
+                entity_table.c.sphinx_domain.in_(
+                    list(SPHINX_DOMAIN_PARENT_NAME_SQL)
+                ),
+                # Rewriting every row on every ingest would churn a table
+                # whose containment almost never moves; ``IS DISTINCT
+                # FROM`` restricts the write to the rows that actually
+                # change, nulls included.
+                entity_table.c.parent_id.is_distinct_from(parent_id),
+            )
+            .values(parent_id=parent_id)
+        )
+        await self._session.flush()
+        changed = cast("CursorResult", result).rowcount
+        if changed:
+            self._logger.info(
+                "Recomputed intersphinx entity containment",
+                changed_count=changed,
+            )
+        return changed
+
     async def prune_orphan_entities(self) -> int:
-        """Delete entities no source documents, directly or below them.
+        """Delete every entity no source links to.
 
-        An entity is kept if any source links to it, or if any entity below
-        it in the hierarchy is kept. The second clause is what keeps a
-        package whose own page nobody publishes -- common, since a site may
-        document a module's classes without giving the module a page of its
-        own -- from being deleted out from under the classes it contains.
+        A link is the only reason to keep an entity. An entity with none is
+        not a name held in place by the documented objects beneath it --
+        `recompute_containment`, run first, has already turned those
+        objects into top-level ones, so nothing is left pointing at the
+        rows this deletes.
 
-        Deleting a subtree is safe in either order: an entity kept for a
-        descendant's sake pulls its whole ancestry into the kept set, so a
-        deleted entity never has a kept child left pointing at it.
+        Only the Sphinx domains in `SPHINX_DOMAIN_PARENT_NAME_SQL` are
+        considered, for the same reason the recompute is so scoped: an
+        entity kind whose links live in another subtype table would look
+        undocumented here and is not this store's to delete.
 
         Returns
         -------
@@ -405,28 +546,14 @@ class IntersphinxEntityStore:
         entity_table = cast("Table", SqlIntersphinxEntity.__table__)
         subtype_table = cast("Table", SqlIntersphinxLink.__table__)
 
-        # Walk *up* from every linked entity rather than down from the
-        # roots: the question is which entities have a documented
-        # descendant, and the ancestors of the linked set are exactly the
-        # answer, in one pass over the linked rows instead of one per root.
-        kept = (
-            select(entity_table.c.id, entity_table.c.parent_id)
-            .join(
-                subtype_table, subtype_table.c.entity_id == entity_table.c.id
-            )
-            .distinct()
-            .cte("kept_intersphinx_entity", recursive=True)
-        )
-        ancestor = entity_table.alias("ancestor")
-        kept = kept.union(
-            select(ancestor.c.id, ancestor.c.parent_id).join(
-                kept, kept.c.parent_id == ancestor.c.id
-            )
-        )
-
         result = await self._session.execute(
             delete(entity_table).where(
-                entity_table.c.id.not_in(select(kept.c.id))
+                entity_table.c.sphinx_domain.in_(
+                    list(SPHINX_DOMAIN_PARENT_NAME_SQL)
+                ),
+                ~exists().where(
+                    subtype_table.c.entity_id == entity_table.c.id
+                ),
             )
         )
         await self._session.flush()
@@ -586,9 +713,9 @@ class IntersphinxEntityStore:
         """Upsert the entity rows and return their IDs by identity.
 
         Neither ``parent_id`` nor ``extras`` appears here: the first is
-        written by the second pass and the second has no source in an
-        inventory, and naming either would overwrite a stored value with a
-        null on every re-ingest.
+        derived from the links by `recompute_containment` and the second
+        has no source in an inventory, and naming either would overwrite a
+        stored value with a null on every re-ingest.
         """
         entity_ids: dict[tuple[str, str], int] = {}
         for start in range(0, len(entities), _UPSERT_CHUNK_SIZE):
@@ -620,48 +747,6 @@ class IntersphinxEntityStore:
             for row in result:
                 entity_ids[row.sphinx_domain, row.name] = row.id
         return entity_ids
-
-    async def _resolve_parents(
-        self,
-        entities: Sequence[InventoryEntity],
-        entity_ids: dict[tuple[str, str], int],
-    ) -> None:
-        """Point each entity that names a stored parent at that parent."""
-        wanted = {
-            (entity.sphinx_domain, entity.parent_name)
-            for entity in entities
-            if entity.parent_name is not None
-        }
-        if not wanted:
-            return
-
-        parent_ids = await self._lookup_entity_ids(wanted)
-        updates = [
-            {
-                "b_entity_id": entity_ids[entity.sphinx_domain, entity.name],
-                "b_parent_id": parent_ids[
-                    entity.sphinx_domain, entity.parent_name
-                ],
-            }
-            for entity in entities
-            if entity.parent_name is not None
-            and (entity.sphinx_domain, entity.parent_name) in parent_ids
-        ]
-        if not updates:
-            return
-
-        # Against the Core table rather than the mapped class: the ORM's
-        # executemany UPDATE is a per-row update *by primary key*, which
-        # cannot carry a WHERE clause of its own, and there is nothing for
-        # it to synchronize here anyway -- these rows were written by the
-        # INSERT above and are read back by a fresh SELECT.
-        table = cast("Table", SqlIntersphinxEntity.__table__)
-        await self._session.execute(
-            update(table)
-            .where(table.c.id == bindparam("b_entity_id"))
-            .values(parent_id=bindparam("b_parent_id")),
-            updates,
-        )
 
     async def _lookup_entity_ids(
         self, identities: set[tuple[str, str]]

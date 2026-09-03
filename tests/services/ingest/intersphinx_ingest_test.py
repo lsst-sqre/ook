@@ -76,6 +76,50 @@ PACKAGE_INVENTORY = _inventory(
 """An inventory documenting a package, a module in it, and two classes."""
 
 
+NARROWED_INVENTORY = _inventory(
+    [
+        ("pkg", "module", "api.html#module-pkg"),
+        ("pkg.mod.Thing", "class", "api.html#pkg.mod.Thing"),
+    ]
+)
+"""`PACKAGE_INVENTORY` after the site stopped publishing two of its pages.
+
+``pkg.Standalone`` is gone outright and ``pkg.mod`` keeps only the class
+inside it, which is the ordinary way a site drops a module's own page while
+still documenting its contents.
+"""
+
+
+async def _stored_python_domain(
+    factory: Factory,
+) -> list[tuple[str, str | None, tuple[str, ...]]]:
+    """Read the whole stored ``py`` domain as name, parent, and link URLs.
+
+    Everything an ingest is answerable for and nothing that depends on when
+    it ran, so two ingest histories that agree about what the sites document
+    compare equal.
+    """
+    async with factory.db_session.begin():
+        page = await factory.create_intersphinx_entity_store().get_entities(
+            "py"
+        )
+    return [
+        (
+            entry.name,
+            entry.parent_name,
+            tuple(sorted(link.html_url for link in entry.links)),
+        )
+        for entry in page.entries
+    ]
+
+
+async def _delete_source(factory: Factory, source_id: int) -> None:
+    """Deregister a source through the service the API calls."""
+    async with factory.db_session.begin():
+        service = factory.create_intersphinx_source_service()
+        assert await service.delete_source(source_id) is True
+
+
 def _serve_inventory(
     respx_mock: respx.Router, url: str, content: bytes
 ) -> respx.Route:
@@ -361,47 +405,214 @@ async def test_a_full_reingest_is_idempotent(
 
 
 @pytest.mark.asyncio
-async def test_reingest_prunes_objects_the_site_dropped(
+async def test_a_reingest_converges_on_what_the_site_documents_now(
     factory: Factory, respx_mock: respx.Router
 ) -> None:
-    """An object gone from the inventory loses its link and its entity.
+    """Ingesting A then B leaves what ingesting B alone would leave.
 
-    A parent that goes with it survives when a descendant is still
-    documented: a site is free to stop publishing a module's own page while
-    still documenting its classes, and deleting the module would take the
-    classes' place in the hierarchy with it.
+    The property the derived hierarchy exists for. Stored containment is a
+    function of the links that exist, so nothing about the site's earlier
+    inventory survives into the answer -- not the module whose page it
+    dropped, and not the nesting that module used to provide.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+
+    await _expire_cached_inventory(factory, INVENTORY_URL)
+    _serve_inventory(respx_mock, INVENTORY_URL, NARROWED_INVENTORY)
+    await service.ingest_sources()
+    after_history = await _stored_python_domain(factory)
+
+    # Start the site over: deregistering it empties the domain, and the
+    # re-registration ingests the narrowed inventory with no past.
+    await _delete_source(factory, source_id)
+    assert await _stored_python_domain(factory) == []
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+
+    await service.ingest_sources()
+
+    assert after_history == await _stored_python_domain(factory)
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_module_unnests_the_classes_it_held(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """A module the only site documenting it drops takes no classes with it.
+
+    The class is still documented, so it stays -- as a top-level object,
+    because the module that contained it is not documented anywhere any
+    more and containment says a documented object holds this one.
     """
     _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
     await _register_source(factory, url=INVENTORY_URL, title="A docs")
     service = factory.create_intersphinx_ingest_service()
     await service.ingest_sources()
 
-    # The site stops documenting pkg.Standalone and pkg.mod's own page.
+    await _expire_cached_inventory(factory, INVENTORY_URL)
+    _serve_inventory(respx_mock, INVENTORY_URL, NARROWED_INVENTORY)
+
+    summary = await service.ingest_sources()
+
+    assert summary.pruned_count == 2
+    entity_store = factory.create_intersphinx_entity_store()
+    assert await entity_store.get_entity("py", "pkg.Standalone") is None
+    assert await entity_store.get_entity("py", "pkg.mod") is None
+    thing = await entity_store.get_entity("py", "pkg.mod.Thing")
+    assert thing is not None
+    assert thing.parent_name is None
+
+
+@pytest.mark.asyncio
+async def test_every_stored_entity_has_a_link(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """No ingest leaves behind an object no site documents.
+
+    What the API's 404-or-links promise rests on: there is no third state
+    for an endpoint to answer with.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, NARROWED_INVENTORY)
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+
+    await factory.create_intersphinx_ingest_service().ingest_sources()
+
+    stored = await _stored_python_domain(factory)
+    assert stored
+    assert all(html_urls for _, _, html_urls in stored)
+
+
+@pytest.mark.asyncio
+async def test_a_class_nests_under_a_module_another_site_documents(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """Containment crosses sites, because entities are shared by name.
+
+    Neither inventory documents both halves, so no single ingest could
+    resolve this parent: the module's page comes from one site and the
+    class's from the other.
+    """
+    _serve_inventory(
+        respx_mock,
+        INVENTORY_URL,
+        _inventory([("shared.mod", "module", "api.html#module-shared.mod")]),
+    )
+    _serve_inventory(
+        respx_mock,
+        OTHER_INVENTORY_URL,
+        _inventory(
+            [("shared.mod.Thing", "class", "api.html#shared.mod.Thing")]
+        ),
+    )
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+    await _register_source(factory, url=OTHER_INVENTORY_URL, title="B docs")
+
+    await factory.create_intersphinx_ingest_service().ingest_sources()
+
+    thing = await factory.create_intersphinx_entity_store().get_entity(
+        "py", "shared.mod.Thing"
+    )
+    assert thing is not None
+    assert thing.parent_name == "shared.mod"
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_site_unnests_another_sites_classes(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """Deregistering the site that documented a module unnests it at once.
+
+    Not at the next scheduled ingest: until the module's page is withdrawn
+    the Links API would keep serving a hierarchy propped up by a site Ook
+    is no longer ingesting.
+    """
+    _serve_inventory(
+        respx_mock,
+        INVENTORY_URL,
+        _inventory([("shared.mod", "module", "api.html#module-shared.mod")]),
+    )
+    _serve_inventory(
+        respx_mock,
+        OTHER_INVENTORY_URL,
+        _inventory(
+            [("shared.mod.Thing", "class", "api.html#shared.mod.Thing")]
+        ),
+    )
+    module_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    await _register_source(factory, url=OTHER_INVENTORY_URL, title="B docs")
+    await factory.create_intersphinx_ingest_service().ingest_sources()
+
+    await _delete_source(factory, module_id)
+
+    entity_store = factory.create_intersphinx_entity_store()
+    assert await entity_store.get_entity("py", "shared.mod") is None
+    thing = await entity_store.get_entity("py", "shared.mod.Thing")
+    assert thing is not None
+    assert thing.parent_name is None
+
+
+@pytest.mark.asyncio
+async def test_a_site_that_stops_documenting_a_module_unnests_it(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """The same unnesting when the site stays registered but stops publishing.
+
+    A deregistration and a republished inventory reach the stored state by
+    different paths; the state itself is decided by the same rule.
+    """
+    _serve_inventory(
+        respx_mock,
+        INVENTORY_URL,
+        _inventory([("shared.mod", "module", "api.html#module-shared.mod")]),
+    )
+    _serve_inventory(
+        respx_mock,
+        OTHER_INVENTORY_URL,
+        _inventory(
+            [("shared.mod.Thing", "class", "api.html#shared.mod.Thing")]
+        ),
+    )
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+    await _register_source(factory, url=OTHER_INVENTORY_URL, title="B docs")
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+
     await _expire_cached_inventory(factory, INVENTORY_URL)
     _serve_inventory(
         respx_mock,
         INVENTORY_URL,
-        _inventory(
-            [
-                ("pkg", "module", "api.html#module-pkg"),
-                ("pkg.mod.Thing", "class", "api.html#pkg.mod.Thing"),
-            ]
-        ),
+        _inventory([("elsewhere", "module", "api.html#module-elsewhere")]),
     )
 
-    summary = await service.ingest_sources()
+    await service.ingest_sources()
 
-    assert summary.pruned_count == 1
     entity_store = factory.create_intersphinx_entity_store()
-    assert await entity_store.get_entity("py", "pkg.Standalone") is None
-    # pkg.mod holds no link of its own any more but still contains a
-    # documented class, so it stays.
-    module = await entity_store.get_entity("py", "pkg.mod")
-    assert module is not None
-    assert module.links == []
-    thing = await entity_store.get_entity("py", "pkg.mod.Thing")
+    assert await entity_store.get_entity("py", "shared.mod") is None
+    thing = await entity_store.get_entity("py", "shared.mod.Thing")
     assert thing is not None
-    assert thing.parent_name == "pkg.mod"
+    assert thing.parent_name is None
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_last_source_empties_the_domain(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """Nothing is documented once the last registration goes."""
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    await factory.create_intersphinx_ingest_service().ingest_sources()
+
+    await _delete_source(factory, source_id)
+
+    assert await _stored_python_domain(factory) == []
 
 
 @pytest.mark.asyncio

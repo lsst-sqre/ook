@@ -49,12 +49,10 @@ class LinksService:
     ) -> IntersphinxEntityLinks | None:
         """Get a Python object and the documentation links to it.
 
-        The entity is returned even when no source links to it, because
-        such an entity is not a gap in the data: it is a name held in place
-        by the documented objects beneath it -- a package whose own page no
-        site publishes. Only a name nothing in the ``py`` domain answers to
-        is absent, which is what lets the API distinguish "unknown object"
-        from "known object nobody gave a page".
+        Every stored object has at least one link: an object no source
+        documents any more is pruned as soon as the links change, so the
+        answer is either an object with the sites that document it or
+        nothing at all.
 
         Parameters
         ----------
@@ -77,11 +75,9 @@ class LinksService:
     ) -> CountedPaginatedList[IntersphinxEntityLinks, IntersphinxEntityCursor]:
         """Get a page of Python objects and the documentation links to them.
 
-        Every stored object is listed, including the ones no source gives a
-        page -- for the same reason `get_python_object` returns them: such
-        an object is a name held in place by the documented objects beneath
-        it, and hiding it here would make the collection disagree with the
-        per-object endpoint about what exists.
+        Every stored object is listed, and every one of them carries links:
+        the collection and the per-object endpoint answer for the same set
+        of objects, which is the set some site documents.
 
         Parameters
         ----------

@@ -7,6 +7,7 @@ from structlog.stdlib import BoundLogger
 
 from ook.domain.intersphinxsources import IntersphinxSource
 from ook.exceptions import ConflictError
+from ook.storage.intersphinxentitystore import IntersphinxEntityStore
 from ook.storage.intersphinxsourcestore import IntersphinxSourceStore
 
 __all__ = ["IntersphinxSourceService"]
@@ -31,14 +32,23 @@ class IntersphinxSourceService:
     ----------
     source_store
         The source registry store.
+    entity_store
+        The store of entities and their links, which a deletion has to
+        converge: the links a deregistered source contributed go with it,
+        and the entities they were the last reason to keep go with them.
     logger
         The logger.
     """
 
     def __init__(
-        self, *, source_store: IntersphinxSourceStore, logger: BoundLogger
+        self,
+        *,
+        source_store: IntersphinxSourceStore,
+        entity_store: IntersphinxEntityStore,
+        logger: BoundLogger,
     ) -> None:
         self._source_store = source_store
+        self._entity_store = entity_store
         self._logger = logger
 
     async def register_source(
@@ -167,9 +177,17 @@ class IntersphinxSourceService:
     async def delete_source(self, source_id: int) -> bool:
         """Delete a registered source and, by cascade, its links.
 
-        The entities those links pointed at are left behind: another source
-        may document the same object, and an entity nothing documents any
-        more is the pruning path's business.
+        The entities are then brought back in line with the links that
+        remain, in the same transaction, so a deregistered site leaves
+        nothing of itself behind: an object only it documented is gone, and
+        an object it merely contained -- a class another site documents,
+        nested under a module whose page only this one published -- becomes
+        top level. Deleting the last source empties the domain.
+
+        Converging here rather than leaving it to the next ingest run is
+        what makes the deletion mean what the API says it does. The run is
+        scheduled, and until it happened the Links API would keep serving a
+        hierarchy propped up by a site nobody is ingesting any more.
 
         Parameters
         ----------
@@ -182,11 +200,17 @@ class IntersphinxSourceService:
             True if a source was deleted, False if none had that ID.
         """
         deleted = await self._source_store.delete_source(source_id)
-        if deleted:
-            self._logger.info(
-                "Deleted intersphinx source", source_id=source_id
-            )
-        return deleted
+        if not deleted:
+            return False
+
+        await self._entity_store.recompute_containment()
+        pruned = await self._entity_store.prune_orphan_entities()
+        self._logger.info(
+            "Deleted intersphinx source",
+            source_id=source_id,
+            pruned_count=pruned,
+        )
+        return True
 
     def _raise_for_duplicate_url(
         self, error: IntegrityError, *, url: str | None

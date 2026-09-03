@@ -539,9 +539,9 @@ async def ingest_intersphinx() -> None:
 
     Every enabled source in the ``/ook/intersphinx/sources`` registry has
     its ``objects.inv`` inventory pulled through the intersphinx cache,
-    parsed, and its links replaced; entities no source documents any more,
-    directly or below them, are pruned. Intended to run as a scheduled cron
-    job.
+    parsed, and its links replaced; containment is then recomputed from the
+    links every site now contributes and entities no source links to are
+    pruned. Intended to run as a scheduled cron job.
 
     The run revalidates each source's inventory itself when the cached copy
     has aged past the freshness TTL, so it parses what its sites publish now

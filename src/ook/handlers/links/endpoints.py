@@ -514,9 +514,8 @@ async def get_python_object_links(
 ) -> list[Link]:
     """Get the documentation links for one Python object.
 
-    An object every source has dropped a page for still answers, with an
-    empty list: the object is known to Ook, which is a different answer
-    from the 404 an unknown name gets.
+    A name no registered site documents is a 404. Ook stores an object only
+    while some site gives it a page, so the list is never empty.
     """
     logger = context.logger
     logger.debug(

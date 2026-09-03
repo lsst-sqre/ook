@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import literal, select, update
 from sqlalchemy.orm import selectinload
 
+from ook.dbschema.intersphinxentities import SqlIntersphinxEntity
 from ook.dbschema.links import SqlIntersphinxLink, SqlLink
 from ook.domain.intersphinxentities import (
+    SPHINX_DOMAIN_HIERARCHIES,
     IntersphinxSourceLink,
     InventoryEntity,
+    PythonHierarchy,
 )
 from ook.domain.links import Link
 from ook.factory import Factory
+from ook.storage.intersphinxentitystore import SPHINX_DOMAIN_PARENT_NAME_SQL
 
 
 def _entity(
@@ -36,68 +41,62 @@ def _entity(
     )
 
 
-@pytest.mark.asyncio
-async def test_upsert_entities_resolves_parent(factory: Factory) -> None:
-    """A parent named in the same batch is resolved to its entity."""
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_entity_store()
+def test_every_hierarchy_domain_has_parent_name_sql() -> None:
+    """Every domain with a hierarchy strategy has the SQL that derives it.
 
-        await store.upsert_entities(
-            [
-                _entity("lsst.afw.table", role="module"),
-                _entity(
-                    "lsst.afw.table.SourceCatalog",
-                    parent_name="lsst.afw.table",
-                ),
-            ]
+    The two mappings state one rule twice -- once readably in Python, once
+    as the expression the recompute runs over the whole table -- so a
+    domain added to one and not the other would silently stop having its
+    containment derived at all.
+    """
+    assert set(SPHINX_DOMAIN_PARENT_NAME_SQL) == set(SPHINX_DOMAIN_HIERARCHIES)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name",
+    [
+        "lsst.afw.table.SourceCatalog",
+        "lsst.afw",
+        "lsst",
+        "",
+        ".leading",
+        "trailing.",
+        "..",
+    ],
+)
+async def test_parent_name_sql_agrees_with_the_python_hierarchy(
+    factory: Factory, name: str
+) -> None:
+    """The SQL and Python halves of the ``py`` rule answer alike.
+
+    Including the degenerate names, which is where two implementations of
+    "split at the last dot" part company: a name with no dot, an empty
+    prefix, an empty suffix.
+    """
+    parent_name_sql = SPHINX_DOMAIN_PARENT_NAME_SQL["py"]
+
+    async with factory.db_session.begin():
+        result = await factory.db_session.execute(
+            select(parent_name_sql(literal(name)))
         )
 
-        child = await store.get_entity("py", "lsst.afw.table.SourceCatalog")
-        assert child is not None
-        assert child.name == "lsst.afw.table.SourceCatalog"
-        assert child.role == "class"
-        assert child.display_name == "lsst.afw.table.SourceCatalog"
-        assert child.parent_name == "lsst.afw.table"
-        assert child.extras is None
-        assert child.links == []
+    assert result.scalar_one() == PythonHierarchy().parent_name(name)
 
 
 @pytest.mark.asyncio
-async def test_upsert_entities_unknown_parent(factory: Factory) -> None:
-    """A parent no stored entity answers to leaves the child top level."""
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_entity_store()
-
-        await store.upsert_entities(
-            [
-                _entity(
-                    "lsst.afw.table.SourceCatalog",
-                    parent_name="lsst.afw.table",
-                )
-            ]
-        )
-
-        child = await store.get_entity("py", "lsst.afw.table.SourceCatalog")
-        assert child is not None
-        assert child.parent_name is None
-
-
-@pytest.mark.asyncio
-async def test_upsert_entities_parent_from_earlier_batch(
+async def test_recompute_nests_under_a_documented_parent(
     factory: Factory,
 ) -> None:
-    """A parent stored by an earlier upsert is still resolved."""
+    """A class sits inside the module some source gives a page."""
     async with factory.db_session.begin():
         store = factory.create_intersphinx_entity_store()
-        await store.upsert_entities([_entity("lsst.afw.table", role="module")])
-
-        await store.upsert_entities(
+        await _seed_documented(
+            factory,
             [
-                _entity(
-                    "lsst.afw.table.SourceCatalog",
-                    parent_name="lsst.afw.table",
-                )
-            ]
+                _entity("lsst.afw.table", role="module"),
+                _entity("lsst.afw.table.SourceCatalog"),
+            ],
         )
 
         child = await store.get_entity("py", "lsst.afw.table.SourceCatalog")
@@ -106,24 +105,139 @@ async def test_upsert_entities_parent_from_earlier_batch(
 
 
 @pytest.mark.asyncio
-async def test_upsert_entities_parent_is_per_domain(factory: Factory) -> None:
-    """A parent of the same name in another Sphinx domain is not borrowed."""
+async def test_recompute_leaves_an_undocumented_parent_unclaimed(
+    factory: Factory,
+) -> None:
+    """A stored parent no source documents does not contain anything.
+
+    Containment says "this object is documented inside that one", so a name
+    that is merely stored -- awaiting the prune, or documented in another
+    Sphinx domain -- is not something to nest anybody under.
+    """
     async with factory.db_session.begin():
         store = factory.create_intersphinx_entity_store()
+        await store.upsert_entities([_entity("pkg.mod", role="module")])
+        await _seed_documented(factory, [_entity("pkg.mod.Thing")])
 
-        await store.upsert_entities(
-            [
-                _entity("lsst.afw.table", role="label", sphinx_domain="std"),
-                _entity(
-                    "lsst.afw.table.SourceCatalog",
-                    parent_name="lsst.afw.table",
-                ),
-            ]
-        )
-
-        child = await store.get_entity("py", "lsst.afw.table.SourceCatalog")
+        child = await store.get_entity("py", "pkg.mod.Thing")
         assert child is not None
         assert child.parent_name is None
+
+
+@pytest.mark.asyncio
+async def test_recompute_withdraws_a_parent_that_lost_its_links(
+    factory: Factory,
+) -> None:
+    """A module whose last site stops documenting it unnests its classes.
+
+    The whole reason containment is recomputed rather than remembered: a
+    stored parent written once at ingest would hold the class under a name
+    nothing documents for as long as the row survived.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_entity_store()
+        source_store = factory.create_intersphinx_source_store()
+        source = await source_store.add_source(
+            url="https://a.example/objects.inv", title="A docs"
+        )
+        entity_ids = await store.upsert_entities(
+            [
+                _entity("pkg.mod", role="module"),
+                _entity("pkg.mod.Thing"),
+            ]
+        )
+        links = [
+            _source_link(
+                entity_ids["py", name],
+                html_url=f"https://a.example/api.html#{name}",
+            )
+            for name in ("pkg.mod", "pkg.mod.Thing")
+        ]
+        await store.replace_source_links(
+            source.id, links, collection_title=source.title
+        )
+        await store.recompute_containment()
+
+        # The site drops the module's own page but keeps the class.
+        await store.replace_source_links(
+            source.id, links[1:], collection_title=source.title
+        )
+        await store.recompute_containment()
+
+        child = await store.get_entity("py", "pkg.mod.Thing")
+        assert child is not None
+        assert child.parent_name is None
+
+
+@pytest.mark.asyncio
+async def test_recompute_does_not_borrow_another_domains_parent(
+    factory: Factory,
+) -> None:
+    """A documented name in another Sphinx domain contains nothing here."""
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_entity_store()
+        await _seed_documented(
+            factory,
+            [
+                _entity("pkg.mod", role="label", sphinx_domain="std"),
+                _entity("pkg.mod.Thing"),
+            ],
+        )
+
+        child = await store.get_entity("py", "pkg.mod.Thing")
+        assert child is not None
+        assert child.parent_name is None
+
+
+@pytest.mark.asyncio
+async def test_recompute_leaves_unmodelled_domains_alone(
+    factory: Factory,
+) -> None:
+    """A domain with no naming rule keeps whatever containment it was given.
+
+    The recompute derives containment from a domain's *names*, which is
+    only how some domains get it. A future entity kind told what contains
+    it by its own source has to survive a recompute untouched.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_entity_store()
+        entity_ids = await store.upsert_entities(
+            [
+                _entity("outer", role="label", sphinx_domain="std"),
+                _entity("outer.inner", role="label", sphinx_domain="std"),
+            ]
+        )
+        await factory.db_session.execute(
+            update(SqlIntersphinxEntity)
+            .where(SqlIntersphinxEntity.id == entity_ids["std", "outer.inner"])
+            .values(parent_id=entity_ids["std", "outer"])
+        )
+
+        await store.recompute_containment()
+
+        child = await store.get_entity("std", "outer.inner")
+        assert child is not None
+        assert child.parent_name == "outer"
+
+
+@pytest.mark.asyncio
+async def test_recompute_rewrites_nothing_the_second_time(
+    factory: Factory,
+) -> None:
+    """A recompute over unchanged links is a no-op, not a rewrite.
+
+    Every ingest runs one, most of them over links nothing moved, so the
+    statement has to leave rows already holding the derived value alone
+    rather than churning the whole table on a schedule.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_entity_store()
+        await _seed_documented(
+            factory,
+            [_entity("pkg.mod", role="module"), _entity("pkg.mod.Thing")],
+        )
+
+        assert await store.recompute_containment() == 0
 
 
 @pytest.mark.asyncio
@@ -150,32 +264,6 @@ async def test_upsert_entities_updates_in_place(factory: Factory) -> None:
         assert stored is not None
         assert stored.role == "attribute"
         assert stored.display_name == "SourceCatalog"
-
-
-@pytest.mark.asyncio
-async def test_upsert_entities_keeps_parent_when_unnamed(
-    factory: Factory,
-) -> None:
-    """A source that omits the parent does not withdraw an existing one."""
-    async with factory.db_session.begin():
-        store = factory.create_intersphinx_entity_store()
-        await store.upsert_entities(
-            [
-                _entity("lsst.afw.table", role="module"),
-                _entity(
-                    "lsst.afw.table.SourceCatalog",
-                    parent_name="lsst.afw.table",
-                ),
-            ]
-        )
-
-        await store.upsert_entities(
-            [_entity("lsst.afw.table.SourceCatalog", parent_name=None)]
-        )
-
-        child = await store.get_entity("py", "lsst.afw.table.SourceCatalog")
-        assert child is not None
-        assert child.parent_name == "lsst.afw.table"
 
 
 @pytest.mark.asyncio
@@ -434,6 +522,47 @@ def _source_link(
     )
 
 
+async def _seed_documented(
+    factory: Factory,
+    entities: Sequence[InventoryEntity],
+    *,
+    url: str = "https://a.example/objects.inv",
+    title: str = "A docs",
+) -> dict[tuple[str, str], int]:
+    """Store entities as an ingest leaves them: linked, then converged.
+
+    Every entity gets a link from one source and containment is derived
+    afterwards, which together are the state the store guarantees --
+    ``upsert_entities`` writes no parent of its own, and an entity with no
+    link would not survive a prune. A test that wants a hierarchy therefore
+    has to document the parent.
+
+    Returns
+    -------
+    dict
+        The database ID of each entity, keyed by its identity.
+    """
+    entity_store = factory.create_intersphinx_entity_store()
+    source = await factory.create_intersphinx_source_store().add_source(
+        url=url, title=title
+    )
+    entity_ids = await entity_store.upsert_entities(entities)
+    await entity_store.replace_source_links(
+        source.id,
+        [
+            _source_link(
+                entity_ids[entity.sphinx_domain, entity.name],
+                html_url=f"{url.rsplit('/', 1)[0]}/api.html#{entity.name}",
+                title=entity.name,
+            )
+            for entity in entities
+        ],
+        collection_title=source.title,
+    )
+    await entity_store.recompute_containment()
+    return entity_ids
+
+
 @pytest.mark.asyncio
 async def test_replace_source_links_writes_the_links(
     factory: Factory,
@@ -571,32 +700,22 @@ async def test_prune_keeps_entities_a_source_documents(
     """An entity with a link from any source is kept."""
     async with factory.db_session.begin():
         entity_store = factory.create_intersphinx_entity_store()
-        source_store = factory.create_intersphinx_source_store()
-        source = await source_store.add_source(
-            url="https://a.example/objects.inv", title="A docs"
-        )
-        entity_ids = await entity_store.upsert_entities([_entity("pkg.Thing")])
-        await entity_store.replace_source_links(
-            source.id,
-            [
-                _source_link(
-                    entity_ids["py", "pkg.Thing"],
-                    html_url="https://a.example/api.html#pkg.Thing",
-                )
-            ],
-            collection_title=source.title,
-        )
+        await _seed_documented(factory, [_entity("pkg.Thing")])
 
         assert await entity_store.prune_orphan_entities() == 0
         assert await entity_store.get_entity("py", "pkg.Thing") is not None
 
 
 @pytest.mark.asyncio
-async def test_prune_keeps_ancestors_of_documented_entities(
+async def test_prune_deletes_an_undocumented_ancestor(
     factory: Factory,
 ) -> None:
-    """A package no source documents survives while a descendant is
-    documented, so the hierarchy above a documented object stays whole.
+    """A package no source documents goes, documented descendants or not.
+
+    The recompute has already made those descendants top level -- only an
+    immediate parent counts, so the class does not fall back onto its
+    grandparent -- and keeping the package would keep a name no site
+    publishes and no stored entity points at.
     """
     async with factory.db_session.begin():
         entity_store = factory.create_intersphinx_entity_store()
@@ -607,8 +726,8 @@ async def test_prune_keeps_ancestors_of_documented_entities(
         entity_ids = await entity_store.upsert_entities(
             [
                 _entity("pkg", role="module"),
-                _entity("pkg.mod", role="module", parent_name="pkg"),
-                _entity("pkg.mod.Thing", parent_name="pkg.mod"),
+                _entity("pkg.mod", role="module"),
+                _entity("pkg.mod.Thing"),
             ]
         )
         await entity_store.replace_source_links(
@@ -621,17 +740,21 @@ async def test_prune_keeps_ancestors_of_documented_entities(
             ],
             collection_title=source.title,
         )
+        await entity_store.recompute_containment()
 
-        assert await entity_store.prune_orphan_entities() == 0
-        assert await entity_store.get_entity("py", "pkg") is not None
-        assert await entity_store.get_entity("py", "pkg.mod") is not None
+        assert await entity_store.prune_orphan_entities() == 2
+        assert await entity_store.get_entity("py", "pkg") is None
+        assert await entity_store.get_entity("py", "pkg.mod") is None
+        thing = await entity_store.get_entity("py", "pkg.mod.Thing")
+        assert thing is not None
+        assert thing.parent_name is None
 
 
 @pytest.mark.asyncio
 async def test_prune_deletes_entities_nothing_documents(
     factory: Factory,
 ) -> None:
-    """An entity with no links and no documented descendants is pruned."""
+    """An entity whose site stopped documenting it is pruned."""
     async with factory.db_session.begin():
         entity_store = factory.create_intersphinx_entity_store()
         source_store = factory.create_intersphinx_source_store()
@@ -641,36 +764,26 @@ async def test_prune_deletes_entities_nothing_documents(
         entity_ids = await entity_store.upsert_entities(
             [
                 _entity("pkg", role="module"),
-                _entity("pkg.Kept", parent_name="pkg"),
-                _entity("pkg.Dropped", parent_name="pkg"),
+                _entity("pkg.Kept"),
+                _entity("pkg.Dropped"),
             ]
         )
+        links = [
+            _source_link(
+                entity_ids["py", name],
+                html_url=f"https://a.example/api.html#{name}",
+            )
+            for name in ("pkg", "pkg.Kept", "pkg.Dropped")
+        ]
         await entity_store.replace_source_links(
-            source.id,
-            [
-                _source_link(
-                    entity_ids["py", "pkg.Kept"],
-                    html_url="https://a.example/api.html#pkg.Kept",
-                ),
-                _source_link(
-                    entity_ids["py", "pkg.Dropped"],
-                    html_url="https://a.example/api.html#pkg.Dropped",
-                ),
-            ],
-            collection_title=source.title,
+            source.id, links, collection_title=source.title
         )
 
         # The site stops documenting pkg.Dropped.
         await entity_store.replace_source_links(
-            source.id,
-            [
-                _source_link(
-                    entity_ids["py", "pkg.Kept"],
-                    html_url="https://a.example/api.html#pkg.Kept",
-                )
-            ],
-            collection_title=source.title,
+            source.id, links[:2], collection_title=source.title
         )
+        await entity_store.recompute_containment()
 
         assert await entity_store.prune_orphan_entities() == 1
         assert await entity_store.get_entity("py", "pkg.Dropped") is None
@@ -692,29 +805,48 @@ async def test_prune_deletes_a_whole_undocumented_subtree(
             url="https://a.example/objects.inv", title="A docs"
         )
         entity_ids = await entity_store.upsert_entities(
-            [
-                _entity("pkg", role="module"),
-                _entity("pkg.Thing", parent_name="pkg"),
-            ]
+            [_entity("pkg", role="module"), _entity("pkg.Thing")]
         )
         await entity_store.replace_source_links(
             source.id,
             [
                 _source_link(
-                    entity_ids["py", "pkg.Thing"],
-                    html_url="https://a.example/api.html#pkg.Thing",
+                    entity_ids["py", name],
+                    html_url=f"https://a.example/api.html#{name}",
                 )
+                for name in ("pkg", "pkg.Thing")
             ],
             collection_title=source.title,
         )
+        await entity_store.recompute_containment()
 
         await entity_store.replace_source_links(
             source.id, [], collection_title=source.title
         )
+        await entity_store.recompute_containment()
 
         assert await entity_store.prune_orphan_entities() == 2
         assert await entity_store.get_entity("py", "pkg") is None
         assert await entity_store.get_entity("py", "pkg.Thing") is None
+
+
+@pytest.mark.asyncio
+async def test_prune_leaves_unmodelled_domains_alone(
+    factory: Factory,
+) -> None:
+    """A domain this store does not model is not its to prune.
+
+    Its links would live in another subtype table, so every one of its rows
+    looks undocumented from here.
+    """
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        await entity_store.upsert_entities(
+            [_entity("outer", role="label", sphinx_domain="std")]
+        )
+
+        assert await entity_store.prune_orphan_entities() == 0
+        assert await entity_store.get_entity("std", "outer") is not None
 
 
 @pytest.mark.asyncio
@@ -724,34 +856,24 @@ async def test_get_entities_returns_entities_with_links(
     """A page of entities carries each one's links and the total count."""
     async with factory.db_session.begin():
         entity_store = factory.create_intersphinx_entity_store()
-        source_store = factory.create_intersphinx_source_store()
-        source = await source_store.add_source(
-            url="https://a.example/objects.inv", title="A docs"
-        )
-        entity_ids = await entity_store.upsert_entities(
-            [
-                _entity("pkg", role="module"),
-                _entity("pkg.Thing", parent_name="pkg"),
-            ]
-        )
-        await entity_store.replace_source_links(
-            source.id,
-            [
-                _source_link(
-                    entity_ids["py", "pkg.Thing"],
-                    html_url="https://a.example/api.html#pkg.Thing",
-                )
-            ],
-            collection_title=source.title,
+        await _seed_documented(
+            factory, [_entity("pkg", role="module"), _entity("pkg.Thing")]
         )
 
         page = await entity_store.get_entities("py", limit=10)
 
         assert page.count == 2
         assert [entry.name for entry in page.entries] == ["pkg", "pkg.Thing"]
-        # The package holds no page of its own, which is a real state
-        # rather than missing data: it is kept alive by the class beneath.
-        assert page.entries[0].links == []
+        # Every listed entity carries links, because an entity with none is
+        # not stored.
+        assert page.entries[0].links == [
+            Link(
+                html_url="https://a.example/api.html#pkg",
+                type="python_api",
+                title="pkg",
+                collection_title="A docs",
+            )
+        ]
         assert page.entries[1].links == [
             Link(
                 html_url="https://a.example/api.html#pkg.Thing",
@@ -883,27 +1005,13 @@ async def test_get_children_returns_direct_children_with_links(
     """A module's page lists its own members, each with its links."""
     async with factory.db_session.begin():
         entity_store = factory.create_intersphinx_entity_store()
-        source_store = factory.create_intersphinx_source_store()
-        source = await source_store.add_source(
-            url="https://a.example/objects.inv", title="A docs"
-        )
-        entity_ids = await entity_store.upsert_entities(
+        await _seed_documented(
+            factory,
             [
                 _entity("pkg", role="module"),
-                _entity("pkg.mod", role="module", parent_name="pkg"),
-                _entity("pkg.mod.Thing", parent_name="pkg.mod"),
-            ]
-        )
-        await entity_store.replace_source_links(
-            source.id,
-            [
-                _source_link(
-                    entity_ids["py", "pkg.mod"],
-                    html_url="https://a.example/api.html#pkg.mod",
-                    title="pkg.mod",
-                )
+                _entity("pkg.mod", role="module"),
+                _entity("pkg.mod.Thing"),
             ],
-            collection_title=source.title,
         )
 
         page = await entity_store.get_children("py", "pkg", limit=10)
@@ -945,11 +1053,8 @@ async def test_get_children_of_a_leaf_is_an_empty_page(
     """An entity that contains nothing has an empty page of children."""
     async with factory.db_session.begin():
         entity_store = factory.create_intersphinx_entity_store()
-        await entity_store.upsert_entities(
-            [
-                _entity("pkg", role="module"),
-                _entity("pkg.Thing", parent_name="pkg"),
-            ]
+        await _seed_documented(
+            factory, [_entity("pkg", role="module"), _entity("pkg.Thing")]
         )
 
         page = await entity_store.get_children("py", "pkg.Thing", limit=10)
@@ -964,13 +1069,14 @@ async def test_get_children_is_scoped_to_one_parent(factory: Factory) -> None:
     """Another module's members are neither listed nor counted."""
     async with factory.db_session.begin():
         entity_store = factory.create_intersphinx_entity_store()
-        await entity_store.upsert_entities(
+        await _seed_documented(
+            factory,
             [
                 _entity("pkg.a", role="module"),
                 _entity("pkg.b", role="module"),
-                _entity("pkg.a.Thing", parent_name="pkg.a"),
-                _entity("pkg.b.Other", parent_name="pkg.b"),
-            ]
+                _entity("pkg.a.Thing"),
+                _entity("pkg.b.Other"),
+            ],
         )
 
         page = await entity_store.get_children("py", "pkg.a", limit=10)
@@ -988,11 +1094,9 @@ async def test_get_children_pages_without_dropping_or_repeating(
     names = [f"pkg.Thing{index:02d}" for index in range(7)]
     async with factory.db_session.begin():
         entity_store = factory.create_intersphinx_entity_store()
-        await entity_store.upsert_entities(
-            [
-                _entity("pkg", role="module"),
-                *(_entity(name, parent_name="pkg") for name in names),
-            ]
+        await _seed_documented(
+            factory,
+            [_entity("pkg", role="module"), *(_entity(n) for n in names)],
         )
 
         seen: list[str] = []

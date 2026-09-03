@@ -73,15 +73,18 @@ class SqlIntersphinxEntity(Base):
 
     Self-referential because containment in a Sphinx domain is a tree over
     the same kind of thing: a module holds classes, a class holds methods.
-    The hierarchy is derived at ingest by the naming strategy for the row's
-    Sphinx domain -- see `ook.domain.intersphinxentities` -- because the
-    inventory format records no containment of its own.
+    The inventory format records no containment of its own, so this is
+    derived: the naming strategy for the row's Sphinx domain names the
+    containing entity -- see `ook.domain.intersphinxentities` -- and the
+    whole column is recomputed from the links every source currently
+    contributes each time those links change.
 
     Null carries both kinds of top level and deliberately does not
     distinguish them: an object whose domain says it has no parent, and one
-    whose parent no source documents. ``ON DELETE SET NULL`` keeps that
-    true when a parent is pruned, leaving the child top level rather than
-    dangling.
+    whose parent no source documents. ``ON DELETE SET NULL`` is a backstop
+    rather than a working path -- an entity nothing documents is never
+    anybody's parent by the time it is pruned -- and leaves a child top
+    level rather than dangling if one is ever deleted out from under it.
     """
 
     extras: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)

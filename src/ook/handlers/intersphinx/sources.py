@@ -248,9 +248,10 @@ async def update_intersphinx_source(
     summary="Delete a registered documentation source",
     description=(
         "Delete a registration and, by cascade, every link ingested from"
-        " it. The entities those links pointed at are left behind: another"
-        " source may document the same object, and an entity nothing"
-        " documents any more is pruned by the ingest path instead."
+        " it. An object another source still documents keeps that source's"
+        " links; one only this site documented is deleted with them, and an"
+        " object it merely contained — a class nested under a module whose"
+        " page only this site published — becomes a top-level object."
         "\n\n"
         "To stop ingesting a site without withdrawing the links Ook"
         " already serves from it, set ``enabled`` to false instead."

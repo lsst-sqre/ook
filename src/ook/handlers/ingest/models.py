@@ -477,8 +477,8 @@ class IntersphinxSourceIngestResult(BaseModel):
             description=(
                 "The number of entities pruned after this source's links "
                 "changed. Pruning is global -- an entity goes when no "
-                "source documents it or anything below it -- and is "
-                "attributed to the source whose replace exposed it."
+                "source links to it -- and is attributed to the source "
+                "whose replace exposed it."
             ),
             examples=[3],
         ),
