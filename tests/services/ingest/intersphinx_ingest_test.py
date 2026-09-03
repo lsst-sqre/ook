@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,7 +11,11 @@ import respx
 import sphobjinv
 from httpx import Response
 
-from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
+from ook.domain.intersphinx import (
+    IntersphinxInventory,
+    InventoryCacheStatus,
+    InventoryFetchStatus,
+)
 from ook.domain.intersphinxentities import SPHINX_DOMAIN_HIERARCHIES
 from ook.domain.intersphinxsources import SourceIngestStatus
 from ook.domain.links import Link
@@ -393,3 +398,121 @@ async def test_an_unparseable_inventory_is_a_recorded_failure(
     assert source is not None
     assert source.last_status is SourceIngestStatus.failure
     assert source.last_error is not None
+
+
+async def _age_cached_inventory(factory: Factory, url: str) -> None:
+    """Age a cached inventory past the freshness TTL, content intact.
+
+    What a site's cached inventory looks like to the next day's ingest run:
+    still perfectly servable, but old enough that ingest owes it a
+    conditional GET before parsing it. `_expire_cached_inventory`'s
+    counterpart, which takes the content away entirely.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        cached = await store.get_inventory(url)
+        assert cached is not None
+        await store.upsert_inventory(
+            replace(
+                cached, date_fetched=datetime.now(tz=UTC) - timedelta(days=1)
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_revalidates_a_stale_inventory(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """A sweep revalidates a cached inventory that has aged out.
+
+    Ingest owns the freshness of its own sources rather than depending on
+    the cache-warming refresh job having run first.
+    """
+    route = _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+    await _age_cached_inventory(factory, INVENTORY_URL)
+
+    summary = await service.ingest_sources()
+
+    assert route.call_count == 2
+    assert summary.results[0].cache_status is InventoryCacheStatus.hit
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_leaves_a_fresh_inventory_alone(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """A sweep costs no upstream request for an inventory inside the TTL."""
+    route = _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+
+    summary = await service.ingest_sources()
+
+    assert route.call_count == 1
+    assert summary.results[0].cache_status is InventoryCacheStatus.hit
+
+
+@pytest.mark.asyncio
+async def test_ingest_source_url_revalidates_a_fresh_inventory(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """Naming one source revalidates it however fresh the cached copy is.
+
+    This is the try-it-out path an operator reaches for after a site
+    republishes, so it parses what the site publishes now.
+    """
+    route = _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+
+    result = await service.ingest_source_url(INVENTORY_URL)
+
+    assert route.call_count == 2
+    assert result.cache_status is InventoryCacheStatus.hit
+
+
+@pytest.mark.asyncio
+async def test_a_source_ingested_from_an_unrevalidated_copy_says_so(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """A site whose origin is down is ingested from the copy Ook holds.
+
+    The ingest succeeds -- there are links to write -- but the result
+    reports that the inventory could not be revalidated, which is the only
+    way an operator can tell the run apart from one that read the site.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+    await _age_cached_inventory(factory, INVENTORY_URL)
+    respx_mock.get(INVENTORY_URL).mock(return_value=Response(503))
+
+    summary = await service.ingest_sources()
+
+    assert summary.failed == 0
+    assert summary.succeeded == 1
+    assert summary.stale_count == 1
+    assert summary.results[0].cache_status is InventoryCacheStatus.stale
+
+
+@pytest.mark.asyncio
+async def test_a_failed_source_reports_no_cache_status(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """A source served no inventory at all has no freshness to report."""
+    respx_mock.get(INVENTORY_URL).mock(return_value=Response(503))
+    await _register_source(factory, url=INVENTORY_URL, title="A docs")
+
+    summary = (
+        await factory.create_intersphinx_ingest_service().ingest_sources()
+    )
+
+    assert summary.failed == 1
+    assert summary.results[0].cache_status is None
+    assert summary.stale_count == 0

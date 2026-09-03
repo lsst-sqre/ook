@@ -10,6 +10,7 @@ from typing import Annotated, Self
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 
 from ook.domain.base32id import Base32Id
+from ook.domain.intersphinx import InventoryCacheStatus
 from ook.domain.intersphinxsources import SourceIngestStatus
 from ook.domain.resources import (
     Contributor,
@@ -476,6 +477,23 @@ class IntersphinxSourceIngestResult(BaseModel):
         ),
     ] = None
 
+    cache_status: Annotated[
+        InventoryCacheStatus | None,
+        Field(
+            description=(
+                "How fresh the inventory these links were built from was. "
+                "`hit` means the origin confirmed the copy (or sent a new "
+                "one) during this ingest, `miss` that this run was the "
+                "site's first, and `stale` that the origin could not be "
+                "reached and the links were rebuilt from the copy Ook "
+                "already held \u2014 a successful ingest of a copy that may "
+                "no longer describe the site. Null when `status` is "
+                "`failure`, which got no inventory at all."
+            ),
+            examples=["hit"],
+        ),
+    ] = None
+
     @classmethod
     def from_domain(
         cls, result: SourceIngestResult
@@ -490,6 +508,7 @@ class IntersphinxSourceIngestResult(BaseModel):
             link_count=result.link_count,
             pruned_count=result.pruned_count,
             error=result.error,
+            cache_status=result.cache_status,
         )
 
 

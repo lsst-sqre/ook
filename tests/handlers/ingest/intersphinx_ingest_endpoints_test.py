@@ -181,3 +181,43 @@ async def test_openapi_documents_the_admin_scope_on_the_trigger(
     operation = response.json()["paths"][INGEST_URL]["post"]
 
     assert "exec:admin" in operation["description"]
+
+
+@pytest.mark.asyncio
+async def test_post_ingest_intersphinx_reports_the_cache_status(
+    client: AsyncClient, respx_mock: respx.Router
+) -> None:
+    """Each result says how fresh the inventory it was built from was.
+
+    Ingest revalidates its own inventories, so a result has to say whether
+    the origin actually answered: links rebuilt from a copy Ook could not
+    revalidate describe the site as it last was, and nothing else in the
+    response distinguishes that from a run that read the site.
+    """
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=_inventory("pkg.Thing"))
+    )
+    await _register(client, url=INVENTORY_URL, title="A docs")
+
+    response = await client.post(INGEST_URL)
+
+    assert response.status_code == 200
+    assert [
+        source["cache_status"] for source in response.json()["sources"]
+    ] == ["miss"]
+
+
+@pytest.mark.asyncio
+async def test_post_ingest_intersphinx_reports_no_cache_status_on_failure(
+    client: AsyncClient, respx_mock: respx.Router
+) -> None:
+    """A source that could not be read has no inventory freshness to report."""
+    respx_mock.get(INVENTORY_URL).mock(return_value=Response(503))
+    await _register(client, url=INVENTORY_URL, title="A docs")
+
+    response = await client.post(INGEST_URL)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["failure_count"] == 1
+    assert data["sources"][0]["cache_status"] is None

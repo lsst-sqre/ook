@@ -22,6 +22,7 @@ from urllib.parse import urljoin
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog.stdlib import BoundLogger
 
+from ook.domain.intersphinx import InventoryCacheStatus
 from ook.domain.intersphinxentities import (
     PYTHON_SPHINX_DOMAIN,
     IntersphinxSourceLink,
@@ -36,7 +37,7 @@ from ook.exceptions import (
     NotFoundError,
     UpstreamInventoryError,
 )
-from ook.services.intersphinx import IntersphinxCacheService
+from ook.services.intersphinx import IntersphinxCacheService, RevalidationMode
 from ook.storage.intersphinxentitystore import IntersphinxEntityStore
 from ook.storage.intersphinxsourcestore import IntersphinxSourceStore
 
@@ -121,6 +122,20 @@ class SourceIngestResult:
     error: str | None
     """A description of the failure, or None when the ingest succeeded."""
 
+    cache_status: InventoryCacheStatus | None
+    """How fresh the inventory this source was ingested from was.
+
+    `~ook.domain.intersphinx.InventoryCacheStatus.hit` when the copy parsed
+    was one upstream had just confirmed (or just sent),
+    `~ook.domain.intersphinx.InventoryCacheStatus.miss` when this run was
+    the site's first, and
+    `~ook.domain.intersphinx.InventoryCacheStatus.stale` when the origin
+    could not be reached and the links were rebuilt from the copy Ook
+    already held -- which is a successful ingest of a copy that may no
+    longer describe the site, and the one outcome an operator has to be
+    told about. None on a failure, which never got an inventory at all.
+    """
+
 
 @dataclass(frozen=True, slots=True)
 class IntersphinxIngestSummary:
@@ -148,6 +163,20 @@ class IntersphinxIngestSummary:
         )
 
     @property
+    def stale_count(self) -> int:
+        """The number of sources ingested from an unrevalidated copy.
+
+        Counted apart from `failed` because these sources *were* ingested:
+        their links are current with the inventory Ook holds, just not with
+        the site, whose origin could not be reached to check.
+        """
+        return sum(
+            1
+            for result in self.results
+            if result.cache_status is InventoryCacheStatus.stale
+        )
+
+    @property
     def entity_count(self) -> int:
         """The number of entities the run's inventories contributed."""
         return sum(result.entity_count for result in self.results)
@@ -163,6 +192,26 @@ class IntersphinxIngestSummary:
         return sum(result.pruned_count for result in self.results)
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _ReplacedLinks:
+    """What one site's link replacement wrote, and what it was built from.
+
+    Three values that only mean anything together: the counts describe the
+    replace, and `cache_status` describes the inventory the replace was
+    derived from, which is what tells an operator whether those counts
+    describe the site or the last copy of it Ook could reach.
+    """
+
+    entity_count: int
+    """The number of entities stored for this site."""
+
+    link_count: int
+    """The number of links written for this site."""
+
+    cache_status: InventoryCacheStatus
+    """How fresh the inventory those links were built from was."""
+
+
 class IntersphinxIngestService:
     """Ingests registered documentation sites' Sphinx object inventories.
 
@@ -171,6 +220,15 @@ class IntersphinxIngestService:
     source's links are replaced and committed on their own, so a site whose
     inventory cannot be read leaves every other site's ingest committed, and
     a crash mid-run keeps the sources already done.
+
+    Freshness is this service's own business, not the inventory cache's
+    refresh CronJob's. Every inventory is pulled through the cache with a
+    `~ook.services.intersphinx.RevalidationMode` that revalidates it against
+    its origin when it matters -- past the freshness TTL for a sweep,
+    unconditionally for a named source -- so what a run parses is what the
+    sites publish, whether or not ``ook refresh-intersphinx`` has run. That
+    job warms the client-facing inventory cache; the two have no ordering
+    between them.
 
     Parameters
     ----------
@@ -210,6 +268,13 @@ class IntersphinxIngestService:
         is the caller's business (the CLI's, so a CronJob shows red) to
         decide what a failure count means.
 
+        Each source's inventory is revalidated when it has aged past the
+        cache's freshness TTL, so a sweep parses what its sites publish now
+        without depending on the cache-warming refresh job having run first.
+        A site inside the TTL costs no upstream request, and one whose
+        origin will not answer is ingested from the copy Ook holds and
+        reported as `~ook.domain.intersphinx.InventoryCacheStatus.stale`.
+
         Returns
         -------
         IntersphinxIngestSummary
@@ -220,13 +285,19 @@ class IntersphinxIngestService:
         # should be held open across the per-source inventory fetches below.
         await self._session.commit()
 
-        results = [await self.ingest_source(source) for source in sources]
+        results = [
+            await self.ingest_source(
+                source, revalidate=RevalidationMode.when_stale
+            )
+            for source in sources
+        ]
         summary = IntersphinxIngestSummary(results=results)
         self._logger.info(
             "Completed intersphinx ingest",
             considered=len(results),
             succeeded=summary.succeeded,
             failed=summary.failed,
+            stale_count=summary.stale_count,
             entity_count=summary.entity_count,
             link_count=summary.link_count,
             pruned_count=summary.pruned_count,
@@ -240,6 +311,11 @@ class IntersphinxIngestService:
         governs which sites a *sweep* visits, and naming one is the more
         specific instruction -- it is also the only way to try a
         registration out before turning it on.
+
+        Its inventory is revalidated however fresh the cached copy is, for
+        the same reason: an operator naming one source has been told the
+        site republished, or is checking what it publishes, and either way
+        wants this run to look. It costs one conditional request.
 
         Parameters
         ----------
@@ -268,10 +344,15 @@ class IntersphinxIngestService:
                     f"inventory URL {url!r}."
                 )
             )
-        return await self.ingest_source(source)
+        return await self.ingest_source(
+            source, revalidate=RevalidationMode.always
+        )
 
     async def ingest_source(
-        self, source: IntersphinxSource
+        self,
+        source: IntersphinxSource,
+        *,
+        revalidate: RevalidationMode = RevalidationMode.when_stale,
     ) -> SourceIngestResult:
         """Ingest one documentation source and commit the outcome.
 
@@ -280,6 +361,17 @@ class IntersphinxIngestService:
         transaction, so a reader never sees the site's links half replaced.
         The registry stamp is committed with it, which is what makes
         ``last_status`` a description of the links actually stored.
+
+        The inventory's own revalidation is deliberately *not* part of that
+        transaction. It is committed on its own, before this method opens
+        the one it writes links in, because it is an HTTP fetch: holding the
+        row lock its bookkeeping takes across an origin that may spend the
+        whole fetch budget is the invariant the cache service's docstrings
+        keep, and it would be broken here rather than there. The split also
+        matches what the two writes mean -- a revalidated inventory is a
+        fact about the cache whether or not this site's links then replace
+        cleanly -- and it is why nothing about this ingest is written until
+        the inventory is in hand, so a fetch failure deletes no links.
 
         A fetch or parse failure is recorded and returned rather than
         raised: the site's previous links are kept (nothing was deleted
@@ -292,6 +384,12 @@ class IntersphinxIngestService:
         ----------
         source
             The registered source to ingest.
+        revalidate
+            How hard to work for a current inventory before parsing it.
+            Defaults to
+            `~ook.services.intersphinx.RevalidationMode.when_stale`, the
+            sweep's mode; the ``source_url`` trigger asks for
+            `~ook.services.intersphinx.RevalidationMode.always`.
 
         Returns
         -------
@@ -300,7 +398,7 @@ class IntersphinxIngestService:
         """
         logger = self._logger.bind(source_id=source.id, url=source.url)
         try:
-            entities, link_count = await self._replace_links(source)
+            replaced = await self._replace_links(source, revalidate=revalidate)
             pruned_count = await self._entity_store.prune_orphan_entities()
         except _INGEST_FAILURES as exc:
             return await self._record_failure(source, exc, logger=logger)
@@ -314,32 +412,37 @@ class IntersphinxIngestService:
         await self._session.commit()
         logger.info(
             "Ingested intersphinx source",
-            entity_count=entities,
-            link_count=link_count,
+            entity_count=replaced.entity_count,
+            link_count=replaced.link_count,
             pruned_count=pruned_count,
+            cache_status=replaced.cache_status,
         )
         return SourceIngestResult(
             source_id=source.id,
             url=source.url,
             title=source.title,
             status=SourceIngestStatus.success,
-            entity_count=entities,
-            link_count=link_count,
+            entity_count=replaced.entity_count,
+            link_count=replaced.link_count,
             pruned_count=pruned_count,
             error=None,
+            cache_status=replaced.cache_status,
         )
 
     async def _replace_links(
-        self, source: IntersphinxSource
-    ) -> tuple[int, int]:
+        self, source: IntersphinxSource, *, revalidate: RevalidationMode
+    ) -> _ReplacedLinks:
         """Store one site's entities and replace its links.
 
         Returns
         -------
-        tuple
-            The number of entities stored and the number of links written.
+        _ReplacedLinks
+            What the replace wrote, and how fresh the inventory it was
+            built from was.
         """
-        served = await self._cache_service.get_inventory(source.url)
+        served = await self._cache_service.get_inventory(
+            source.url, revalidate=revalidate
+        )
         content = served.inventory.content
         if content is None:
             # The cache serves content or raises, so this is unreachable in
@@ -356,7 +459,11 @@ class IntersphinxIngestService:
         link_count = await self._entity_store.replace_source_links(
             source.id, links, collection_title=source.title
         )
-        return len(entity_ids), link_count
+        return _ReplacedLinks(
+            entity_count=len(entity_ids),
+            link_count=link_count,
+            cache_status=served.cache_status,
+        )
 
     def _build_links(
         self,
@@ -422,4 +529,7 @@ class IntersphinxIngestService:
             link_count=0,
             pruned_count=0,
             error=detail,
+            # A failed ingest was served no inventory, so it has no
+            # freshness to describe -- not even a stale one.
+            cache_status=None,
         )

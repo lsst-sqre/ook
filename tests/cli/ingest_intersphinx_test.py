@@ -10,6 +10,7 @@ from httpx import Response
 
 from ook.cli import main, report_ingest_intersphinx, run_ingest_intersphinx
 from ook.domain.base32id import generate_base32_id, validate_base32_id
+from ook.domain.intersphinx import InventoryCacheStatus
 from ook.domain.intersphinxsources import SourceIngestStatus
 from ook.factory import Factory
 from ook.services.ingest.intersphinx import (
@@ -39,7 +40,11 @@ def _inventory() -> bytes:
     return sphobjinv.compress(inventory.data_file())
 
 
-def _result(status: SourceIngestStatus) -> SourceIngestResult:
+def _result(
+    status: SourceIngestStatus,
+    *,
+    cache_status: InventoryCacheStatus | None = InventoryCacheStatus.hit,
+) -> SourceIngestResult:
     """Build a source outcome for the reporting tests."""
     return SourceIngestResult(
         source_id=validate_base32_id(generate_base32_id()),
@@ -50,6 +55,9 @@ def _result(status: SourceIngestStatus) -> SourceIngestResult:
         link_count=1,
         pruned_count=0,
         error=None if status is SourceIngestStatus.success else "boom",
+        cache_status=(
+            cache_status if status is SourceIngestStatus.success else None
+        ),
     )
 
 
@@ -121,3 +129,28 @@ def test_report_ingest_intersphinx_fails_on_a_failed_source(
         )
 
     assert "1 failed" in capsys.readouterr().out
+
+
+def test_report_ingest_intersphinx_counts_unrevalidated_sources(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A source ingested from a copy Ook could not revalidate is counted.
+
+    Its links were replaced, so it is not a failure and must not fail the
+    command -- but they were rebuilt from a copy that may no longer describe
+    the site, which is the one thing an operator reading the run's output
+    cannot otherwise tell.
+    """
+    report_ingest_intersphinx(
+        IntersphinxIngestSummary(
+            results=[
+                _result(SourceIngestStatus.success),
+                _result(
+                    SourceIngestStatus.success,
+                    cache_status=InventoryCacheStatus.stale,
+                ),
+            ]
+        )
+    )
+
+    assert "1 served stale" in capsys.readouterr().out

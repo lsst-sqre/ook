@@ -461,11 +461,12 @@ async def run_ingest_intersphinx(
 ) -> IntersphinxIngestSummary:
     """Ingest every enabled intersphinx documentation source.
 
-    Each source's inventory is pulled through the intersphinx cache, parsed,
-    and its links replaced. The service owns its own transaction boundaries
-    -- it commits each source's outcome as soon as that source is done -- so
-    this must not wrap the call in a transaction. A source that fails is
-    recorded on its registry row and the run continues.
+    Each source's inventory is pulled through the intersphinx cache -- which
+    revalidates it against the origin when the stored copy has aged out --
+    parsed, and its links replaced. The service owns its own transaction
+    boundaries -- it commits each source's outcome as soon as that source is
+    done -- so this must not wrap the call in a transaction. A source that
+    fails is recorded on its registry row and the run continues.
 
     Parameters
     ----------
@@ -491,6 +492,13 @@ def report_ingest_intersphinx(summary: IntersphinxIngestSummary) -> None:
     printed, since the run deliberately continues past a failing source
     rather than aborting on it.
 
+    A source *served stale* is reported but does not fail the run. Its links
+    were replaced, from the copy of its inventory Ook already held, because
+    the origin could not be reached to revalidate it -- so the links are
+    current with that copy and only possibly behind the site. Counting it
+    tells an operator the run's numbers describe a site Ook could not read,
+    without turning a momentarily unreachable origin into a red CronJob.
+
     Parameters
     ----------
     summary
@@ -504,6 +512,7 @@ def report_ingest_intersphinx(summary: IntersphinxIngestSummary) -> None:
     click.echo(
         f"Ingested intersphinx sources: {len(summary.results)} considered, "
         f"{summary.succeeded} succeeded, {summary.failed} failed, "
+        f"{summary.stale_count} served stale, "
         f"{summary.entity_count} entities, {summary.link_count} links, "
         f"{summary.pruned_count} pruned."
     )
@@ -526,10 +535,19 @@ async def ingest_intersphinx() -> None:
     directly or below them, are pruned. Intended to run as a scheduled cron
     job.
 
+    The run revalidates each source's inventory itself when the cached copy
+    has aged past the freshness TTL, so it parses what its sites publish now
+    and does not depend on ``refresh-intersphinx`` having run first. There is
+    no ordering between the two jobs: ``refresh-intersphinx`` keeps the
+    client-facing inventory cache warm for the sites *other* people fetch
+    through Ook, and this command looks after its own.
+
     A source that cannot be fetched or parsed keeps its existing links and
     has the failure recorded on its registration, and the run continues with
-    the remaining sources; the command then exits nonzero. See
-    `report_ingest_intersphinx`.
+    the remaining sources; the command then exits nonzero. A source whose
+    origin cannot be reached to revalidate a copy Ook already holds is not
+    that: its links are replaced from the stored copy and it is reported as
+    served stale. See `report_ingest_intersphinx`.
     """
     logger = structlog.get_logger("ook")
     engine = create_database_engine(
