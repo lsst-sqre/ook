@@ -336,6 +336,39 @@ def _delete_source_while_serving(
     return respx_mock.get(url).mock(side_effect=handler)
 
 
+def _repoint_source_while_serving(
+    respx_mock: respx.Router,
+    url: str,
+    content: bytes,
+    *,
+    session: AsyncSession,
+    source_id: int,
+    new_url: str,
+) -> respx.Route:
+    """Serve an inventory, repointing its registration at a new URL first.
+
+    `_delete_source_while_serving` for the other thing an operator can do
+    to a registration in this window. The repoint is committed on a second
+    session from inside the origin's response, so the ingest has already
+    committed to fetching *url* and has not yet locked the registration
+    those links would belong to.
+    """
+
+    async def handler(request: httpx.Request) -> Response:
+        store = IntersphinxSourceStore(
+            session=session, logger=structlog.get_logger("test")
+        )
+        async with session.begin():
+            await store.update_source(source_id, url=new_url)
+        return Response(
+            200,
+            content=content,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+    return respx_mock.get(url).mock(side_effect=handler)
+
+
 MISSING_ENTITY_ID = -1
 """An entity ID no row can ever hold, for provoking a real write failure."""
 
@@ -1650,6 +1683,148 @@ async def test_ingest_source_url_reports_a_source_deleted_mid_fetch(
             PACKAGE_INVENTORY,
             session=deleter,
             source_id=source_id,
+        )
+        service = factory.create_intersphinx_ingest_service()
+
+        with pytest.raises(NotFoundError):
+            await service.ingest_source_url(INVENTORY_URL)
+
+    entity_store = factory.create_intersphinx_entity_store()
+    assert await entity_store.get_entity("py", "pkg.mod.Thing") is None
+
+
+@pytest.mark.asyncio
+async def test_a_source_repointed_mid_fetch_is_skipped(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """A registration repointed mid-fetch has no links written for it.
+
+    The links an inventory yields are resolved against the URL it was read
+    from, so storing them under a registration that now names a different
+    site would file one site's pages as another's. Nothing is written and
+    the sweep reports no outcome, exactly as a deregistration in the same
+    window gets none.
+    """
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    async with _second_session() as repointer:
+        _repoint_source_while_serving(
+            respx_mock,
+            INVENTORY_URL,
+            PACKAGE_INVENTORY,
+            session=repointer,
+            source_id=source_id,
+            new_url=OTHER_INVENTORY_URL,
+        )
+
+        summary = (
+            await factory.create_intersphinx_ingest_service().ingest_sources()
+        )
+
+    assert summary.results == []
+    entity_store = factory.create_intersphinx_entity_store()
+    assert await entity_store.get_entity("py", "pkg.mod.Thing") is None
+
+
+@pytest.mark.asyncio
+async def test_a_source_repointed_mid_fetch_keeps_no_digest(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """A repointed registration is not stamped with the old URL's digest.
+
+    ``update_source`` cleared the digest when it moved the URL, and the
+    ingest that was already reading the old URL must not put it back: a
+    digest is a claim that the stored links were built from those bytes
+    under this registration, which is the one thing that is no longer true.
+    """
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    async with _second_session() as repointer:
+        _repoint_source_while_serving(
+            respx_mock,
+            INVENTORY_URL,
+            PACKAGE_INVENTORY,
+            session=repointer,
+            source_id=source_id,
+            new_url=OTHER_INVENTORY_URL,
+        )
+
+        await factory.create_intersphinx_ingest_service().ingest_sources()
+
+    source = await _get_source(factory, source_id)
+    assert source.url == OTHER_INVENTORY_URL
+    assert source.ingested_content_digest is None
+
+
+@pytest.mark.asyncio
+async def test_a_repointed_source_is_rebuilt_from_its_new_url(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """The sweep after a mid-fetch repoint reads the site's new URL.
+
+    The two URLs serve byte-identical inventories, which is exactly the
+    case a repoint is usually made for -- a mirror, or a site that moved --
+    and an ``objects.inv`` records its project and version but not the base
+    URL it is published at. So nothing but the registration's own URL
+    distinguishes the two, and a digest stamped from the first fetch would
+    make this sweep recognize the bytes and leave every link pointing into
+    the directory the site moved off.
+    """
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    _serve_inventory(respx_mock, OTHER_INVENTORY_URL, PACKAGE_INVENTORY)
+    async with _second_session() as repointer:
+        _repoint_source_while_serving(
+            respx_mock,
+            INVENTORY_URL,
+            PACKAGE_INVENTORY,
+            session=repointer,
+            source_id=source_id,
+            new_url=OTHER_INVENTORY_URL,
+        )
+
+        service = factory.create_intersphinx_ingest_service()
+        await service.ingest_sources()
+        summary = await service.ingest_sources()
+
+    assert summary.succeeded == 1
+    assert summary.unchanged_count == 0
+    assert sorted(
+        url
+        for _, _, links in await _stored_python_domain(factory)
+        for url in links
+    ) == [
+        "https://b.example/api.html#module-pkg",
+        "https://b.example/api.html#module-pkg.mod",
+        "https://b.example/api.html#pkg.Standalone",
+        "https://b.example/api.html#pkg.mod.Thing",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ingest_source_url_reports_a_source_repointed_mid_fetch(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """Naming a source repointed mid-ingest answers as unregistered.
+
+    The caller named one inventory URL; by the time there was anything to
+    write, no registration held it any more, which is the answer a URL that
+    was never registered gets.
+    """
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    async with _second_session() as repointer:
+        _repoint_source_while_serving(
+            respx_mock,
+            INVENTORY_URL,
+            PACKAGE_INVENTORY,
+            session=repointer,
+            source_id=source_id,
+            new_url=OTHER_INVENTORY_URL,
         )
         service = factory.create_intersphinx_ingest_service()
 

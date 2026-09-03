@@ -294,7 +294,10 @@ class _FetchedInventory:
 
     Carried alongside them because every link parsed out of them is
     resolved against this URL's directory, and the registration it came
-    from is free to name a different one by the time the links are written.
+    from is free to be repointed while they are in flight. It is compared
+    against the locked registration before anything is written, which is
+    what keeps links resolved against a directory the site has moved off
+    from being stored -- and stamped as current.
     """
 
     content: bytes
@@ -362,6 +365,16 @@ def _is_already_ingested(
     failed ingest deletes nothing, but the run after a failure is the one
     an operator is watching, and it should prove the site's recovery rather
     than assert it from bookkeeping.
+
+    A fourth condition is the caller's rather than this function's: the
+    registration must still name the URL *fetched* was read from. Bytes are
+    identified here by their digest alone, and an ``objects.inv`` records
+    its project and version but not the site it is published at -- so a
+    registration repointed at a mirror serving byte-identical bytes would
+    be recognized as unchanged and left with links resolved against the
+    directory it moved off. `IntersphinxIngestService.ingest_source`
+    abandons such an ingest before reaching here, so what this compares is
+    always two readings of one URL.
     """
     return (
         source.last_status is SourceIngestStatus.success
@@ -470,8 +483,8 @@ class IntersphinxIngestService:
         -------
         IntersphinxIngestSummary
             Each enabled source's outcome, in the order they were visited.
-            A source deregistered mid-run is absent rather than reported:
-            see `ingest_source`.
+            A source deregistered or repointed mid-run is absent rather than
+            reported: see `ingest_source`.
         """
         sources = await self._source_store.list_sources(enabled_only=True)
         # Commit the registry read as its own short transaction: no snapshot
@@ -535,9 +548,9 @@ class IntersphinxIngestService:
             unregistered inventory is not something to ingest: the
             registration is what supplies the site's title and the identity
             its links are replaced against. Raised for the same reason when
-            the registration is deleted while its inventory is being
-            fetched -- by the time there was anything to write, the URL
-            named nothing.
+            the registration is deleted, or repointed at some other
+            inventory, while this one is being fetched -- by the time there
+            was anything to write, the URL named nothing.
         """
         source = await self._source_store.get_source_by_url(url)
         await self._session.commit()
@@ -630,6 +643,18 @@ class IntersphinxIngestService:
         site that had been deregistered, on a registration only the links'
         own foreign key still referred to.
 
+        A source *repointed* while its inventory is in flight ends the same
+        way, and for the same kind of reason: every link parsed out of those
+        bytes is resolved against the URL they were read from, so writing
+        them would file one site's pages under a registration that now names
+        another. The locked row's URL is compared with the fetched one
+        before its digest is, so the one comparison covers the replace and
+        the skip alike -- and no digest describing the old URL's bytes is
+        stamped on a registration that has moved. ``update_source`` cleared
+        the digest when it moved the URL and nothing puts it back, so the
+        next run rebuilds the site's links from the new URL even when that
+        URL serves byte-identical bytes.
+
         Parameters
         ----------
         source
@@ -644,8 +669,9 @@ class IntersphinxIngestService:
         Returns
         -------
         SourceIngestResult or None
-            The source's outcome, or None if the source was deregistered
-            between its inventory being fetched and its links being written.
+            The source's outcome, or None if the registration was
+            deregistered or repointed between its inventory being fetched
+            and its links being written.
         """
         logger = self._logger.bind(source_id=source.id, url=source.url)
         try:
@@ -663,10 +689,22 @@ class IntersphinxIngestService:
             logger.info("Skipped intersphinx source deleted during its ingest")
             return None
 
-        if _is_already_ingested(locked, fetched):
-            return await self._record_unchanged(
-                locked, fetched, url=source.url, logger=logger
+        if locked.url != fetched.url:
+            # Committed rather than rolled back for the same reason the
+            # deregistration above is: nothing of this ingest's own is
+            # pending, and the cache's record of a fetch that really did
+            # happen is worth keeping. Checked before the digest so this one
+            # comparison covers the skip and the replace alike.
+            await self._session.commit()
+            logger.info(
+                "Skipped intersphinx source repointed during its ingest",
+                fetched_url=fetched.url,
+                registered_url=locked.url,
             )
+            return None
+
+        if _is_already_ingested(locked, fetched):
+            return await self._record_unchanged(locked, fetched, logger=logger)
 
         try:
             parsed = _parse_fetched_inventory(fetched)
@@ -707,12 +745,11 @@ class IntersphinxIngestService:
         )
         return SourceIngestResult(
             source_id=locked.id,
-            # The URL that was actually fetched, which is the one the source
-            # carried when the ingest started: a rename committed while the
-            # inventory was in flight does not change where these links came
-            # from, even though the title they carry does come from the
-            # re-read row.
-            url=source.url,
+            # The registration's URL, which the guard above establishes is
+            # also the one these links were resolved against: an ingest
+            # whose site was repointed mid-flight never reaches here. The
+            # title is free to have changed, and comes from the re-read row.
+            url=locked.url,
             title=locked.title,
             status=SourceIngestStatus.success,
             unchanged=False,
@@ -928,7 +965,6 @@ class IntersphinxIngestService:
         source: IntersphinxSource,
         fetched: _FetchedInventory,
         *,
-        url: str,
         logger: BoundLogger,
     ) -> SourceIngestResult:
         """Stamp a recognized inventory as ingested without rewriting links.
@@ -942,13 +978,12 @@ class IntersphinxIngestService:
         Parameters
         ----------
         source
-            The source as it stands under its registration lock.
+            The source as it stands under its registration lock, whose URL
+            `ingest_source` has already established is still the one
+            *fetched* was read from.
         fetched
             The inventory whose digest matched what the source last
             ingested.
-        url
-            The inventory URL that was actually fetched, which the
-            registration is free to have moved off since.
         logger
             The logger, already bound to this source.
         """
@@ -966,7 +1001,7 @@ class IntersphinxIngestService:
         )
         return SourceIngestResult(
             source_id=source.id,
-            url=url,
+            url=source.url,
             title=source.title,
             status=SourceIngestStatus.success,
             unchanged=True,
