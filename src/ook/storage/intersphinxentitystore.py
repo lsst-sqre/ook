@@ -264,14 +264,18 @@ class IntersphinxEntityStore:
         Returns
         -------
         list of Link
-            The links, ordered by the title of the site they point into so
-            a reader sees the same order on every request.
+            The links, ordered by the title of the site they point into --
+            ``source_collection_title``, not the link's own
+            ``source_title``, which is the entity's display name and so is
+            the same across sites -- with the URL breaking ties so a reader
+            sees the same order on every request.
         """
         stmt = (
             select(SqlIntersphinxLink)
             .where(SqlIntersphinxLink.entity_id == entity_id)
             .order_by(
-                SqlIntersphinxLink.source_title, SqlIntersphinxLink.html_url
+                SqlIntersphinxLink.source_collection_title,
+                SqlIntersphinxLink.html_url,
             )
         )
         rows = (await self._session.execute(stmt)).scalars().all()
@@ -519,6 +523,10 @@ class IntersphinxEntityStore:
         `IntersphinxEntityLinks` models, which carry no ID -- and a name is
         just as good a key here, being unique within a Sphinx domain.
 
+        Each entity's links are ordered by the title of the site they point
+        into, with the URL breaking ties, matching
+        `get_links_for_entity`.
+
         Entities nothing links to are simply absent from the mapping.
         """
         if not names:
@@ -542,10 +550,12 @@ class IntersphinxEntityStore:
                 SqlIntersphinxEntity.name.in_(names),
             )
             # The same order `get_links_for_entity` reads one entity's
-            # links in, so a link list does not depend on which endpoint
-            # served it.
+            # links in -- by the title of the site each link points into,
+            # then by URL -- so a link list does not depend on which
+            # endpoint served it.
             .order_by(
-                SqlIntersphinxLink.source_title, SqlIntersphinxLink.html_url
+                SqlIntersphinxLink.source_collection_title,
+                SqlIntersphinxLink.html_url,
             )
         )
         links: dict[str, list[Link]] = {}

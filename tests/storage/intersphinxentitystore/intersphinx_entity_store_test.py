@@ -279,6 +279,48 @@ async def test_get_entity_returns_links(factory: Factory) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_entity_orders_links_by_site_title(
+    factory: Factory,
+) -> None:
+    """An entity's links come back sorted by the site they point into.
+
+    The two sources are set up so that site title and URL disagree about
+    the order, which is what separates a site-sorted list from one that
+    merely falls out of the URL tiebreaker.
+    """
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        source_store = factory.create_intersphinx_source_store()
+        zebra = await source_store.add_source(
+            url="https://a.example/objects.inv", title="Zebra docs"
+        )
+        alpha = await source_store.add_source(
+            url="https://z.example/objects.inv", title="Alpha docs"
+        )
+        entity_ids = await entity_store.upsert_entities([_entity("pkg.Thing")])
+        entity_id = entity_ids["py", "pkg.Thing"]
+        for source, host in ((zebra, "a.example"), (alpha, "z.example")):
+            await entity_store.replace_source_links(
+                source.id,
+                [
+                    _source_link(
+                        entity_id,
+                        html_url=f"https://{host}/api.html#pkg.Thing",
+                    )
+                ],
+                collection_title=source.title,
+            )
+
+        stored = await entity_store.get_entity("py", "pkg.Thing")
+
+        assert stored is not None
+        assert [link.collection_title for link in stored.links] == [
+            "Alpha docs",
+            "Zebra docs",
+        ]
+
+
+@pytest.mark.asyncio
 async def test_link_loads_through_polymorphic_query(
     factory: Factory,
 ) -> None:
@@ -717,6 +759,47 @@ async def test_get_entities_returns_entities_with_links(
                 title="pkg.Thing",
                 collection_title="A docs",
             )
+        ]
+
+
+@pytest.mark.asyncio
+async def test_get_entities_orders_links_by_site_title(
+    factory: Factory,
+) -> None:
+    """A page's links carry the same site order one entity's links do.
+
+    As in the single-entity test, site title and URL disagree about the
+    order, so the assertion pins the site sort rather than the URL
+    tiebreaker.
+    """
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        source_store = factory.create_intersphinx_source_store()
+        zebra = await source_store.add_source(
+            url="https://a.example/objects.inv", title="Zebra docs"
+        )
+        alpha = await source_store.add_source(
+            url="https://z.example/objects.inv", title="Alpha docs"
+        )
+        entity_ids = await entity_store.upsert_entities([_entity("pkg.Thing")])
+        entity_id = entity_ids["py", "pkg.Thing"]
+        for source, host in ((zebra, "a.example"), (alpha, "z.example")):
+            await entity_store.replace_source_links(
+                source.id,
+                [
+                    _source_link(
+                        entity_id,
+                        html_url=f"https://{host}/api.html#pkg.Thing",
+                    )
+                ],
+                collection_title=source.title,
+            )
+
+        page = await entity_store.get_entities("py", limit=10)
+
+        assert [link.collection_title for link in page.entries[0].links] == [
+            "Alpha docs",
+            "Zebra docs",
         ]
 
 
