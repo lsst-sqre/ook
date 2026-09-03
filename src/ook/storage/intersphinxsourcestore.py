@@ -115,6 +115,53 @@ class IntersphinxSourceStore:
         ).scalar_one_or_none()
         return None if row is None else self._to_domain(row)
 
+    async def lock_source(self, source_id: int) -> IntersphinxSource | None:
+        """Lock a source's registration row and return it as it now stands.
+
+        A ``SELECT ... FOR UPDATE`` held until the caller's transaction
+        ends. Ingest takes it to serialize its own writes against another
+        ingest of the same site: the registration row exists for exactly as
+        long as the source does, which makes it a lock key that needs no
+        naming convention of its own and that no other site's ingest ever
+        contends for.
+
+        The row is re-read under the lock rather than trusted from before
+        it, because a caller that waited was waiting on a transaction that
+        was committing. Under ``READ COMMITTED`` every statement a waiter
+        runs once the lock is granted takes a fresh snapshot, so the row
+        returned here -- and the deletes and inserts the caller runs after
+        it -- see what the transaction ahead wrote, which is what makes this
+        one lock enough to serialize a delete-then-insert replace.
+
+        None answers a source deleted while the caller was working towards
+        the lock. There is nothing to lock and nothing to write about: a
+        caller must neither re-create the registration nor write rows that
+        point at it.
+
+        Parameters
+        ----------
+        source_id
+            The source's database ID.
+
+        Returns
+        -------
+        IntersphinxSource or None
+            The locked source as it stands now, or None if no source has
+            that ID any more.
+        """
+        row = (
+            await self._session.execute(
+                select(SqlIntersphinxSource)
+                .where(SqlIntersphinxSource.id == source_id)
+                .with_for_update()
+                # The whole point of this read is the row as it is *now*, so
+                # a copy the identity map loaded before the lock was even
+                # asked for must not be allowed to answer in its place.
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        return None if row is None else self._to_domain(row)
+
     async def list_sources(
         self, *, enabled_only: bool = False
     ) -> list[IntersphinxSource]:

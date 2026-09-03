@@ -85,6 +85,14 @@ on one registry row while the run continues would hide it.
 """
 
 
+def _unregistered_url_message(url: str) -> str:
+    """Describe an inventory URL the registry does not hold."""
+    return (
+        f"No documentation source is registered with the inventory URL "
+        f"{url!r}."
+    )
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SourceIngestResult:
     """The outcome of ingesting one documentation source."""
@@ -193,6 +201,31 @@ class IntersphinxIngestSummary:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class _ParsedInventory:
+    """One site's inventory, fetched and parsed but not yet stored.
+
+    An ingest is split into this half and the write that follows it because
+    the registration lock that serializes concurrent ingests belongs between
+    them: everything that talks to the site happens before the lock is
+    taken, and everything that writes happens under it.
+    """
+
+    url: str
+    """The inventory URL these entities were read from.
+
+    Carried alongside them because every one of their links is resolved
+    against this URL's directory, and the registration it came from is free
+    to name a different one by the time the links are written.
+    """
+
+    entities: list[InventoryEntity]
+    """The entities the inventory declares, in the order it declares them."""
+
+    cache_status: InventoryCacheStatus
+    """How fresh the inventory these entities were parsed from was."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _ReplacedLinks:
     """What one site's link replacement wrote, and what it was built from.
 
@@ -279,18 +312,24 @@ class IntersphinxIngestService:
         -------
         IntersphinxIngestSummary
             Each enabled source's outcome, in the order they were visited.
+            A source deregistered mid-run is absent rather than reported:
+            see `ingest_source`.
         """
         sources = await self._source_store.list_sources(enabled_only=True)
         # Commit the registry read as its own short transaction: no snapshot
         # should be held open across the per-source inventory fetches below.
         await self._session.commit()
 
-        results = [
-            await self.ingest_source(
+        results = []
+        for source in sources:
+            result = await self.ingest_source(
                 source, revalidate=RevalidationMode.when_stale
             )
-            for source in sources
-        ]
+            # A source deregistered while this run was fetching its inventory
+            # has no outcome to report: it is not a site that failed, it is a
+            # site the run no longer has anything to say about.
+            if result is not None:
+                results.append(result)
         summary = IntersphinxIngestSummary(results=results)
         self._logger.info(
             "Completed intersphinx ingest",
@@ -333,27 +372,28 @@ class IntersphinxIngestService:
             Raised if no source is registered with that inventory URL. An
             unregistered inventory is not something to ingest: the
             registration is what supplies the site's title and the identity
-            its links are replaced against.
+            its links are replaced against. Raised for the same reason when
+            the registration is deleted while its inventory is being
+            fetched -- by the time there was anything to write, the URL
+            named nothing.
         """
         source = await self._source_store.get_source_by_url(url)
         await self._session.commit()
         if source is None:
-            raise NotFoundError(
-                message=(
-                    f"No documentation source is registered with the "
-                    f"inventory URL {url!r}."
-                )
-            )
-        return await self.ingest_source(
+            raise NotFoundError(message=_unregistered_url_message(url))
+        result = await self.ingest_source(
             source, revalidate=RevalidationMode.always
         )
+        if result is None:
+            raise NotFoundError(message=_unregistered_url_message(url))
+        return result
 
     async def ingest_source(
         self,
         source: IntersphinxSource,
         *,
         revalidate: RevalidationMode = RevalidationMode.when_stale,
-    ) -> SourceIngestResult:
+    ) -> SourceIngestResult | None:
         """Ingest one documentation source and commit the outcome.
 
         The whole of one site's ingest -- its entities, the replacement of
@@ -380,6 +420,32 @@ class IntersphinxIngestService:
         by then the cache has recorded upstream's refusal and that record is
         what keeps a broken origin from being hammered on the next run.
 
+        Concurrent ingests of *one* source are serialized on that source's
+        registration row, locked with a ``SELECT ... FOR UPDATE`` once the
+        inventory is in hand. Without it the two replaces interleave: under
+        ``READ COMMITTED`` the second transaction's ``DELETE`` is judged by
+        a snapshot taken before the first's inserts committed, so it deletes
+        the rows the first already deleted, sees none of what the first
+        wrote, and inserts a second copy of every link. Waiting on the lock
+        is what fixes that, because a statement a waiter runs *after* the
+        lock is granted takes a fresh snapshot: the delete then sees the
+        first ingest's links and replaces them, which is all this needs one
+        lock for. Sources lock separately, so a sweep is never serialized as
+        a whole.
+
+        The lock is deliberately taken *after* the inventory, never before:
+        no row lock may be held across an origin that can spend the whole
+        fetch budget, which is the invariant the cache service's docstrings
+        keep. What follows the lock is decided from the row it re-read
+        rather than the one this method was handed, which by then may be a
+        registration another ingest -- or an operator -- has just rewritten.
+
+        A source whose registration is deleted while its inventory is in
+        flight ends as a no-op: the lock read finds no row, nothing is
+        written, and None is returned. Writing links then would resurrect a
+        site that had been deregistered, on a registration only the links'
+        own foreign key still referred to.
+
         Parameters
         ----------
         source
@@ -393,18 +459,30 @@ class IntersphinxIngestService:
 
         Returns
         -------
-        SourceIngestResult
-            The source's outcome.
+        SourceIngestResult or None
+            The source's outcome, or None if the source was deregistered
+            between its inventory being fetched and its links being written.
         """
         logger = self._logger.bind(source_id=source.id, url=source.url)
         try:
-            replaced = await self._replace_links(source, revalidate=revalidate)
-            pruned_count = await self._entity_store.prune_orphan_entities()
+            parsed = await self._read_inventory(source, revalidate=revalidate)
         except _INGEST_FAILURES as exc:
             return await self._record_failure(source, exc, logger=logger)
 
+        locked = await self._source_store.lock_source(source.id)
+        if locked is None:
+            # Committed rather than rolled back: the ingest wrote nothing of
+            # its own, and what is pending is the cache's record of a fetch
+            # that really did happen, which the deregistration of one site
+            # is no reason to throw away.
+            await self._session.commit()
+            logger.info("Skipped intersphinx source deleted during its ingest")
+            return None
+
+        replaced = await self._store_links(locked, parsed)
+        pruned_count = await self._entity_store.prune_orphan_entities()
         await self._source_store.record_ingest_outcome(
-            source.id,
+            locked.id,
             date_ingested=datetime.now(tz=UTC),
             status=SourceIngestStatus.success,
             error=None,
@@ -418,9 +496,14 @@ class IntersphinxIngestService:
             cache_status=replaced.cache_status,
         )
         return SourceIngestResult(
-            source_id=source.id,
+            source_id=locked.id,
+            # The URL that was actually fetched, which is the one the source
+            # carried when the ingest started: a rename committed while the
+            # inventory was in flight does not change where these links came
+            # from, even though the title they carry does come from the
+            # re-read row.
             url=source.url,
-            title=source.title,
+            title=locked.title,
             status=SourceIngestStatus.success,
             entity_count=replaced.entity_count,
             link_count=replaced.link_count,
@@ -429,16 +512,20 @@ class IntersphinxIngestService:
             cache_status=replaced.cache_status,
         )
 
-    async def _replace_links(
+    async def _read_inventory(
         self, source: IntersphinxSource, *, revalidate: RevalidationMode
-    ) -> _ReplacedLinks:
-        """Store one site's entities and replace its links.
+    ) -> _ParsedInventory:
+        """Fetch and parse one site's inventory, writing nothing of Ook's.
+
+        Everything that can reach the origin lives here, and nothing that
+        writes an entity or a link does, so `ingest_source` can put the
+        registration lock between the two.
 
         Returns
         -------
-        _ReplacedLinks
-            What the replace wrote, and how fresh the inventory it was
-            built from was.
+        _ParsedInventory
+            The entities the inventory declares, and how fresh the copy
+            they were parsed from was.
         """
         served = await self._cache_service.get_inventory(
             source.url, revalidate=revalidate
@@ -453,22 +540,49 @@ class IntersphinxIngestService:
                 f"The cached inventory for {source.url} holds no content."
             )
 
-        entities = build_entities(parse_inventory(content))
-        entity_ids = await self._entity_store.upsert_entities(entities)
-        links = self._build_links(source, entities, entity_ids)
+        return _ParsedInventory(
+            url=source.url,
+            entities=build_entities(parse_inventory(content)),
+            cache_status=served.cache_status,
+        )
+
+    async def _store_links(
+        self, source: IntersphinxSource, parsed: _ParsedInventory
+    ) -> _ReplacedLinks:
+        """Store one site's entities and replace its links.
+
+        Called only with the source's registration row locked, which is what
+        makes the replace's delete-then-insert safe against a concurrent
+        ingest of the same site.
+
+        Parameters
+        ----------
+        source
+            The source as it stands under the lock, whose title every link
+            written here carries.
+        parsed
+            The inventory `_read_inventory` fetched and parsed.
+
+        Returns
+        -------
+        _ReplacedLinks
+            What the replace wrote, and how fresh the inventory it was
+            built from was.
+        """
+        entity_ids = await self._entity_store.upsert_entities(parsed.entities)
+        links = self._build_links(parsed, entity_ids)
         link_count = await self._entity_store.replace_source_links(
             source.id, links, collection_title=source.title
         )
         return _ReplacedLinks(
             entity_count=len(entity_ids),
             link_count=link_count,
-            cache_status=served.cache_status,
+            cache_status=parsed.cache_status,
         )
 
     def _build_links(
         self,
-        source: IntersphinxSource,
-        entities: list[InventoryEntity],
+        parsed: _ParsedInventory,
         entity_ids: dict[tuple[str, str], int],
     ) -> list[IntersphinxSourceLink]:
         """Turn one inventory's entities into the links the site provides.
@@ -481,7 +595,7 @@ class IntersphinxIngestService:
         """
         links: list[IntersphinxSourceLink] = []
         seen: set[tuple[str, str]] = set()
-        for entity in entities:
+        for entity in parsed.entities:
             identity = (entity.sphinx_domain, entity.name)
             if identity in seen:
                 continue
@@ -492,7 +606,7 @@ class IntersphinxIngestService:
                     # The inventory's URI is relative to the directory
                     # holding the inventory, which is what the inventory
                     # URL's own directory is.
-                    html_url=urljoin(source.url, entity.uri),
+                    html_url=urljoin(parsed.url, entity.uri),
                     title=entity.display_name,
                     type=SPHINX_DOMAIN_LINK_TYPES[entity.sphinx_domain],
                 )

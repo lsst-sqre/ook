@@ -2,26 +2,34 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import asyncio
+from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 import respx
 import sphobjinv
+import structlog
 from httpx import Response
+from safir.database import create_async_session, create_database_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from ook.config import config
 from ook.domain.intersphinx import (
     IntersphinxInventory,
     InventoryCacheStatus,
     InventoryFetchStatus,
 )
 from ook.domain.intersphinxentities import SPHINX_DOMAIN_HIERARCHIES
-from ook.domain.intersphinxsources import SourceIngestStatus
+from ook.domain.intersphinxsources import IntersphinxSource, SourceIngestStatus
 from ook.domain.links import Link
 from ook.exceptions import NotFoundError
 from ook.factory import Factory
 from ook.services.ingest.intersphinx import SPHINX_DOMAIN_LINK_TYPES
+from ook.storage.intersphinxsourcestore import IntersphinxSourceStore
 
 INVENTORY_URL = "https://a.example/en/latest/objects.inv"
 """The inventory URL of the documentation site most tests register."""
@@ -87,6 +95,107 @@ async def _register_source(
             url=url, title=title, enabled=enabled
         )
     return source.id
+
+
+async def _get_source(factory: Factory, source_id: int) -> IntersphinxSource:
+    """Read a registered source back as the ingest path receives it."""
+    async with factory.db_session.begin():
+        source = await factory.create_intersphinx_source_store().get_source(
+            source_id
+        )
+    assert source is not None
+    return source
+
+
+BLOCKED_GRACE = 0.5
+"""How long an ingest a test expects to be blocked is given to prove it.
+
+An unblocked ingest of these four-object inventories finishes in
+milliseconds, so half a second is generous enough to be reliable and short
+enough to keep the test cheap.
+"""
+
+UNBLOCKED_TIMEOUT = 30.0
+"""How long an ingest a test expects to *finish* is waited on.
+
+Only a bound on a hung test; an unblocked ingest finishes at once.
+"""
+
+
+@asynccontextmanager
+async def _second_session() -> AsyncIterator[AsyncSession]:
+    """Open a second database session, on a connection of its own.
+
+    Lock contention is only observable between two connections, and the
+    ``factory`` fixture hands out one. This opens the other, on its own
+    engine so neither session can be starved of the other's pool.
+    """
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    session = await create_async_session(engine)
+    try:
+        yield session
+    finally:
+        await session.close()
+        await engine.dispose()
+
+
+@asynccontextmanager
+async def _second_factory(engine: AsyncEngine) -> AsyncIterator[Factory]:
+    """Build a second factory, and so a second ingest service and session.
+
+    Wired the way the application wires one rather than by hand, so the two
+    ingests a concurrency test races are the same object the CronJob and the
+    endpoint run.
+    """
+    async with Factory.create_standalone(
+        logger=structlog.get_logger("test"), engine=engine
+    ) as factory:
+        yield factory
+
+
+async def _wait_until(
+    condition: Callable[[], bool], *, timeout: float = UNBLOCKED_TIMEOUT
+) -> None:
+    """Wait for a condition another task is expected to bring about."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not condition():
+        if loop.time() > deadline:
+            raise AssertionError("The awaited condition never became true.")
+        await asyncio.sleep(0.01)
+
+
+def _delete_source_while_serving(
+    respx_mock: respx.Router,
+    url: str,
+    content: bytes,
+    *,
+    session: AsyncSession,
+    source_id: int,
+) -> respx.Route:
+    """Serve an inventory, deleting its registration first.
+
+    The delete is committed on a second session, from inside the origin's
+    response, which puts it exactly where the race this guards against puts
+    it: after the ingest has committed to fetching the inventory and before
+    it can lock the registration those links belong to.
+    """
+
+    async def handler(request: httpx.Request) -> Response:
+        store = IntersphinxSourceStore(
+            session=session, logger=structlog.get_logger("test")
+        )
+        async with session.begin():
+            await store.delete_source(source_id)
+        return Response(
+            200,
+            content=content,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+    return respx_mock.get(url).mock(side_effect=handler)
 
 
 async def _expire_cached_inventory(factory: Factory, url: str) -> None:
@@ -516,3 +625,194 @@ async def test_a_failed_source_reports_no_cache_status(
     assert summary.failed == 1
     assert summary.results[0].cache_status is None
     assert summary.stale_count == 0
+
+
+@pytest.mark.asyncio
+async def test_ingest_waits_for_a_concurrent_registration_write(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """An ingest fetches without the lock, then queues behind the row's writer.
+
+    The registration is rewritten on another session and left uncommitted,
+    which is the shape of an ingest already replacing this site's links.
+    Two things have to be true of the ingest that meets it: it must have
+    reached the origin before it started waiting -- no lock is held across
+    an HTTP fetch -- and once it is let through it must build its links from
+    the row as it now stands rather than the one it was handed, which is
+    what makes the site's new title the one its links carry.
+
+    The concurrent write is an ``UPDATE`` of a non-key column, so Postgres
+    holds it as ``FOR NO KEY UPDATE``: it blocks the ingest's own
+    ``SELECT ... FOR UPDATE`` and nothing else. The ``FOR KEY SHARE`` that
+    the link rows' foreign key takes on the same row does not conflict with
+    it, so an ingest that never locked the registration would sail past this
+    and write links titled from the row it was handed.
+    """
+    route = _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="Old title"
+    )
+    source = await _get_source(factory, source_id)
+    service = factory.create_intersphinx_ingest_service()
+
+    async with _second_session() as writer:
+        store = IntersphinxSourceStore(
+            session=writer, logger=structlog.get_logger("test")
+        )
+        async with writer.begin():
+            await store.update_source(source_id, title="New title")
+            ingest = asyncio.create_task(service.ingest_source(source))
+            # The origin answers while the registration is still locked, so
+            # the fetch cannot have been made under the lock.
+            await _wait_until(lambda: route.call_count == 1)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(
+                    asyncio.shield(ingest), timeout=BLOCKED_GRACE
+                )
+
+        result = await asyncio.wait_for(ingest, timeout=UNBLOCKED_TIMEOUT)
+
+    assert result is not None
+    assert result.title == "New title"
+    thing = await factory.create_intersphinx_entity_store().get_entity(
+        "py", "pkg.mod.Thing"
+    )
+    assert thing is not None
+    assert [link.collection_title for link in thing.links] == ["New title"]
+
+
+@pytest.mark.asyncio
+async def test_a_held_lock_does_not_block_another_source(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """One site's ingest does not wait on another site's.
+
+    The registration row is the lock key precisely so that the sweep is not
+    reduced to one site at a time by a lock the whole registry shares.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    _serve_inventory(
+        respx_mock,
+        OTHER_INVENTORY_URL,
+        _inventory([("other.Thing", "class", "api.html#other.Thing")]),
+    )
+    locked_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    other_id = await _register_source(
+        factory, url=OTHER_INVENTORY_URL, title="B docs"
+    )
+    other_source = await _get_source(factory, other_id)
+    service = factory.create_intersphinx_ingest_service()
+
+    async with _second_session() as holder:
+        store = IntersphinxSourceStore(
+            session=holder, logger=structlog.get_logger("test")
+        )
+        async with holder.begin():
+            assert await store.lock_source(locked_id) is not None
+            result = await asyncio.wait_for(
+                service.ingest_source(other_source),
+                timeout=UNBLOCKED_TIMEOUT,
+            )
+
+    assert result is not None
+    assert result.status is SourceIngestStatus.success
+    entity_store = factory.create_intersphinx_entity_store()
+    assert await entity_store.get_entity("py", "other.Thing") is not None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_ingests_leave_one_link_per_entity(
+    factory: Factory,
+    database_engine: AsyncEngine,
+    respx_mock: respx.Router,
+) -> None:
+    """Two ingests of one site racing each other write one link per object.
+
+    A replace is a delete followed by inserts, and two of them running
+    together with nothing between them would each delete only what the other
+    had already replaced -- leaving the site documenting every object twice.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    source = await _get_source(factory, source_id)
+
+    async with _second_factory(database_engine) as other:
+        results = await asyncio.gather(
+            factory.create_intersphinx_ingest_service().ingest_source(source),
+            other.create_intersphinx_ingest_service().ingest_source(source),
+        )
+
+    assert [result is not None for result in results] == [True, True]
+    entity_store = factory.create_intersphinx_entity_store()
+    for name in ("pkg", "pkg.mod", "pkg.mod.Thing", "pkg.Standalone"):
+        entity = await entity_store.get_entity("py", name)
+        assert entity is not None
+        assert len(entity.links) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_source_deleted_mid_fetch_is_skipped(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """A registration deleted while its inventory was in flight is not revived.
+
+    Nothing about the site survives the delete: the sweep reports no outcome
+    for it, its registration stays gone, and none of the objects its
+    inventory described are stored -- which is what stops an ingest that
+    started before the delete from writing links no registration owns.
+    """
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    async with _second_session() as deleter:
+        _delete_source_while_serving(
+            respx_mock,
+            INVENTORY_URL,
+            PACKAGE_INVENTORY,
+            session=deleter,
+            source_id=source_id,
+        )
+
+        summary = (
+            await factory.create_intersphinx_ingest_service().ingest_sources()
+        )
+
+    assert summary.results == []
+    source_store = factory.create_intersphinx_source_store()
+    assert await source_store.get_source(source_id) is None
+    entity_store = factory.create_intersphinx_entity_store()
+    assert await entity_store.get_entity("py", "pkg.mod.Thing") is None
+
+
+@pytest.mark.asyncio
+async def test_ingest_source_url_reports_a_source_deleted_mid_fetch(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """Naming a source that is deleted mid-ingest answers as unregistered.
+
+    The caller asked Ook to ingest one named source; by the time there was
+    anything to write, no such source was registered, which is the same
+    answer a URL that was never registered gets.
+    """
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    async with _second_session() as deleter:
+        _delete_source_while_serving(
+            respx_mock,
+            INVENTORY_URL,
+            PACKAGE_INVENTORY,
+            session=deleter,
+            source_id=source_id,
+        )
+        service = factory.create_intersphinx_ingest_service()
+
+        with pytest.raises(NotFoundError):
+            await service.ingest_source_url(INVENTORY_URL)
+
+    entity_store = factory.create_intersphinx_entity_store()
+    assert await entity_store.get_entity("py", "pkg.mod.Thing") is None

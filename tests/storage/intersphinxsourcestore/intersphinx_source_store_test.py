@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 import pytest
+import structlog
+from safir.database import create_async_session, create_database_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from ook.domain.intersphinxsources import SourceIngestStatus
+from ook.config import config
+from ook.domain.intersphinxsources import IntersphinxSource, SourceIngestStatus
 from ook.factory import Factory
+from ook.storage.intersphinxsourcestore import IntersphinxSourceStore
 
 UNREGISTERED_SOURCE_ID = 12345
 """A primary key no test registers.
@@ -15,6 +23,50 @@ UNREGISTERED_SOURCE_ID = 12345
 The store speaks integers -- the Base32 form is the API's business -- so
 this is just an ID the registry does not hold.
 """
+
+BLOCKED_GRACE = 0.5
+"""How long a lock a test expects to be blocked is given to prove it.
+
+The statement being waited on answers in milliseconds once it is unblocked
+and its connection is already warm, so half a second is generous enough to
+be reliable and short enough to keep the test cheap.
+"""
+
+LOCK_TIMEOUT = 30.0
+"""How long a lock a test expects to be *granted* is waited on.
+
+Only a bound on a hung test; a granted lock is granted at once.
+"""
+
+
+@asynccontextmanager
+async def _second_session() -> AsyncIterator[AsyncSession]:
+    """Open a second database session, on a connection of its own.
+
+    Lock contention is only observable between two connections, and the
+    ``factory`` fixture hands out one. This opens the other, on its own
+    engine so neither session can be starved of the other's pool.
+    """
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    session = await create_async_session(engine)
+    try:
+        yield session
+    finally:
+        await session.close()
+        await engine.dispose()
+
+
+async def _lock_in(
+    session: AsyncSession, source_id: int
+) -> IntersphinxSource | None:
+    """Take, and immediately release, a source's row lock on one session."""
+    store = IntersphinxSourceStore(
+        session=session, logger=structlog.get_logger("test")
+    )
+    async with session.begin():
+        return await store.lock_source(source_id)
 
 
 @pytest.mark.asyncio
@@ -178,3 +230,81 @@ async def test_delete_source(factory: Factory) -> None:
         assert await store.delete_source(source.id)
         assert await store.get_source(source.id) is None
         assert not await store.delete_source(source.id)
+
+
+@pytest.mark.asyncio
+async def test_lock_source_unknown_id(factory: Factory) -> None:
+    """Locking an ID the registry does not hold reports no row.
+
+    This is what a caller that raced a delete sees, and it must be
+    distinguishable from a locked row rather than an error.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_source_store()
+        assert await store.lock_source(UNREGISTERED_SOURCE_ID) is None
+
+
+@pytest.mark.asyncio
+async def test_lock_source_serializes_two_sessions(factory: Factory) -> None:
+    """A second session's lock waits for the first, then reads what it wrote.
+
+    Both halves matter to the ingest path this lock exists for: the waiting
+    transaction must not proceed alongside the one ahead of it, and once it
+    does proceed it must see that transaction's committed work rather than
+    the row it read before it started waiting.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_source_store()
+        source = await store.add_source(
+            url="https://pipelines.lsst.io/objects.inv",
+            title="Before",
+        )
+
+    async with _second_session() as other:
+        # Warm the second connection before it is timed, so the wait below
+        # measures lock contention rather than a Postgres handshake.
+        async with other.begin():
+            pass
+
+        async with factory.db_session.begin():
+            assert await store.lock_source(source.id) is not None
+            waiter = asyncio.create_task(_lock_in(other, source.id))
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(
+                    asyncio.shield(waiter), timeout=BLOCKED_GRACE
+                )
+            await store.update_source(source.id, title="After")
+
+        locked = await asyncio.wait_for(waiter, timeout=LOCK_TIMEOUT)
+
+    assert locked is not None
+    assert locked.title == "After"
+
+
+@pytest.mark.asyncio
+async def test_lock_source_does_not_block_another_source(
+    factory: Factory,
+) -> None:
+    """One source's lock leaves every other source's free.
+
+    The registration row is the lock key precisely so that ingests of
+    different sites do not queue behind each other.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_source_store()
+        locked_source = await store.add_source(
+            url="https://a.example/objects.inv", title="A docs"
+        )
+        other_source = await store.add_source(
+            url="https://b.example/objects.inv", title="B docs"
+        )
+
+    async with _second_session() as other:
+        async with factory.db_session.begin():
+            assert await store.lock_source(locked_source.id) is not None
+            free = await asyncio.wait_for(
+                _lock_in(other, other_source.id), timeout=LOCK_TIMEOUT
+            )
+
+    assert free is not None
+    assert free.title == "B docs"
