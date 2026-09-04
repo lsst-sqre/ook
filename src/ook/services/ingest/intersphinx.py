@@ -388,6 +388,34 @@ def _is_already_ingested(
     )
 
 
+def _failure_result(
+    source: IntersphinxSource, detail: str
+) -> SourceIngestResult:
+    """Describe one attempt at a source that ended in a failure.
+
+    Shared by the failure `IntersphinxIngestService._record_failure` stamps
+    and the one a refused write leaves unstamped because another ingest has
+    since described the row. What a run's summary counts is what each
+    attempt did, which is the same either way; where the two differ is only
+    in what the registry row is left saying.
+    """
+    return SourceIngestResult(
+        source_id=source.id,
+        url=source.url,
+        title=source.title,
+        status=SourceIngestStatus.failure,
+        unchanged=False,
+        entity_count=0,
+        link_count=0,
+        pruned_count=0,
+        error=detail,
+        # A failed ingest has no freshness to describe -- not even a stale
+        # one. Either it was served no inventory at all, or it was served
+        # one and stored nothing it read.
+        cache_status=None,
+    )
+
+
 def _parse_fetched_inventory(fetched: _FetchedInventory) -> _ParsedInventory:
     """Read a fetched inventory into the entities it declares.
 
@@ -613,7 +641,11 @@ class IntersphinxIngestService:
         site, and letting it escape would cost all of them their refresh
         over one source's bad write. The registration is left recording a
         failure, which is also what stops the next run from recognizing the
-        digest and skipping the site that never wrote its links.
+        digest and skipping the site that never wrote its links. That
+        rollback releases the registration lock along with the links, so
+        the failure is stamped under a lock taken again rather than on the
+        row as it was; see `_record_refused_write` for the two things that
+        re-read can find instead of a row to stamp.
 
         An inventory that hashes to the one this source's last successful
         ingest read is recognized rather than re-read: the parse, the
@@ -682,7 +714,8 @@ class IntersphinxIngestService:
         SourceIngestResult or None
             The source's outcome, or None if the registration was
             deregistered or repointed between its inventory being fetched
-            and its links being written.
+            and its links being written -- or deregistered between a
+            refused write's rollback and the failure it was owed.
         """
         logger = self._logger.bind(source_id=source.id, url=source.url)
         try:
@@ -698,6 +731,11 @@ class IntersphinxIngestService:
         # nothing to do with.
         await self._session.commit()
 
+        # Taken before the lock, so it predates anything another ingest of
+        # this source could commit while this one waits for the lock, holds
+        # it, or -- the window that matters -- has just dropped it in the
+        # rollback a refused write has to make. See `_record_refused_write`.
+        date_attempted = datetime.now(tz=UTC)
         locked = await self._source_store.lock_source(source.id)
         if locked is None:
             # Nothing of this ingest's own is pending -- the cache's
@@ -747,10 +785,12 @@ class IntersphinxIngestService:
             )
             # The transaction is aborted, so nothing can be recorded on it:
             # the rollback throws away this site's half-written links and
-            # gives the stamp below a transaction to be written in.
+            # gives the stamp below a transaction to be written in. It also
+            # drops the registration lock, which is why the stamp takes it
+            # again rather than writing on the row as it was.
             await self._session.rollback()
-            return await self._record_failure(
-                locked, exc, logger=logger, detail=_WRITE_CONFLICT_MESSAGE
+            return await self._record_refused_write(
+                locked, exc, logger=logger, date_attempted=date_attempted
             )
         logger.info(
             "Ingested intersphinx source",
@@ -1031,6 +1071,86 @@ class IntersphinxIngestService:
             cache_status=fetched.cache_status,
         )
 
+    async def _record_refused_write(
+        self,
+        source: IntersphinxSource,
+        error: Exception,
+        *,
+        logger: BoundLogger,
+        date_attempted: datetime,
+    ) -> SourceIngestResult | None:
+        """Stamp a refused write's failure under a re-taken registration lock.
+
+        The rollback a refused write has to make before anything can be
+        recorded releases the registration lock along with the half-written
+        links, so the row this failure is about is unlocked for as long as
+        it takes to get back to it. Everything else that writes the entity
+        graph takes a lock for a window that short, and this stamp is no
+        different: it re-reads the row under its own ``lock_source`` and
+        decides from what it finds there, exactly as `ingest_source` does
+        after its first lock.
+
+        Two things can have happened in that window, and neither leaves a
+        failure worth writing.
+
+        The registration can be gone, and then there is nothing to stamp and
+        nothing to report -- None, as a deregistration mid-fetch returns,
+        and for the same reason: Ook has nothing to say about a site nobody
+        registered any more.
+
+        Or another ingest of this source -- another replica's sweep, a
+        manual trigger -- can have taken the lock the rollback released and
+        run to completion, which its ``date_ingested`` being newer than
+        *date_attempted* is what says. The row is then that ingest's
+        statement about links that ingest wrote, and stamping ``failure``
+        over it would claim the site's links are broken when they are the
+        current ones, and would cost the next sweep a full re-ingest into
+        the bargain, since `_is_already_ingested` wants a success. The stamp
+        is skipped and the attempt still returns its failure, because what a
+        run's summary counts is what each attempt did rather than what the
+        row ended up saying.
+
+        Parameters
+        ----------
+        source
+            The source as it stood under the lock the rollback dropped.
+        error
+            The database's refusal, for the log's error type.
+        logger
+            The logger, already bound to this source.
+        date_attempted
+            When this ingest set out to take the registration lock. Any
+            ``date_ingested`` newer than it belongs to another ingest.
+
+        Returns
+        -------
+        SourceIngestResult or None
+            This attempt's failure, or None if the registration was
+            deleted between the rollback and the stamp.
+        """
+        relocked = await self._source_store.lock_source(source.id)
+        if relocked is None:
+            await self._session.rollback()
+            logger.info("Skipped intersphinx source deleted during its ingest")
+            return None
+
+        if (
+            relocked.date_ingested is not None
+            and relocked.date_ingested > date_attempted
+        ):
+            await self._session.rollback()
+            logger.info(
+                "Left a refused intersphinx write's failure unstamped",
+                reason="another ingest has since described this source",
+                last_status=relocked.last_status,
+                date_ingested=relocked.date_ingested,
+            )
+            return _failure_result(relocked, _WRITE_CONFLICT_MESSAGE)
+
+        return await self._record_failure(
+            relocked, error, logger=logger, detail=_WRITE_CONFLICT_MESSAGE
+        )
+
     async def _record_failure(
         self,
         source: IntersphinxSource,
@@ -1046,30 +1166,17 @@ class IntersphinxIngestService:
         than the site. The log gets the full error either way.
         """
         described = detail or str(error)
-        detail = described[:_MAX_ERROR_LENGTH] or type(error).__name__
+        described = described[:_MAX_ERROR_LENGTH] or type(error).__name__
         await self._source_store.record_ingest_outcome(
             source.id,
             date_ingested=datetime.now(tz=UTC),
             status=SourceIngestStatus.failure,
-            error=detail,
+            error=described,
         )
         await self._session.commit()
         logger.warning(
             "Failed to ingest intersphinx source",
-            error=detail,
+            error=described,
             error_type=type(error).__name__,
         )
-        return SourceIngestResult(
-            source_id=source.id,
-            url=source.url,
-            title=source.title,
-            status=SourceIngestStatus.failure,
-            unchanged=False,
-            entity_count=0,
-            link_count=0,
-            pruned_count=0,
-            error=detail,
-            # A failed ingest was served no inventory, so it has no
-            # freshness to describe -- not even a stale one.
-            cache_status=None,
-        )
+        return _failure_result(source, described)

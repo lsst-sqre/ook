@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Sequence
+import hashlib
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -377,15 +378,28 @@ MISSING_ENTITY_ID = -1
 
 
 def _link_to_a_missing_entity(
-    monkeypatch: pytest.MonkeyPatch, *, source_id: int
+    monkeypatch: pytest.MonkeyPatch, *, source_id: int, once: bool = False
 ) -> None:
     """Make one site's link write violate the entity foreign key.
 
     The database's own refusal rather than a raised stand-in, so what the
     ingest has to recover from is a genuinely aborted transaction -- which
     is the part of a refused write that is easy to get wrong.
+
+    Parameters
+    ----------
+    monkeypatch
+        The patcher.
+    source_id
+        The source whose links are written against an entity no row holds.
+    once
+        If true, only the site's *first* write is refused and every write
+        after it is left alone. That is how a test has a second ingest
+        succeed at exactly what the refused one was attempting, which is
+        the state a refused write's stamp must not overwrite.
     """
     replace_source_links = IntersphinxEntityStore.replace_source_links
+    refused = False
 
     async def broken(
         self: IntersphinxEntityStore,
@@ -394,7 +408,9 @@ def _link_to_a_missing_entity(
         *,
         collection_title: str | None,
     ) -> int:
-        if replaced_source_id == source_id:
+        nonlocal refused
+        if replaced_source_id == source_id and not (once and refused):
+            refused = True
             links = [
                 replace(link, entity_id=MISSING_ENTITY_ID) for link in links
             ]
@@ -403,6 +419,48 @@ def _link_to_a_missing_entity(
         )
 
     monkeypatch.setattr(IntersphinxEntityStore, "replace_source_links", broken)
+
+
+def _race_the_failure_stamp(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    source_id: int,
+    race: Callable[[], Awaitable[None]],
+) -> None:
+    """Run *race* in the window a refused write's rollback opens.
+
+    The window is between the rollback that throws a refused write away and
+    the stamp that records the failure: the rollback releases the
+    registration lock along with the half-written links, so for that moment
+    anything at all may happen to the row. *race* is awaited there, on
+    whatever session it closes over, and the ingest then goes on to decide
+    what to stamp.
+
+    Hooked on this source's *second* ``lock_source`` rather than on the
+    stamp itself, because the re-taken lock is itself the behavior under
+    test: an ingest that stamped on an unlocked fresh transaction would
+    never lock the row a second time, so *race* would never run and the
+    tests built on this would fail.
+    """
+    lock_source = IntersphinxSourceStore.lock_source
+    locks = 0
+    raced = False
+
+    async def racing(
+        self: IntersphinxSourceStore, locked_source_id: int
+    ) -> IntersphinxSource | None:
+        nonlocal locks, raced
+        # Whatever *race* locks is not counted: it is another ingest of
+        # this same source, and its own lock would otherwise be taken for
+        # the re-lock this is hooked on.
+        if locked_source_id == source_id and not raced:
+            locks += 1
+            if locks == 2:
+                raced = True
+                await race()
+        return await lock_source(self, locked_source_id)
+
+    monkeypatch.setattr(IntersphinxSourceStore, "lock_source", racing)
 
 
 def _pause_after_link_replace(
@@ -1633,6 +1691,114 @@ async def test_a_write_failure_costs_one_source_and_not_the_run(
         "https://a.example/en/latest/api.html#module-apkg"
     ]
     assert await entity_store.get_entity("py", "shared") is None
+
+
+@pytest.mark.asyncio
+async def test_a_refused_write_stamps_nothing_on_a_deregistered_source(
+    factory: Factory,
+    database_engine: AsyncEngine,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused write whose site is deregistered before its stamp is a no-op.
+
+    The rollback a refused write has to make releases the registration lock
+    with it, so the row the failure is about can be gone by the time the
+    failure is recorded. That is the same window a deregistration mid-fetch
+    opens and it ends the same way: nothing is written about a site nobody
+    registered any more, and the run is told there is no outcome to report
+    rather than one more failure.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, A_ONLY_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    source = await _get_source(factory, source_id)
+    _link_to_a_missing_entity(monkeypatch, source_id=source_id)
+
+    async with _second_factory(database_engine) as other:
+
+        async def deregister() -> None:
+            await _delete_source(other, source_id)
+
+        _race_the_failure_stamp(
+            monkeypatch, source_id=source_id, race=deregister
+        )
+        result = await asyncio.wait_for(
+            factory.create_intersphinx_ingest_service().ingest_source(source),
+            timeout=UNBLOCKED_TIMEOUT,
+        )
+
+    assert result is None
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_source_store()
+        assert await store.get_source(source_id) is None
+
+
+@pytest.mark.asyncio
+async def test_a_refused_write_does_not_stamp_over_a_newer_ingest(
+    factory: Factory,
+    database_engine: AsyncEngine,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused write leaves a row another ingest has since described alone.
+
+    The rollback a refused write has to make releases the registration lock,
+    so a second ingest of the same site -- another replica's sweep, or a
+    manual trigger -- can take it, store the very links this one was refused,
+    and commit its success before this one gets back to its stamp. Writing
+    ``failure`` over that would say the site's links are broken when they
+    are the current ones, and would cost the next sweep a full re-ingest
+    because `_is_already_ingested` wants a success. The row describes the
+    ingest that last wrote it; this attempt still comes back a failure, so
+    the run counts what it actually did.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, A_ONLY_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    service = factory.create_intersphinx_ingest_service()
+    assert await service.ingest_source(await _get_source(factory, source_id))
+
+    # The site now documents a second object, and the write that would
+    # store it is refused -- but only for the ingest that gets there first.
+    await _expire_cached_inventory(factory, INVENTORY_URL)
+    _serve_inventory(respx_mock, INVENTORY_URL, A_AND_SHARED_INVENTORY)
+    _link_to_a_missing_entity(monkeypatch, source_id=source_id, once=True)
+    source = await _get_source(factory, source_id)
+
+    async with _second_factory(database_engine) as other:
+
+        async def reingest() -> None:
+            service = other.create_intersphinx_ingest_service()
+            result = await service.ingest_source(
+                await _get_source(other, source_id)
+            )
+            assert result is not None
+            assert result.status is SourceIngestStatus.success
+
+        _race_the_failure_stamp(
+            monkeypatch, source_id=source_id, race=reingest
+        )
+        refused = await asyncio.wait_for(
+            service.ingest_source(source), timeout=UNBLOCKED_TIMEOUT
+        )
+
+    # The attempt is still a failure, so a sweep's summary counts it.
+    assert refused is not None
+    assert refused.status is SourceIngestStatus.failure
+    assert refused.error == _WRITE_CONFLICT_MESSAGE
+    # The row belongs to the ingest that wrote the links it describes.
+    stamped = await _get_source(factory, source_id)
+    assert stamped.last_status is SourceIngestStatus.success
+    assert stamped.last_error is None
+    assert (
+        stamped.ingested_content_digest
+        == hashlib.sha256(A_AND_SHARED_INVENTORY).hexdigest()
+    )
+    entity_store = factory.create_intersphinx_entity_store()
+    assert await entity_store.get_entity("py", "shared") is not None
 
 
 @pytest.mark.asyncio
