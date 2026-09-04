@@ -93,12 +93,12 @@ _WRITE_FAILURES = (IntegrityError,)
 """The database failures that cost one source its ingest and no more.
 
 An integrity error from a source's write phase is a statement about that
-source alone: the links it was inserting no longer agree with the rows they
-point at, because something else changed the entity graph underneath. The
-graph's own lock makes that vanishingly unlikely, and a failure here is
-worth looking at -- but the run it happened in is a sweep over every other
-site, and taking those down with it would turn one lost race into a fleet
-with no refresh at all.
+source alone: the links it was inserting do not agree with the rows they
+point at. The entity graph's own lock serializes every writer, so this is
+not a race with another ingest but a bug in what Ook built for this site --
+worth its traceback in the log and worth looking at. The run it happened in
+is a sweep over every other site, though, and taking those down with it
+would turn one source's bug into a fleet with no refresh at all.
 
 The rollback that has to precede the recording is why this is caught apart
 from `_INGEST_FAILURES` rather than added to it: those are raised before
@@ -108,15 +108,20 @@ any write, on a transaction still fit to use.
 
 _WRITE_CONFLICT_MESSAGE = (
     "The database refused this site's links, so the links it already had"
-    " are kept. Something else changed the entities they point at while"
-    " they were being written; the next ingest run rewrites them."
+    " are kept. The failure is in Ook's logs, and the next ingest run"
+    " retries."
 )
 """What a source's registry row says about a refused write.
 
 The database's own message names a statement and its bind parameters, which
 tells an operator reading the sources API nothing they can act on and
-crowds a thousand characters of the row. The full error goes to the log,
+crowds a thousand characters onto the row. The full error goes to the log,
 where it can be read against the rest of the run.
+
+What is left on the row names no cause, because a refusal has none an
+operator could chase: the entity graph's lock rules out the race this
+message used to blame, and what remains is a bug of Ook's own (see
+`_WRITE_FAILURES`) that only the logged traceback describes.
 """
 
 
@@ -606,7 +611,7 @@ class IntersphinxIngestService:
         about the site and it should be looked at -- it is logged with its
         traceback -- but the run it happens in is a sweep over every other
         site, and letting it escape would cost all of them their refresh
-        over one source's lost race. The registration is left recording a
+        over one source's bad write. The registration is left recording a
         failure, which is also what stops the next run from recognizing the
         digest and skipping the site that never wrote its links.
 

@@ -34,7 +34,10 @@ from ook.domain.intersphinxsources import IntersphinxSource, SourceIngestStatus
 from ook.domain.links import Link
 from ook.exceptions import NotFoundError
 from ook.factory import Factory
-from ook.services.ingest.intersphinx import SPHINX_DOMAIN_LINK_TYPES
+from ook.services.ingest.intersphinx import (
+    _WRITE_CONFLICT_MESSAGE,
+    SPHINX_DOMAIN_LINK_TYPES,
+)
 from ook.storage.intersphinxentitystore import IntersphinxEntityStore
 from ook.storage.intersphinxsourcestore import IntersphinxSourceStore
 
@@ -380,7 +383,7 @@ def _link_to_a_missing_entity(
 
     The database's own refusal rather than a raised stand-in, so what the
     ingest has to recover from is a genuinely aborted transaction -- which
-    is the part of losing this race that is easy to get wrong.
+    is the part of a refused write that is easy to get wrong.
     """
     replace_source_links = IntersphinxEntityStore.replace_source_links
 
@@ -1575,15 +1578,18 @@ async def _ingest_two_sites_documenting_one_object(
 async def test_a_write_failure_costs_one_source_and_not_the_run(
     factory: Factory, respx_mock: respx.Router, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A source whose write the database refuses is recorded and stepped over.
+    """A refused write keeps the site's old links and does not stop the run.
 
-    The one way a source can fail that is not the site's fault and that the
-    ingest cannot foresee: a link whose entity is gone by the time it is
-    written. Losing that race must cost the site its refresh and nothing
-    more -- not the sweep it was part of, and not the sources after it,
-    which is what an escaping exception would take with it.
+    The one way a source can fail that is not the site's fault: a link the
+    database will not accept, which by the time it is refused has aborted
+    the transaction the whole replace was being written in. That rollback
+    is what leaves the site with the links its last good ingest wrote, and
+    the recording that follows needs a fresh transaction of its own -- so
+    the site keeps its documentation, its registration says so in the
+    curated wording rather than in the driver's SQL, and the sources after
+    it are ingested, which an escaping exception would take with it.
     """
-    _serve_inventory(respx_mock, INVENTORY_URL, PACKAGE_INVENTORY)
+    _serve_inventory(respx_mock, INVENTORY_URL, A_ONLY_INVENTORY)
     _serve_inventory(
         respx_mock,
         OTHER_INVENTORY_URL,
@@ -1593,11 +1599,16 @@ async def test_a_write_failure_costs_one_source_and_not_the_run(
         factory, url=INVENTORY_URL, title="A docs"
     )
     await _register_source(factory, url=OTHER_INVENTORY_URL, title="B docs")
+    service = factory.create_intersphinx_ingest_service()
+    await service.ingest_sources()
+
+    # The site now documents a second object, and the write that would
+    # store it is the one the database refuses.
+    await _expire_cached_inventory(factory, INVENTORY_URL)
+    _serve_inventory(respx_mock, INVENTORY_URL, A_AND_SHARED_INVENTORY)
     _link_to_a_missing_entity(monkeypatch, source_id=source_id)
 
-    summary = (
-        await factory.create_intersphinx_ingest_service().ingest_sources()
-    )
+    summary = await service.ingest_sources()
 
     assert summary.failed == 1
     assert summary.succeeded == 1
@@ -1605,13 +1616,23 @@ async def test_a_write_failure_costs_one_source_and_not_the_run(
         result for result in summary.results if result.url == INVENTORY_URL
     )
     assert failed.status is SourceIngestStatus.failure
-    assert failed.error is not None
-    # The registry says so too, and the site after it was ingested.
-    assert (
-        await _get_source(factory, source_id)
-    ).last_status is SourceIngestStatus.failure
+    assert failed.error == _WRITE_CONFLICT_MESSAGE
+    # The registry says so too, in the curated wording rather than in the
+    # statement and bind parameters the driver reported, and the site after
+    # it was ingested.
+    source = await _get_source(factory, source_id)
+    assert source.last_status is SourceIngestStatus.failure
+    assert source.last_error == _WRITE_CONFLICT_MESSAGE
     entity_store = factory.create_intersphinx_entity_store()
     assert await entity_store.get_entity("py", "other.Thing") is not None
+    # The rollback kept every link the site's first ingest wrote and stored
+    # none of the ones the inventory it just published would have added.
+    apkg = await entity_store.get_entity("py", "apkg")
+    assert apkg is not None
+    assert [link.html_url for link in apkg.links] == [
+        "https://a.example/en/latest/api.html#module-apkg"
+    ]
+    assert await entity_store.get_entity("py", "shared") is None
 
 
 @pytest.mark.asyncio
