@@ -265,8 +265,23 @@ HTTP API
   Such a field mirrors the wire name instead, and is typed as the string it holds rather than as a :py:class:`~datetime.datetime`.
   The intersphinx domain's ``last_modified`` is the standing example: it holds the upstream ``Last-Modified`` header exactly as received, so that Ook can echo it back in a conditional ``If-Modified-Since`` revalidation.
 
-The field-name half of this convention is enforced by :file:`tests/api_field_naming_test.py`.
-That test introspects every Pydantic model defined under :file:`src/ook/handlers`, resolving ``Annotated[...]`` wrappers and optional unions, and fails with the offending model and field name when a date-valued field lacks the prefix.
+- Publish every identifier that a request or response body, a path parameter, or a self URL carries as a Crockford Base32 ID from :file:`src/ook/domain/base32id.py`.
+  The Pydantic field is typed ``Base32Id`` (or its ``Base32IdNoHyphens`` and ``Base32IdShort`` siblings), which validates the checksummed string on the way in and serializes the stored integer back out.
+  The ID is minted by Ook rather than by PostgreSQL, so the column that holds it is declared ``autoincrement=False``.
+  See the "Resource ID Format" section of :file:`planning/bibliography-api.md` for why the API publishes Base32 strings rather than integers.
+
+- Mint the ID with ``generate_resource_id`` wherever its order is meaningful, which is the case for resources and for anything else paginated by a keyset cursor over the ID.
+  That helper mints a time-ordered ID, so plain integer ordering is creation order.
+  Mint it with ``generate_base32_id`` instead for a small registry that is never ordered by ID, such as the linkcheck checks and the intersphinx source registry.
+
+- An autoincrement integer primary key stays internal, and is the right choice for a table whose key never leaves the storage layer.
+  Join tables, entities the API addresses by name, and cache rows keyed by their URL are all in that category.
+
+- An identifier that is genuinely a string upstream keeps its own type rather than being re-minted.
+  The authors' ``internal_id`` and the linkcheck contribution's GitHub ``run_id`` are the standing examples.
+
+Both conventions are enforced by :file:`tests/api_field_naming_test.py`.
+That test introspects every Pydantic model defined under :file:`src/ook/handlers`, resolving ``Annotated[...]`` wrappers, optional unions, and :pep:`695` type aliases, and fails with the offending ``module.Model.field`` when a date-valued field lacks the ``date_`` prefix or an ``id`` or ``*_id`` field is typed as a plain :py:class:`int`.
 It is pure introspection, so it needs no database or application fixture and runs in the containers-free ``test-unit`` session.
 
 Documentation

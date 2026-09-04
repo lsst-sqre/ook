@@ -2071,6 +2071,7 @@ dependencies = [
     { name = "pyjwt", extra = ["crypto"] },
     { name = "pylatexenc" },
     { name = "safir", extra = ["db", "kafka"] },
+    { name = "sphobjinv" },
     { name = "starlette" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -2135,6 +2136,7 @@ requires-dist = [
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10" },
     { name = "pylatexenc", specifier = ">=2.10" },
     { name = "safir", extras = ["db", "kafka"], specifier = ">=15.2.0" },
+    { name = "sphobjinv", specifier = ">=2.3" },
     { name = "starlette" },
     { name = "uvicorn", extras = ["standard"] },
 ]
@@ -3314,6 +3316,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e3/a9/ab13d156049eea633f992424f3e92cb40e3f1b606bb6d01d40a27457d38a/sphinxext_rediraffe-0.3.0.tar.gz", hash = "sha256:f319b3ccb7c3c3b6f63ffa6fd3eeb171b6d272df55075a9e84364394f391f507", size = 22114, upload-time = "2025-09-28T15:31:53.641Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/87/55/ab40a0d1378ee5c859590a633052cf1d0a1f8435af87558a9f7cd576601a/sphinxext_rediraffe-0.3.0-py3-none-any.whl", hash = "sha256:f4220beafa99c99177488276b8e4fcf61fbeeec4253c1e4aae841a18c475330c", size = 7194, upload-time = "2025-09-28T15:31:52.388Z" },
+]
+
+[[package]]
+name = "sphobjinv"
+version = "2.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "attrs" },
+    { name = "certifi" },
+    { name = "jsonschema" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1f/67/19f33eeb4ffff0e2fd39afd4783a6ee38a6d58bcc1ddade779712a7e2e49/sphobjinv-2.4.tar.gz", hash = "sha256:44d57e7e87e17d8c7b053c853dcc36f80cbf7d1fc152d57634fd7bcae38ca48a", size = 249997, upload-time = "2026-03-23T05:04:54.011Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2c/97/840be4a99531292f8f41069bfcd0654f68296ef4089bfe828607d63ee0ff/sphobjinv-2.4-py3-none-any.whl", hash = "sha256:35f3239e9a6161c20d60146c16645687d06d43e5875d2bda71010c3ee7fd54bc", size = 51315, upload-time = "2026-03-23T05:04:42.434Z" },
 ]
 
 [[package]]

@@ -448,6 +448,13 @@ class IntersphinxInventoryStore:
         attempt costs an inventory exactly the interval a successful one
         would have bought it.
 
+        The staleness and backoff halves of that rule are restated in Python,
+        over a single row, by
+        `~ook.services.intersphinx.IntersphinxCacheService._is_revalidation_due`,
+        which decides whether a request-side serve revalidates first. The two
+        must agree -- an inventory is judged due identically whichever path
+        asks -- so a change here belongs there too.
+
         Parameters
         ----------
         now

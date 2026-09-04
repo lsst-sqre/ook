@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict vwduItUFGAxoab63eaFOJCtC9q1jbp9nEh5zpaGiayqFidvk5PA4vga7SyKfloy
+\restrict WDbkGviQzZ9I0qTYmiBeShaXIc6tlHw3XlVLPK1fOylGvhYbzJlEVqD91tFVvrE
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -330,6 +330,44 @@ ALTER SEQUENCE public.external_reference_id_seq OWNED BY public.external_referen
 
 
 --
+-- Name: intersphinx_entity; Type: TABLE; Schema: public; Owner: test
+--
+
+CREATE TABLE public.intersphinx_entity (
+    id bigint NOT NULL,
+    sphinx_domain text NOT NULL,
+    name text NOT NULL,
+    role text NOT NULL,
+    display_name text NOT NULL,
+    parent_id bigint,
+    extras jsonb
+);
+
+
+ALTER TABLE public.intersphinx_entity OWNER TO test;
+
+--
+-- Name: intersphinx_entity_id_seq; Type: SEQUENCE; Schema: public; Owner: test
+--
+
+CREATE SEQUENCE public.intersphinx_entity_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.intersphinx_entity_id_seq OWNER TO test;
+
+--
+-- Name: intersphinx_entity_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: test
+--
+
+ALTER SEQUENCE public.intersphinx_entity_id_seq OWNED BY public.intersphinx_entity.id;
+
+
+--
 -- Name: intersphinx_inventory; Type: TABLE; Schema: public; Owner: test
 --
 
@@ -372,6 +410,24 @@ ALTER SEQUENCE public.intersphinx_inventory_id_seq OWNER TO test;
 
 ALTER SEQUENCE public.intersphinx_inventory_id_seq OWNED BY public.intersphinx_inventory.id;
 
+
+--
+-- Name: intersphinx_source; Type: TABLE; Schema: public; Owner: test
+--
+
+CREATE TABLE public.intersphinx_source (
+    id bigint NOT NULL,
+    url text NOT NULL,
+    title text NOT NULL,
+    enabled boolean NOT NULL,
+    date_ingested timestamp with time zone,
+    last_status text,
+    last_error text,
+    ingested_content_digest text
+);
+
+
+ALTER TABLE public.intersphinx_source OWNER TO test;
 
 --
 -- Name: link; Type: TABLE; Schema: public; Owner: test
@@ -485,6 +541,19 @@ ALTER SEQUENCE public.linkcheck_contribution_id_seq OWNER TO test;
 
 ALTER SEQUENCE public.linkcheck_contribution_id_seq OWNED BY public.linkcheck_contribution.id;
 
+
+--
+-- Name: links_intersphinx; Type: TABLE; Schema: public; Owner: test
+--
+
+CREATE TABLE public.links_intersphinx (
+    id bigint NOT NULL,
+    entity_id bigint NOT NULL,
+    source_id bigint NOT NULL
+);
+
+
+ALTER TABLE public.links_intersphinx OWNER TO test;
 
 --
 -- Name: links_sdm_columns; Type: TABLE; Schema: public; Owner: test
@@ -830,6 +899,13 @@ ALTER TABLE ONLY public.external_reference ALTER COLUMN id SET DEFAULT nextval('
 
 
 --
+-- Name: intersphinx_entity id; Type: DEFAULT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.intersphinx_entity ALTER COLUMN id SET DEFAULT nextval('public.intersphinx_entity_id_seq'::regclass);
+
+
+--
 -- Name: intersphinx_inventory id; Type: DEFAULT; Schema: public; Owner: test
 --
 
@@ -905,7 +981,7 @@ COPY public.affiliation (id, internal_id, name, department, email_domain, ror_id
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-f43554a10acb
+ec0c04ddd611
 \.
 
 
@@ -966,10 +1042,26 @@ COPY public.external_reference (id, url, doi, arxiv_id, isbn, issn, ads_bibcode,
 
 
 --
+-- Data for Name: intersphinx_entity; Type: TABLE DATA; Schema: public; Owner: test
+--
+
+COPY public.intersphinx_entity (id, sphinx_domain, name, role, display_name, parent_id, extras) FROM stdin;
+\.
+
+
+--
 -- Data for Name: intersphinx_inventory; Type: TABLE DATA; Schema: public; Owner: test
 --
 
 COPY public.intersphinx_inventory (id, url, content, content_type, etag, last_modified, date_fetched, date_requested, last_fetch_status, last_fetch_error, resolved_url, resolved_redirect_permanent, date_refresh_failed) FROM stdin;
+\.
+
+
+--
+-- Data for Name: intersphinx_source; Type: TABLE DATA; Schema: public; Owner: test
+--
+
+COPY public.intersphinx_source (id, url, title, enabled, date_ingested, last_status, last_error, ingested_content_digest) FROM stdin;
 \.
 
 
@@ -1002,6 +1094,14 @@ COPY public.linkcheck_check_url (check_id, checked_url_id, origin_paths) FROM st
 --
 
 COPY public.linkcheck_contribution (id, check_id, checked_url_id, provider, repository, run_id, workflow_ref, run_url, checker_version, status_code, redirect_url, redirect_status_code, error, date_checked, date_received) FROM stdin;
+\.
+
+
+--
+-- Data for Name: links_intersphinx; Type: TABLE DATA; Schema: public; Owner: test
+--
+
+COPY public.links_intersphinx (id, entity_id, source_id) FROM stdin;
 \.
 
 
@@ -1133,6 +1233,13 @@ SELECT pg_catalog.setval('public.contributor_id_seq', 1, false);
 --
 
 SELECT pg_catalog.setval('public.external_reference_id_seq', 1, false);
+
+
+--
+-- Name: intersphinx_entity_id_seq; Type: SEQUENCE SET; Schema: public; Owner: test
+--
+
+SELECT pg_catalog.setval('public.intersphinx_entity_id_seq', 1, false);
 
 
 --
@@ -1319,11 +1426,27 @@ ALTER TABLE ONLY public.external_reference
 
 
 --
+-- Name: intersphinx_entity intersphinx_entity_pkey; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.intersphinx_entity
+    ADD CONSTRAINT intersphinx_entity_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: intersphinx_inventory intersphinx_inventory_pkey; Type: CONSTRAINT; Schema: public; Owner: test
 --
 
 ALTER TABLE ONLY public.intersphinx_inventory
     ADD CONSTRAINT intersphinx_inventory_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: intersphinx_source intersphinx_source_pkey; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.intersphinx_source
+    ADD CONSTRAINT intersphinx_source_pkey PRIMARY KEY (id);
 
 
 --
@@ -1356,6 +1479,14 @@ ALTER TABLE ONLY public.linkcheck_check_url
 
 ALTER TABLE ONLY public.linkcheck_contribution
     ADD CONSTRAINT linkcheck_contribution_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: links_intersphinx links_intersphinx_pkey; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.links_intersphinx
+    ADD CONSTRAINT links_intersphinx_pkey PRIMARY KEY (id);
 
 
 --
@@ -1476,6 +1607,14 @@ ALTER TABLE ONLY public.contributor
 
 ALTER TABLE ONLY public.document_resource
     ADD CONSTRAINT uq_document_series_number UNIQUE (series, number);
+
+
+--
+-- Name: intersphinx_entity uq_intersphinx_entity_name; Type: CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.intersphinx_entity
+    ADD CONSTRAINT uq_intersphinx_entity_name UNIQUE (sphinx_domain, name);
 
 
 --
@@ -1702,6 +1841,13 @@ CREATE UNIQUE INDEX ix_checked_url_url ON public.checked_url USING btree (url);
 
 
 --
+-- Name: ix_intersphinx_entity_parent_id; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_intersphinx_entity_parent_id ON public.intersphinx_entity USING btree (parent_id);
+
+
+--
 -- Name: ix_intersphinx_inventory_date_fetched; Type: INDEX; Schema: public; Owner: test
 --
 
@@ -1720,6 +1866,13 @@ CREATE INDEX ix_intersphinx_inventory_date_requested ON public.intersphinx_inven
 --
 
 CREATE UNIQUE INDEX ix_intersphinx_inventory_url ON public.intersphinx_inventory USING btree (url);
+
+
+--
+-- Name: ix_intersphinx_source_url; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE UNIQUE INDEX ix_intersphinx_source_url ON public.intersphinx_source USING btree (url);
 
 
 --
@@ -1755,6 +1908,20 @@ CREATE INDEX ix_linkcheck_contribution_check_id ON public.linkcheck_contribution
 --
 
 CREATE INDEX ix_linkcheck_contribution_checked_url_id ON public.linkcheck_contribution USING btree (checked_url_id);
+
+
+--
+-- Name: ix_links_intersphinx_entity_id; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_links_intersphinx_entity_id ON public.links_intersphinx USING btree (entity_id);
+
+
+--
+-- Name: ix_links_intersphinx_source_id; Type: INDEX; Schema: public; Owner: test
+--
+
+CREATE INDEX ix_links_intersphinx_source_id ON public.links_intersphinx USING btree (source_id);
 
 
 --
@@ -1918,6 +2085,14 @@ ALTER TABLE ONLY public.document_resource
 
 
 --
+-- Name: intersphinx_entity intersphinx_entity_parent_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.intersphinx_entity
+    ADD CONSTRAINT intersphinx_entity_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES public.intersphinx_entity(id) ON DELETE SET NULL;
+
+
+--
 -- Name: linkcheck_check_url linkcheck_check_url_check_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
 --
 
@@ -1947,6 +2122,30 @@ ALTER TABLE ONLY public.linkcheck_contribution
 
 ALTER TABLE ONLY public.linkcheck_contribution
     ADD CONSTRAINT linkcheck_contribution_checked_url_id_fkey FOREIGN KEY (checked_url_id) REFERENCES public.checked_url(id) ON DELETE CASCADE;
+
+
+--
+-- Name: links_intersphinx links_intersphinx_entity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.links_intersphinx
+    ADD CONSTRAINT links_intersphinx_entity_id_fkey FOREIGN KEY (entity_id) REFERENCES public.intersphinx_entity(id) ON DELETE CASCADE;
+
+
+--
+-- Name: links_intersphinx links_intersphinx_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.links_intersphinx
+    ADD CONSTRAINT links_intersphinx_id_fkey FOREIGN KEY (id) REFERENCES public.link(id) ON DELETE CASCADE;
+
+
+--
+-- Name: links_intersphinx links_intersphinx_source_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: test
+--
+
+ALTER TABLE ONLY public.links_intersphinx
+    ADD CONSTRAINT links_intersphinx_source_id_fkey FOREIGN KEY (source_id) REFERENCES public.intersphinx_source(id) ON DELETE CASCADE;
 
 
 --
@@ -2065,5 +2264,5 @@ ALTER TABLE ONLY public.url_occurrence
 -- PostgreSQL database dump complete
 --
 
-\unrestrict vwduItUFGAxoab63eaFOJCtC9q1jbp9nEh5zpaGiayqFidvk5PA4vga7SyKfloy
+\unrestrict WDbkGviQzZ9I0qTYmiBeShaXIc6tlHw3XlVLPK1fOylGvhYbzJlEVqD91tFVvrE
 

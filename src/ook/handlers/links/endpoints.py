@@ -8,13 +8,21 @@ from safir.models import ErrorModel
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 from ook.exceptions import NotFoundError
+from ook.storage.intersphinxentitystore import IntersphinxEntityCursor
 from ook.storage.linkstore import (
     SdmColumnLinksCollectionCursor,
     SdmLinksCollectionCursor,
     SdmTableLinksCollectionCursor,
 )
 
-from .models import Link, SdmDomainInfo, SdmLinks
+from .models import (
+    Link,
+    LinkDomainSummary,
+    PythonDomainInfo,
+    PythonObjectLinks,
+    SdmDomainInfo,
+    SdmLinks,
+)
 
 router = APIRouter(prefix=f"{config.path_prefix}/links", tags=["links"])
 """FastAPI router for the links API."""
@@ -30,6 +38,35 @@ table_name_path = Annotated[str, Path(title="Table name", examples=["Object"])]
 column_name_path = Annotated[
     str, Path(title="Column name", examples=["detect_isPrimary"])
 ]
+
+python_object_name_path = Annotated[
+    str,
+    Path(
+        title="Python object name",
+        description=(
+            "The fully qualified name of the Python object, which is what a "
+            "Sphinx cross-reference targets."
+        ),
+        examples=["lsst.afw.table.SourceCatalog"],
+    ),
+]
+
+
+@router.get(
+    "/domains",
+    summary="List the link domains",
+    response_description="The link domains and their URI templates",
+)
+async def get_link_domains(
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[LinkDomainSummary]:
+    """List every link domain, with the URI templates each one publishes.
+
+    This is the entry point to the Links API: a client discovers which
+    domains exist and how to address their entities here, instead of
+    hard-coding a path per domain.
+    """
+    return LinkDomainSummary.create_all(request=context.request)
 
 
 @router.get(
@@ -341,3 +378,153 @@ async def get_sdm_schema_column_links(
                 f"{table_name} in schema {schema_name}."
             )
         return [Link.from_domain_link(link) for link in links]
+
+
+@router.get(
+    "/domains/python",
+    summary="Information about the Python domain",
+    response_description="Information about the Python domain",
+)
+async def get_python_domain_info(
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> PythonDomainInfo:
+    """Get information about the Python domain."""
+    return PythonDomainInfo.create(request=context.request)
+
+
+@router.get(
+    "/domains/python/objects",
+    summary="List Python objects' doc links",
+    response_description="List of Python objects and their doc links",
+)
+async def get_python_objects(
+    *,
+    cursor: Annotated[
+        str | None,
+        Query(
+            title="Pagination cursor",
+            description="Cursor to navigate paginated results",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Query(
+            title="Row limit",
+            description="Maximum number of entries to return",
+            examples=[100],
+            ge=1,
+            le=100,
+        ),
+    ] = 100,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[PythonObjectLinks]:
+    """List every Python object Ook knows, with its documentation links.
+
+    A domain nothing has been ingested into is an empty collection rather
+    than a 404: the endpoint answers about a domain, which exists whether
+    or not any source has been registered for it yet.
+    """
+    parsed_cursor = (
+        IntersphinxEntityCursor.from_str(cursor) if cursor else None
+    )
+
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        results = await link_service.get_python_objects(
+            limit=limit, cursor=parsed_cursor
+        )
+        response = context.response
+        request = context.request
+        response.headers["Link"] = results.link_header(request.url)
+        response.headers["X-Total-Count"] = str(results.count)
+        return PythonObjectLinks.from_domain(
+            domain_collection=results.entries, request=request
+        )
+
+
+@router.get(
+    "/domains/python/objects/{name}/children",
+    summary="List a Python object's children's doc links",
+    response_description=(
+        "List of the objects the named object contains, with their doc links"
+    ),
+    responses={404: {"description": "Not found", "model": ErrorModel}},
+)
+async def get_python_object_children(
+    *,
+    name: python_object_name_path,
+    cursor: Annotated[
+        str | None,
+        Query(
+            title="Pagination cursor",
+            description="Cursor to navigate paginated results",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Query(
+            title="Row limit",
+            description="Maximum number of entries to return",
+            examples=[100],
+            ge=1,
+            le=100,
+        ),
+    ] = 100,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[PythonObjectLinks]:
+    """List the objects one Python object directly contains.
+
+    Direct children only -- a module's classes and functions, a class's
+    methods -- so one page is one level of the hierarchy. Walking a subtree
+    means following this endpoint down it.
+
+    An object that contains nothing answers with an empty page, which is a
+    different answer from the 404 a name nothing in the domain answers to
+    gets.
+    """
+    parsed_cursor = (
+        IntersphinxEntityCursor.from_str(cursor) if cursor else None
+    )
+
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        results = await link_service.get_python_object_children(
+            name, limit=limit, cursor=parsed_cursor
+        )
+        if results is None:
+            raise NotFoundError(f"No Python object named {name} is known.")
+        response = context.response
+        request = context.request
+        response.headers["Link"] = results.link_header(request.url)
+        response.headers["X-Total-Count"] = str(results.count)
+        return PythonObjectLinks.from_domain(
+            domain_collection=results.entries, request=request
+        )
+
+
+@router.get(
+    "/domains/python/objects/{name}",
+    summary="Get a Python object's doc links",
+    response_description="List of doc links for a Python object",
+    responses={404: {"description": "Not found", "model": ErrorModel}},
+)
+async def get_python_object_links(
+    name: python_object_name_path,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[Link]:
+    """Get the documentation links for one Python object.
+
+    A name no registered site documents is a 404. Ook stores an object only
+    while some site gives it a page, so the list is never empty.
+    """
+    logger = context.logger
+    logger.debug(
+        "Received request to get documentation links for a Python object.",
+        name=name,
+    )
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        entity = await link_service.get_python_object(name)
+        if entity is None:
+            raise NotFoundError(f"No Python object named {name} is known.")
+        return [Link.from_domain_link(link) for link in entity.links]

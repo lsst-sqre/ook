@@ -5,6 +5,10 @@ from __future__ import annotations
 from safir.database import CountedPaginatedList
 from structlog.stdlib import BoundLogger
 
+from ook.domain.intersphinxentities import (
+    PYTHON_SPHINX_DOMAIN,
+    IntersphinxEntityLinks,
+)
 from ook.domain.links import (
     SdmColumnLink,
     SdmColumnLinksCollection,
@@ -12,6 +16,10 @@ from ook.domain.links import (
     SdmSchemaLink,
     SdmTableLink,
     SdmTableLinksCollection,
+)
+from ook.storage.intersphinxentitystore import (
+    IntersphinxEntityCursor,
+    IntersphinxEntityStore,
 )
 from ook.storage.linkstore import (
     LinkStore,
@@ -26,9 +34,108 @@ __all__ = ["LinksService"]
 class LinksService:
     """A service for linking to documentation across known domains."""
 
-    def __init__(self, logger: BoundLogger, link_store: LinkStore) -> None:
+    def __init__(
+        self,
+        logger: BoundLogger,
+        link_store: LinkStore,
+        entity_store: IntersphinxEntityStore,
+    ) -> None:
         self._logger = logger
         self._link_store = link_store
+        self._entity_store = entity_store
+
+    async def get_python_object(
+        self, name: str
+    ) -> IntersphinxEntityLinks | None:
+        """Get a Python object and the documentation links to it.
+
+        Every stored object has at least one link: an object no source
+        documents any more is pruned as soon as the links change, so the
+        answer is either an object with the sites that document it or
+        nothing at all.
+
+        Parameters
+        ----------
+        name
+            The object's fully qualified Python name.
+
+        Returns
+        -------
+        IntersphinxEntityLinks or None
+            The object with the links every source contributed for it, or
+            None if no stored Python object goes by that name.
+        """
+        return await self._entity_store.get_entity(PYTHON_SPHINX_DOMAIN, name)
+
+    async def get_python_objects(
+        self,
+        *,
+        limit: int | None = None,
+        cursor: IntersphinxEntityCursor | None = None,
+    ) -> CountedPaginatedList[IntersphinxEntityLinks, IntersphinxEntityCursor]:
+        """Get a page of Python objects and the documentation links to them.
+
+        Every stored object is listed, and every one of them carries links:
+        the collection and the per-object endpoint answer for the same set
+        of objects, which is the set some site documents.
+
+        Parameters
+        ----------
+        limit
+            The maximum number of objects on the page. `None` returns every
+            object, unpaginated.
+        cursor
+            A keyset cursor naming the object the page starts at. `None`
+            starts at the first object.
+
+        Returns
+        -------
+        CountedPaginatedList
+            The page, its neighbouring cursors, and the total number of
+            Python objects Ook stores.
+        """
+        return await self._entity_store.get_entities(
+            PYTHON_SPHINX_DOMAIN, limit=limit, cursor=cursor
+        )
+
+    async def get_python_object_children(
+        self,
+        name: str,
+        *,
+        limit: int | None = None,
+        cursor: IntersphinxEntityCursor | None = None,
+    ) -> (
+        CountedPaginatedList[IntersphinxEntityLinks, IntersphinxEntityCursor]
+        | None
+    ):
+        """Get a page of the objects one Python object directly contains.
+
+        Direct children only -- a module's classes and functions, a class's
+        methods -- so a page describes one level of the hierarchy rather
+        than an unbounded flattening of the subtree beneath it.
+
+        Parameters
+        ----------
+        name
+            The containing object's fully qualified Python name.
+        limit
+            The maximum number of children on the page. `None` returns
+            every child, unpaginated.
+        cursor
+            A keyset cursor naming the child the page starts at. `None`
+            starts at the first child.
+
+        Returns
+        -------
+        CountedPaginatedList or None
+            The page, its neighbouring cursors, and the total number of
+            children the object has -- or None if no stored Python object
+            goes by that name, which is the case that separates an unknown
+            name from an object that simply contains nothing.
+        """
+        return await self._entity_store.get_children(
+            PYTHON_SPHINX_DOMAIN, name, limit=limit, cursor=cursor
+        )
 
     async def get_links_for_sdm_schema(
         self, schema_name: str

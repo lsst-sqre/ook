@@ -7,14 +7,21 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Self
 
-from pydantic import AnyHttpUrl, BaseModel, Field, model_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator
 
+from ook.domain.base32id import Base32Id
+from ook.domain.intersphinx import InventoryCacheStatus
+from ook.domain.intersphinxsources import SourceIngestStatus
 from ook.domain.resources import (
     Contributor,
     Document,
     ExternalRelation,
     ResourceRelation,
     ResourceType,
+)
+from ook.services.ingest.intersphinx import (
+    IntersphinxIngestSummary,
+    SourceIngestResult,
 )
 
 from ..resources.models import DocumentResource
@@ -24,6 +31,9 @@ __all__ = [
     "DocumentIngestResult",
     "DocumentIngestStatus",
     "DocumentRequest",
+    "IntersphinxIngestRequest",
+    "IntersphinxIngestResponse",
+    "IntersphinxSourceIngestResult",
     "LsstTexmfIngestRequest",
     "LtdIngestRequest",
     "SdmSchemasIngestRequest",
@@ -362,3 +372,227 @@ class LsstTexmfIngestRequest(BaseModel):
             "Defaults to False."
         ),
     )
+
+
+class IntersphinxIngestRequest(BaseModel):
+    """Schema for `post_ingest_intersphinx`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_url: Annotated[
+        AnyHttpUrl | None,
+        Field(
+            description=(
+                "The inventory URL of the one registered source to ingest. "
+                "When omitted, every enabled source is ingested."
+            ),
+            examples=["https://pipelines.lsst.io/v/weekly/objects.inv"],
+        ),
+    ] = None
+
+
+class IntersphinxSourceIngestResult(BaseModel):
+    """The outcome of ingesting one documentation source."""
+
+    source_id: Annotated[
+        Base32Id,
+        Field(
+            description=(
+                "The Crockford Base32 identifier of the source's registration."
+            ),
+            examples=["1234-5678-90ab-cd2f"],
+        ),
+    ]
+
+    url: Annotated[
+        str,
+        Field(
+            description="The inventory URL that was ingested.",
+            examples=["https://pipelines.lsst.io/v/weekly/objects.inv"],
+        ),
+    ]
+
+    title: Annotated[
+        str,
+        Field(
+            description="The human title of the documentation site.",
+            examples=["Rubin Science Pipelines"],
+        ),
+    ]
+
+    status: Annotated[
+        SourceIngestStatus,
+        Field(
+            description=(
+                "Whether the source's links were replaced (`success`) or "
+                "its inventory could not be fetched or parsed (`failure`). "
+                "A failed source keeps the links from its last successful "
+                "ingest."
+            )
+        ),
+    ]
+
+    unchanged: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether the source's inventory was recognized as the one "
+                "its last successful ingest read, so nothing was rewritten. "
+                "The ingest still succeeded and the registration is still "
+                "stamped; the counts below are zero because nothing was "
+                "written, not because nothing was found. Always false on a "
+                "failure."
+            ),
+            examples=[False],
+        ),
+    ]
+
+    entity_count: Annotated[
+        int,
+        Field(
+            description=(
+                "The number of entities the source's inventory contributed. "
+                "Zero on a failure, and zero when `unchanged` is true."
+            ),
+            examples=[1204],
+        ),
+    ]
+
+    link_count: Annotated[
+        int,
+        Field(
+            description=(
+                "The number of links written for the source. Zero on a "
+                "failure, which leaves the previous links in place, and "
+                "zero when `unchanged` is true, which leaves them in place "
+                "because they already describe the inventory."
+            ),
+            examples=[1204],
+        ),
+    ]
+
+    pruned_count: Annotated[
+        int,
+        Field(
+            description=(
+                "The number of entities pruned after this source's links "
+                "changed. Pruning is global -- an entity goes when no "
+                "source links to it -- and is attributed to the source "
+                "whose replace exposed it."
+            ),
+            examples=[3],
+        ),
+    ]
+
+    error: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Why the source could not be ingested. Present when "
+                "`status` is `failure`, and null otherwise."
+            )
+        ),
+    ] = None
+
+    cache_status: Annotated[
+        InventoryCacheStatus | None,
+        Field(
+            description=(
+                "How fresh the inventory these links were built from was. "
+                "`hit` means the origin confirmed the copy (or sent a new "
+                "one) during this ingest, `miss` that this run was the "
+                "site's first, and `stale` that the origin could not be "
+                "reached and the links were rebuilt from the copy Ook "
+                "already held \u2014 a successful ingest of a copy that may "
+                "no longer describe the site. Null when `status` is "
+                "`failure`, which got no inventory at all."
+            ),
+            examples=["hit"],
+        ),
+    ] = None
+
+    @classmethod
+    def from_domain(
+        cls, result: SourceIngestResult
+    ) -> IntersphinxSourceIngestResult:
+        """Build the API model from an ingest service outcome."""
+        return cls(
+            source_id=result.source_id,
+            url=result.url,
+            title=result.title,
+            status=result.status,
+            unchanged=result.unchanged,
+            entity_count=result.entity_count,
+            link_count=result.link_count,
+            pruned_count=result.pruned_count,
+            error=result.error,
+            cache_status=result.cache_status,
+        )
+
+
+class IntersphinxIngestResponse(BaseModel):
+    """Schema for `post_ingest_intersphinx`'s response.
+
+    One result per visited source, because the run deliberately continues
+    past a source it could not read: a single status code cannot say that
+    four sites were refreshed and one was not.
+    """
+
+    sources: Annotated[
+        list[IntersphinxSourceIngestResult],
+        Field(
+            description=(
+                "Each visited source's outcome, in the order they were "
+                "visited."
+            )
+        ),
+    ]
+
+    success_count: Annotated[
+        int,
+        Field(
+            description="The number of sources whose links were replaced.",
+            examples=[4],
+        ),
+    ]
+
+    failure_count: Annotated[
+        int,
+        Field(
+            description=(
+                "The number of sources whose inventory could not be fetched "
+                "or parsed. Each keeps the links from its last successful "
+                "ingest."
+            ),
+            examples=[1],
+        ),
+    ]
+
+    unchanged_count: Annotated[
+        int,
+        Field(
+            description=(
+                "The number of sources whose inventory was recognized as "
+                "the one their last successful ingest read, so their links "
+                "were left alone. Counted within `success_count`, not "
+                "beside it: an unchanged source ended the run with its "
+                "links current."
+            ),
+            examples=[3],
+        ),
+    ]
+
+    @classmethod
+    def from_domain(
+        cls, summary: IntersphinxIngestSummary
+    ) -> IntersphinxIngestResponse:
+        """Build the API model from an ingest run's summary."""
+        return cls(
+            sources=[
+                IntersphinxSourceIngestResult.from_domain(result)
+                for result in summary.results
+            ],
+            success_count=summary.succeeded,
+            failure_count=summary.failed,
+            unchanged_count=summary.unchanged_count,
+        )

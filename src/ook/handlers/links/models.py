@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal, Self
+from typing import ClassVar, Literal, Self
 
 from fastapi import FastAPI, Request
 from pydantic import AnyHttpUrl, BaseModel, Field
 
+from ook.domain.intersphinxentities import IntersphinxEntityLinks
 from ook.domain.links import Link as DomainLink
 from ook.domain.links import (
     SdmColumnLinksCollection,
@@ -17,9 +18,17 @@ from ook.domain.links import (
 )
 
 __all__ = [
+    "LINK_DOMAIN_TYPES",
     "Link",
+    "LinkDomainInfo",
+    "LinkDomainSummary",
+    "LinkDomainTemplates",
     "LinkedEntityInfo",
+    "PythonDomainInfo",
+    "PythonObjectLinkedEntityInfo",
+    "PythonObjectLinks",
     "SdmColumnLinkedEntityInfo",
+    "SdmDomainInfo",
     "SdmLinks",
     "SdmSchemaLinkedEntityInfo",
     "SdmTableLinkedEntityInfo",
@@ -36,17 +45,76 @@ def _path_template(app: FastAPI, route_name: str, *param_names: str) -> str:
     return str(app.url_path_for(route_name, **placeholders))
 
 
-class SdmDomainInfo(BaseModel):
-    """Links for the SDM domain APIs."""
+class LinkDomainTemplates(BaseModel):
+    """The URI templates one link domain publishes.
+
+    Every link domain answers the same two questions -- how to address one
+    of its entities, and how to page through a collection of them -- so the
+    shape is shared and each domain fills in its own templates. A client
+    that has read one domain's templates can therefore read any of them,
+    whether it read them from the domain itself or from the domains index.
+    """
 
     entities: dict[str, str] = Field(
         ...,
-        title="Entities in the SDM domain",
+        title="Entities in the domain",
+        description=(
+            "URI templates addressing one entity, keyed by the kind of "
+            "entity the template addresses."
+        ),
     )
 
     collections: dict[str, str] = Field(
-        ..., title="Collections in the SDM domain"
+        ...,
+        title="Collections in the domain",
+        description=(
+            "URI templates addressing a collection of entities, keyed by "
+            "the kind of collection the template addresses."
+        ),
     )
+
+
+class LinkDomainInfo(LinkDomainTemplates):
+    """What one link domain's own info endpoint answers.
+
+    Subclasses name themselves and build their own templates; this class is
+    the shared behavior rather than a domain in its own right.
+    """
+
+    domain_name: ClassVar[str]
+    """This domain's name in the ``/links/domains/`` namespace."""
+
+    info_route_name: ClassVar[str]
+    """Name of the route serving this domain's own info endpoint."""
+
+    @classmethod
+    def create(cls, request: Request) -> Self:
+        """Build this domain's URI templates against the request's base URL."""
+        raise NotImplementedError
+
+    @classmethod
+    def create_summary(cls, request: Request) -> LinkDomainSummary:
+        """Summarize this domain for the cross-domain index.
+
+        A domain describes itself the same way wherever it is asked, so the
+        index reuses each domain's own ``create`` rather than restating its
+        templates in a second place that could drift.
+        """
+        info = cls.create(request)
+        return LinkDomainSummary(
+            name=cls.domain_name,
+            self_url=str(request.url_for(cls.info_route_name)),
+            entities=info.entities,
+            collections=info.collections,
+        )
+
+
+class SdmDomainInfo(LinkDomainInfo):
+    """Links for the SDM domain APIs."""
+
+    domain_name: ClassVar[str] = "sdm"
+
+    info_route_name: ClassVar[str] = "get_sdm_domain_info"
 
     @classmethod
     def create(cls, request: Request) -> Self:
@@ -88,6 +156,76 @@ class SdmDomainInfo(BaseModel):
                 ),
             },
         )
+
+
+class PythonDomainInfo(LinkDomainInfo):
+    """Links for the Python domain APIs."""
+
+    domain_name: ClassVar[str] = "python"
+
+    info_route_name: ClassVar[str] = "get_python_domain_info"
+
+    @classmethod
+    def create(cls, request: Request) -> Self:
+        """Create a `PythonDomainInfo` object."""
+        base_url = str(request.base_url).removesuffix("/")
+        app = request.app
+        return cls(
+            entities={
+                "object": base_url
+                + _path_template(app, "get_python_object_links", "name"),
+            },
+            collections={
+                "objects": base_url
+                + _path_template(app, "get_python_objects"),
+                "children": base_url
+                + _path_template(app, "get_python_object_children", "name"),
+            },
+        )
+
+
+LINK_DOMAIN_TYPES: tuple[type[LinkDomainInfo], ...] = (
+    SdmDomainInfo,
+    PythonDomainInfo,
+)
+"""Every link domain the API publishes, in the order the index lists them.
+
+The index is generated from this tuple, so a new domain becomes discoverable
+by being registered here rather than by remembering to extend a hand-written
+listing.
+"""
+
+
+class LinkDomainSummary(LinkDomainTemplates):
+    """One link domain's entry in the cross-domain index.
+
+    Carries the domain's own URI templates, so a client can address entities
+    in any domain straight from the index, plus the two things that only
+    mean something alongside the domain's siblings: which domain this is,
+    and where its own info endpoint lives.
+    """
+
+    name: str = Field(
+        ...,
+        title="Name of the domain",
+        description=(
+            "The domain's name in the ``/links/domains/`` namespace, which "
+            "is also what entities in it report as their ``domain``."
+        ),
+        examples=["sdm"],
+    )
+
+    self_url: str = Field(
+        ..., title="API URL to this domain's own info endpoint"
+    )
+
+    @classmethod
+    def create_all(cls, request: Request) -> list[LinkDomainSummary]:
+        """Summarize every registered link domain, in registration order."""
+        return [
+            domain_type.create_summary(request)
+            for domain_type in LINK_DOMAIN_TYPES
+        ]
 
 
 class Link(BaseModel):
@@ -323,3 +461,68 @@ class SdmLinks(BaseModel):
                 )
             case _:
                 raise TypeError(f"Unknown domain type: {type(domain)}")
+
+
+class PythonObjectLinkedEntityInfo(LinkedEntityInfo):
+    """Information about a Python object links entity."""
+
+    domain: Literal["python"] = "python"
+
+    domain_type: Literal["object"] = "object"
+
+    name: str = Field(
+        ...,
+        title="Fully qualified name of the object",
+        description=(
+            "The name a Sphinx cross-reference targets, which is the "
+            "object's identity in this domain."
+        ),
+    )
+
+    @classmethod
+    def from_domain(
+        cls, *, domain: IntersphinxEntityLinks, request: Request
+    ) -> Self:
+        """Create a `PythonObjectLinkedEntityInfo` from a stored entity."""
+        return cls(
+            name=domain.name,
+            self_url=str(
+                request.url_for("get_python_object_links", name=domain.name)
+            ),
+        )
+
+
+class PythonObjectLinks(BaseModel):
+    """Documentation links for one Python object."""
+
+    entity: PythonObjectLinkedEntityInfo = Field(
+        ..., title="Identity about the linked entity"
+    )
+
+    links: list[Link] = Field(
+        ...,
+        title="Documentation links",
+        description=(
+            "Never empty. Ook stores an object only while some registered "
+            "site documents it, so an object that answers at all answers "
+            "with the sites that document it."
+        ),
+    )
+
+    @classmethod
+    def from_domain(
+        cls,
+        *,
+        domain_collection: Sequence[IntersphinxEntityLinks],
+        request: Request,
+    ) -> list[Self]:
+        """Create a `PythonObjectLinks` list from stored entities."""
+        return [
+            cls(
+                entity=PythonObjectLinkedEntityInfo.from_domain(
+                    domain=domain, request=request
+                ),
+                links=[Link.from_domain_link(link) for link in domain.links],
+            )
+            for domain in domain_collection
+        ]

@@ -4,6 +4,8 @@ from .authors import SqlAffiliation, SqlAuthor, SqlAuthorAffiliation
 from .base import Base
 from .glossary import SqlTerm, term_relationships
 from .intersphinx import SqlIntersphinxInventory
+from .intersphinxentities import SqlIntersphinxEntity
+from .intersphinxsources import SqlIntersphinxSource
 from .linkcheck import (
     SqlCheckedUrl,
     SqlLinkCheck,
@@ -11,7 +13,13 @@ from .linkcheck import (
     SqlLinkCheckUrl,
     SqlUrlOccurrence,
 )
-from .links import SqlLink, SqlSdmColumnLink, SqlSdmSchemaLink, SqlSdmTableLink
+from .links import (
+    SqlIntersphinxLink,
+    SqlLink,
+    SqlSdmColumnLink,
+    SqlSdmSchemaLink,
+    SqlSdmTableLink,
+)
 from .resources import (
     SqlContributor,
     SqlDocumentResource,
@@ -30,7 +38,10 @@ __all__ = [
     "SqlContributor",
     "SqlDocumentResource",
     "SqlExternalReference",
+    "SqlIntersphinxEntity",
     "SqlIntersphinxInventory",
+    "SqlIntersphinxLink",
+    "SqlIntersphinxSource",
     "SqlLink",
     "SqlLinkCheck",
     "SqlLinkCheckContribution",
