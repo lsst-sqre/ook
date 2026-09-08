@@ -22,6 +22,9 @@ DOMAIN_URL = f"{config.path_prefix}/links/domains/python"
 OBJECTS_URL = f"{DOMAIN_URL}/objects"
 """The python link domain's object entity endpoint."""
 
+OBJECT_PATH_TEMPLATE = f"{OBJECTS_URL}/{{name}}"
+"""The single-object route's path as OpenAPI keys it."""
+
 INVENTORY_URL = "https://pipelines.lsst.io/v/weekly/objects.inv"
 """The inventory URL of the source seeded by these tests."""
 
@@ -175,6 +178,100 @@ async def test_an_object_no_site_documents_is_not_found(
     response = await client.get(f"{OBJECTS_URL}/lsst.afw.table")
 
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_python_object_links_carry_the_domain_type_header(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """The single-object response names the object's role in a header.
+
+    The body is a bare list of links with nowhere to say what kind of thing
+    was linked to, so the one scalar a client needs -- the Sphinx role --
+    rides alongside it.
+    """
+    await _seed_pipelines_source(factory)
+
+    response = await client.get(f"{OBJECTS_URL}/lsst.afw.table.SourceCatalog")
+
+    assert response.status_code == 200
+    assert response.headers["X-Ook-Entity-Domain-Type"] == "class"
+
+
+@pytest.mark.asyncio
+async def test_python_object_domain_type_header_is_the_stored_role(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """The header reports each object's own role, not a fixed value."""
+    await _seed_pipelines_source(factory)
+
+    response = await client.get(f"{OBJECTS_URL}/lsst.afw.table")
+
+    assert response.status_code == 200
+    assert response.headers["X-Ook-Entity-Domain-Type"] == "module"
+
+
+@pytest.mark.asyncio
+async def test_python_object_domain_type_header_matches_the_collection(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """The header and the collection's ``domain_type`` agree on a name.
+
+    They are two views of one stored role, so a client that read a listing
+    and then followed a ``self_url`` must not be told two different things
+    about the same object.
+    """
+    await _seed_pipelines_source(factory)
+
+    collection = await client.get(OBJECTS_URL)
+    assert collection.status_code == 200
+    from_collection = {
+        entry["entity"]["name"]: entry["entity"]["domain_type"]
+        for entry in collection.json()
+    }
+
+    from_header = {}
+    for name in from_collection:
+        response = await client.get(f"{OBJECTS_URL}/{name}")
+        assert response.status_code == 200
+        from_header[name] = response.headers["X-Ook-Entity-Domain-Type"]
+
+    assert from_header == from_collection
+
+
+@pytest.mark.asyncio
+async def test_unknown_python_object_carries_no_domain_type_header(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """A 404 names no entity, so it carries no entity header."""
+    await _seed_pipelines_source(factory)
+
+    response = await client.get(f"{OBJECTS_URL}/lsst.afw.table.NoSuchClass")
+
+    assert response.status_code == 404
+    assert "X-Ook-Entity-Domain-Type" not in response.headers
+
+
+@pytest.mark.asyncio
+async def test_openapi_documents_the_domain_type_header(
+    client: AsyncClient,
+) -> None:
+    """The header is part of the published contract, not folklore.
+
+    A header a client is expected to read has to be discoverable from the
+    schema, and only on the shape that actually carries it: the 404 names
+    no entity.
+    """
+    response = await client.get(f"{config.path_prefix}/openapi.json")
+
+    assert response.status_code == 200
+    operation = response.json()["paths"][OBJECT_PATH_TEMPLATE]["get"]
+
+    documented = operation["responses"]["200"]["headers"]
+    assert documented["X-Ook-Entity-Domain-Type"]["schema"] == {
+        "type": "string"
+    }
+    assert "headers" not in operation["responses"]["404"]
 
 
 @pytest.mark.asyncio

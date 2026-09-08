@@ -28,6 +28,29 @@ from .models import (
 router = APIRouter(prefix=f"{config.path_prefix}/links", tags=["links"])
 """FastAPI router for the links API."""
 
+ENTITY_DOMAIN_TYPE_HEADER = "X-Ook-Entity-Domain-Type"
+"""Header naming the Sphinx role of the entity a response describes."""
+
+ENTITY_DOMAIN_TYPE_HEADER_SPEC = {
+    ENTITY_DOMAIN_TYPE_HEADER: {
+        "description": (
+            "The Sphinx role the entity this response describes was"
+            " declared with, without its domain prefix -- the same value"
+            " the collection endpoints report as ``domain_type``. The"
+            " vocabulary is whatever a documented site's Sphinx extensions"
+            " emit, so an unfamiliar value is a role the client does not"
+            " model rather than an error. Present on every ``200``."
+        ),
+        "schema": {"type": "string"},
+    }
+}
+"""OpenAPI ``headers`` entry for the entity domain-type header.
+
+Written once here and referenced from the route's ``responses`` rather than
+inlined at the route, so the description a client reads cannot drift from
+the header the handler sets.
+"""
+
 # Common path parameters
 
 schema_name_path = Annotated[
@@ -551,7 +574,10 @@ async def get_python_object_children(
     "/domains/python/objects/{name}",
     summary="Get a Python object's doc links",
     response_description="List of doc links for a Python object",
-    responses={404: {"description": "Not found", "model": ErrorModel}},
+    responses={
+        200: {"headers": ENTITY_DOMAIN_TYPE_HEADER_SPEC},
+        404: {"description": "Not found", "model": ErrorModel},
+    },
 )
 async def get_python_object_links(
     name: python_object_name_path,
@@ -561,6 +587,15 @@ async def get_python_object_links(
 
     A name no registered site documents is a 404. Ook stores an object only
     while some site gives it a page, so the list is never empty.
+
+    The body is a bare list of links, matching every other single-entity
+    endpoint in this API, so the one fact about the object itself that a
+    client cannot read off a link -- the Sphinx role it was declared with --
+    rides in the `X-Ook-Entity-Domain-Type` response header instead. It is
+    the same value the collection endpoints report as `domain_type`. Only
+    that scalar travels this way: should this endpoint ever need to say more
+    about the entity, the answer is to give it the `PythonObjectLinks`
+    envelope the collections use, not a second parallel header.
     """
     logger = context.logger
     logger.debug(
@@ -572,4 +607,5 @@ async def get_python_object_links(
         entity = await link_service.get_python_object(name)
         if entity is None:
             raise NotFoundError(f"No Python object named {name} is known.")
+        context.response.headers[ENTITY_DOMAIN_TYPE_HEADER] = entity.role
         return [Link.from_domain_link(link) for link in entity.links]
