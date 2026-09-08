@@ -257,6 +257,7 @@ class IntersphinxEntityStore:
         self,
         sphinx_domain: str,
         *,
+        roles: Sequence[str] | None = None,
         limit: int | None = None,
         cursor: IntersphinxEntityCursor | None = None,
     ) -> CountedPaginatedList[IntersphinxEntityLinks, IntersphinxEntityCursor]:
@@ -267,6 +268,9 @@ class IntersphinxEntityStore:
         sphinx_domain
             The Sphinx domain to list, which scopes the ordering key: a
             name is unique within a domain, not across domains.
+        roles
+            Keep only entities declared with one of these Sphinx roles.
+            `None` keeps every role.
         limit
             The maximum number of entities on the page. `None` returns
             every entity in the domain, unpaginated.
@@ -278,10 +282,13 @@ class IntersphinxEntityStore:
         -------
         CountedPaginatedList
             The page, its neighbouring cursors, and the number of entities
-            the domain holds in total.
+            the domain holds in total, both narrowed by *roles*.
         """
-        stmt = self._entity_select().where(
-            SqlIntersphinxEntity.sphinx_domain == sphinx_domain
+        stmt = self._apply_role_filter(
+            self._entity_select().where(
+                SqlIntersphinxEntity.sphinx_domain == sphinx_domain
+            ),
+            roles,
         )
         return await self._paginate_entities(
             sphinx_domain, stmt, limit=limit, cursor=cursor
@@ -292,6 +299,7 @@ class IntersphinxEntityStore:
         sphinx_domain: str,
         parent_name: str,
         *,
+        roles: Sequence[str] | None = None,
         limit: int | None = None,
         cursor: IntersphinxEntityCursor | None = None,
     ) -> (
@@ -316,6 +324,11 @@ class IntersphinxEntityStore:
             The Sphinx domain both the parent and its children belong to.
         parent_name
             The fully qualified name of the containing entity.
+        roles
+            Keep only children declared with one of these Sphinx roles.
+            `None` keeps every role. The parent is resolved before the
+            filter is applied, so a filter that matches none of a known
+            parent's children is an empty page rather than None.
         limit
             The maximum number of children on the page. `None` returns
             every child, unpaginated.
@@ -327,21 +340,24 @@ class IntersphinxEntityStore:
         -------
         CountedPaginatedList or None
             The page, its neighbouring cursors, and the number of direct
-            children the parent has in total -- or None if the pair names
-            no stored entity.
+            children the parent has in total, both narrowed by *roles* --
+            or None if the pair names no stored entity.
         """
         found = await self._lookup_entity_ids({(sphinx_domain, parent_name)})
         parent_id = found.get((sphinx_domain, parent_name))
         if parent_id is None:
             return None
 
-        stmt = self._entity_select().where(
-            # The domain predicate is redundant against ``parent_id`` --
-            # a parent is only ever resolved within its own domain -- but
-            # it is what the ordering key's uniqueness rests on, so it is
-            # stated rather than inferred.
-            SqlIntersphinxEntity.sphinx_domain == sphinx_domain,
-            SqlIntersphinxEntity.parent_id == parent_id,
+        stmt = self._apply_role_filter(
+            self._entity_select().where(
+                # The domain predicate is redundant against ``parent_id``
+                # -- a parent is only ever resolved within its own domain
+                # -- but it is what the ordering key's uniqueness rests on,
+                # so it is stated rather than inferred.
+                SqlIntersphinxEntity.sphinx_domain == sphinx_domain,
+                SqlIntersphinxEntity.parent_id == parent_id,
+            ),
+            roles,
         )
         return await self._paginate_entities(
             sphinx_domain, stmt, limit=limit, cursor=cursor
@@ -619,6 +635,32 @@ class IntersphinxEntityStore:
                 pruned_count=pruned,
             )
         return pruned
+
+    @staticmethod
+    def _apply_role_filter(
+        stmt: Select, roles: Sequence[str] | None
+    ) -> Select:
+        """Narrow an entity select to the Sphinx roles given.
+
+        A predicate on the select rather than something the cursor carries:
+        a keyset cursor encodes the ordering key alone, so the filter has
+        to be restated on every page from whatever asked for it. Applying
+        it here also narrows the count `_paginate_entities` reports, which
+        is what makes a filtered listing page against its own total rather
+        than the domain's.
+
+        Parameters
+        ----------
+        stmt
+            The select to narrow.
+        roles
+            The roles to keep, OR-ed together. `None` keeps every role;
+            an empty sequence names no role and so keeps nothing, which is
+            the same answer a role no entity carries gets.
+        """
+        if roles is None:
+            return stmt
+        return stmt.where(SqlIntersphinxEntity.role.in_(roles))
 
     @staticmethod
     def _entity_select() -> Select:

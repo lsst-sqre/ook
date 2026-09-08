@@ -468,7 +468,25 @@ class PythonObjectLinkedEntityInfo(LinkedEntityInfo):
 
     domain: Literal["python"] = "python"
 
-    domain_type: Literal["object"] = "object"
+    domain_type: str = Field(
+        ...,
+        title="Sphinx role of the object",
+        description=(
+            "The role the object was declared with inside the ``py`` "
+            "Sphinx domain, without the ``py:`` prefix. Sphinx itself "
+            "emits ``class``, ``method``, ``function``, ``exception``, "
+            "``module``, ``attribute``, ``property``, and ``data``, and "
+            "extensions add their own -- autodoc-pydantic emits "
+            "``pydantic_model``, ``pydantic_field``, "
+            "``pydantic_settings``, and ``pydantic_validator``. Those are "
+            "examples rather than the whole vocabulary: whatever role a "
+            "documented site's Sphinx extensions declare an object with "
+            "is what this field carries, so a client should treat an "
+            "unfamiliar value as a role it does not model rather than as "
+            "an error."
+        ),
+        examples=["class", "method", "module", "pydantic_model"],
+    )
 
     name: str = Field(
         ...,
@@ -485,6 +503,7 @@ class PythonObjectLinkedEntityInfo(LinkedEntityInfo):
     ) -> Self:
         """Create a `PythonObjectLinkedEntityInfo` from a stored entity."""
         return cls(
+            domain_type=domain.role,
             name=domain.name,
             self_url=str(
                 request.url_for("get_python_object_links", name=domain.name)

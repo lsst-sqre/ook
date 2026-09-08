@@ -3,6 +3,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query
+from pydantic import StringConstraints
 from safir.models import ErrorModel
 
 from ook.config import config
@@ -48,6 +49,27 @@ python_object_name_path = Annotated[
             "Sphinx cross-reference targets."
         ),
         examples=["lsst.afw.table.SourceCatalog"],
+    ),
+]
+
+# Common query parameters
+
+python_domain_type_query = Annotated[
+    list[Annotated[str, StringConstraints(min_length=1)]] | None,
+    Query(
+        title="Sphinx role filter",
+        description=(
+            "Keep only objects declared with one of these Sphinx roles, "
+            "written without the ``py:`` prefix. Repeat the parameter to "
+            "accept several roles -- `?domain_type=class&domain_type="
+            "exception` lists objects that are either -- and omit it to "
+            "list every role. Any non-empty value is accepted, because the "
+            "role vocabulary is whatever a documented site's Sphinx "
+            "extensions emit: a role no stored object carries answers with "
+            "an empty page rather than an error. An empty value names no "
+            "role at all and is rejected."
+        ),
+        examples=[["class", "exception"]],
     ),
 ]
 
@@ -399,6 +421,7 @@ async def get_python_domain_info(
 )
 async def get_python_objects(
     *,
+    domain_type: python_domain_type_query = None,
     cursor: Annotated[
         str | None,
         Query(
@@ -423,6 +446,16 @@ async def get_python_objects(
     A domain nothing has been ingested into is an empty collection rather
     than a 404: the endpoint answers about a domain, which exists whether
     or not any source has been registered for it yet.
+
+    Passing `domain_type` narrows the listing to objects declared with
+    those Sphinx roles, and narrows `X-Total-Count` with it, so a filtered
+    listing pages against its own total. The filter travels in the query
+    string the `Link` header preserves, so following a next URL keeps it.
+
+    An object is stored once per name however many sites document it, and
+    the first declaration wins when one inventory declares a name under two
+    roles -- so such a name carries only its first role and matches only
+    that filter value.
     """
     parsed_cursor = (
         IntersphinxEntityCursor.from_str(cursor) if cursor else None
@@ -431,7 +464,7 @@ async def get_python_objects(
     async with context.session.begin():
         link_service = context.factory.create_links_service()
         results = await link_service.get_python_objects(
-            limit=limit, cursor=parsed_cursor
+            roles=domain_type, limit=limit, cursor=parsed_cursor
         )
         response = context.response
         request = context.request
@@ -453,6 +486,7 @@ async def get_python_objects(
 async def get_python_object_children(
     *,
     name: python_object_name_path,
+    domain_type: python_domain_type_query = None,
     cursor: Annotated[
         str | None,
         Query(
@@ -481,6 +515,17 @@ async def get_python_object_children(
     An object that contains nothing answers with an empty page, which is a
     different answer from the 404 a name nothing in the domain answers to
     gets.
+
+    Passing `domain_type` narrows the page to children declared with those
+    Sphinx roles, and narrows `X-Total-Count` with it, on every page. A
+    known object none of whose children carry the roles asked for still
+    answers with an empty page rather than a 404, because the name is
+    resolved before the filter is applied.
+
+    An object is stored once per name however many sites document it, and
+    the first declaration wins when one inventory declares a name under two
+    roles -- so such a name carries only its first role and matches only
+    that filter value.
     """
     parsed_cursor = (
         IntersphinxEntityCursor.from_str(cursor) if cursor else None
@@ -489,7 +534,7 @@ async def get_python_object_children(
     async with context.session.begin():
         link_service = context.factory.create_links_service()
         results = await link_service.get_python_object_children(
-            name, limit=limit, cursor=parsed_cursor
+            name, roles=domain_type, limit=limit, cursor=parsed_cursor
         )
         if results is None:
             raise NotFoundError(f"No Python object named {name} is known.")

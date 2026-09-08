@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from safir.database import CountedPaginatedList
 from structlog.stdlib import BoundLogger
 
@@ -70,6 +72,7 @@ class LinksService:
     async def get_python_objects(
         self,
         *,
+        roles: Sequence[str] | None = None,
         limit: int | None = None,
         cursor: IntersphinxEntityCursor | None = None,
     ) -> CountedPaginatedList[IntersphinxEntityLinks, IntersphinxEntityCursor]:
@@ -81,6 +84,9 @@ class LinksService:
 
         Parameters
         ----------
+        roles
+            Keep only objects declared with one of these Sphinx roles
+            (``class``, ``method``, ...). `None` keeps every role.
         limit
             The maximum number of objects on the page. `None` returns every
             object, unpaginated.
@@ -92,16 +98,17 @@ class LinksService:
         -------
         CountedPaginatedList
             The page, its neighbouring cursors, and the total number of
-            Python objects Ook stores.
+            Python objects Ook stores, both narrowed by *roles*.
         """
         return await self._entity_store.get_entities(
-            PYTHON_SPHINX_DOMAIN, limit=limit, cursor=cursor
+            PYTHON_SPHINX_DOMAIN, roles=roles, limit=limit, cursor=cursor
         )
 
     async def get_python_object_children(
         self,
         name: str,
         *,
+        roles: Sequence[str] | None = None,
         limit: int | None = None,
         cursor: IntersphinxEntityCursor | None = None,
     ) -> (
@@ -118,6 +125,9 @@ class LinksService:
         ----------
         name
             The containing object's fully qualified Python name.
+        roles
+            Keep only children declared with one of these Sphinx roles.
+            `None` keeps every role.
         limit
             The maximum number of children on the page. `None` returns
             every child, unpaginated.
@@ -129,12 +139,13 @@ class LinksService:
         -------
         CountedPaginatedList or None
             The page, its neighbouring cursors, and the total number of
-            children the object has -- or None if no stored Python object
-            goes by that name, which is the case that separates an unknown
-            name from an object that simply contains nothing.
+            children the object has, both narrowed by *roles* -- or None if
+            no stored Python object goes by that name, which is the case
+            that separates an unknown name from an object that simply
+            contains nothing (or contains nothing of the roles asked for).
         """
         return await self._entity_store.get_children(
-            PYTHON_SPHINX_DOMAIN, name, limit=limit, cursor=cursor
+            PYTHON_SPHINX_DOMAIN, name, roles=roles, limit=limit, cursor=cursor
         )
 
     async def get_links_for_sdm_schema(

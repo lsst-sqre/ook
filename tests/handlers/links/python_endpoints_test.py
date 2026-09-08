@@ -195,7 +195,7 @@ async def test_python_objects_collection(
         "lsst.afw.table.SourceCatalog",
     ]
     assert data[0]["entity"]["domain"] == "python"
-    assert data[0]["entity"]["domain_type"] == "object"
+    assert data[0]["entity"]["domain_type"] == "module"
     assert data[0]["entity"]["self_url"].endswith(
         "/ook/links/domains/python/objects/lsst.afw.table"
     )
@@ -291,7 +291,7 @@ async def test_python_object_children(
         "lsst.afw.table.SourceCatalog"
     ]
     assert data[0]["entity"]["domain"] == "python"
-    assert data[0]["entity"]["domain_type"] == "object"
+    assert data[0]["entity"]["domain_type"] == "class"
     assert data[0]["entity"]["self_url"].endswith(
         "/ook/links/domains/python/objects/lsst.afw.table.SourceCatalog"
     )
@@ -402,3 +402,225 @@ async def test_python_object_children_pages(
     assert [entry["entity"]["name"] for entry in next_response.json()] == [
         "lsst.afw.table.SourceCatalog"
     ]
+
+
+@pytest.mark.asyncio
+async def test_python_object_domain_type_is_the_sphinx_role(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """Each object reports the role its inventory declared it with.
+
+    The role is the whole point of the field: a client filtering a listing
+    down to classes cannot do it if every object says ``object``.
+    """
+    await _seed_pipelines_source(factory)
+
+    response = await client.get(OBJECTS_URL)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert {
+        entry["entity"]["name"]: entry["entity"]["domain_type"]
+        for entry in data
+    } == {
+        "lsst.afw.table": "module",
+        "lsst.afw.table.SourceCatalog": "class",
+    }
+
+
+@pytest.mark.asyncio
+async def test_python_object_children_domain_type_is_the_sphinx_role(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """A child reports its own role, not the collection's."""
+    await _seed_pipelines_source(factory)
+
+    response = await client.get(f"{OBJECTS_URL}/lsst.afw.table/children")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert [entry["entity"]["domain_type"] for entry in data] == ["class"]
+
+
+@pytest.mark.asyncio
+async def test_python_objects_filter_by_domain_type(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """A ``domain_type`` value narrows the listing and its total count."""
+    await _seed_pipelines_source(factory)
+
+    response = await client.get(OBJECTS_URL, params={"domain_type": "class"})
+
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "1"
+    assert [entry["entity"]["name"] for entry in response.json()] == [
+        "lsst.afw.table.SourceCatalog"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_python_objects_filter_ors_several_domain_types(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """Repeating the parameter admits an object carrying any of the roles."""
+    await _seed_pipelines_source(
+        factory,
+        [
+            MODULE,
+            SOURCE_CATALOG,
+            _entity(
+                "lsst.afw.table.SourceCatalog.find",
+                role="method",
+                uri="py-api/lsst.afw.table.SourceCatalog.html#find",
+            ),
+        ],
+    )
+
+    response = await client.get(
+        OBJECTS_URL,
+        params=[("domain_type", "module"), ("domain_type", "method")],
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "2"
+    assert [entry["entity"]["name"] for entry in response.json()] == [
+        "lsst.afw.table",
+        "lsst.afw.table.SourceCatalog.find",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_python_objects_filter_on_an_unknown_domain_type_is_empty(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """A role nothing carries is an empty page rather than a 422.
+
+    The vocabulary is whatever Sphinx and its extensions emit, so an
+    unrecognized value is a question with no matches rather than a
+    malformed request.
+    """
+    await _seed_pipelines_source(factory)
+
+    response = await client.get(
+        OBJECTS_URL, params={"domain_type": "pydantic_model"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
+    assert response.headers["X-Total-Count"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_python_objects_filter_rejects_an_empty_domain_type(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """An empty value names no role at all, so it is a 422."""
+    await _seed_pipelines_source(factory)
+
+    response = await client.get(OBJECTS_URL, params={"domain_type": ""})
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_python_objects_filter_holds_across_pages(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """The next page of a filtered listing is still filtered.
+
+    The cursor carries the ordering key alone, so the filter rides in the
+    query string the ``Link`` header preserves.
+    """
+    await _seed_pipelines_source(
+        factory,
+        [
+            MODULE,
+            SOURCE_CATALOG,
+            _entity(
+                "lsst.afw.table.BaseCatalog",
+                role="class",
+                uri="py-api/lsst.afw.table.BaseCatalog.html",
+            ),
+        ],
+    )
+
+    response = await client.get(
+        OBJECTS_URL, params={"domain_type": "class", "limit": 1}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "2"
+    assert [entry["entity"]["name"] for entry in response.json()] == [
+        "lsst.afw.table.BaseCatalog"
+    ]
+    links = PaginationLinkData.from_header(response.headers["Link"])
+    assert links.next_url is not None
+
+    next_response = await client.get(links.next_url)
+
+    assert next_response.status_code == 200
+    assert next_response.headers["X-Total-Count"] == "2"
+    assert [entry["entity"]["name"] for entry in next_response.json()] == [
+        "lsst.afw.table.SourceCatalog"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_python_object_children_filter_by_domain_type(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """A ``domain_type`` value narrows a parent's children the same way."""
+    await _seed_pipelines_source(
+        factory,
+        [
+            MODULE,
+            SOURCE_CATALOG,
+            _entity(
+                "lsst.afw.table.makeCatalog",
+                role="function",
+                uri="py-api/lsst.afw.table.makeCatalog.html",
+            ),
+        ],
+    )
+
+    response = await client.get(
+        f"{OBJECTS_URL}/lsst.afw.table/children",
+        params={"domain_type": "function"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "1"
+    assert [entry["entity"]["name"] for entry in response.json()] == [
+        "lsst.afw.table.makeCatalog"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_python_object_children_filter_on_unknown_type_is_empty(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """A filter matching none of a known parent's children is still a 200."""
+    await _seed_pipelines_source(factory)
+
+    response = await client.get(
+        f"{OBJECTS_URL}/lsst.afw.table/children",
+        params={"domain_type": "exception"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
+    assert response.headers["X-Total-Count"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_python_object_children_filter_rejects_an_empty_value(
+    client: AsyncClient, factory: Factory
+) -> None:
+    """An empty value is a 422 on the children endpoint too."""
+    await _seed_pipelines_source(factory)
+
+    response = await client.get(
+        f"{OBJECTS_URL}/lsst.afw.table/children", params={"domain_type": ""}
+    )
+
+    assert response.status_code == 422

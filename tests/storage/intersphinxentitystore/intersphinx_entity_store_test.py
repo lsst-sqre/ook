@@ -1113,3 +1113,190 @@ async def test_get_children_pages_without_dropping_or_repeating(
                 break
 
         assert seen == sorted(names)
+
+
+@pytest.mark.asyncio
+async def test_get_entities_filters_by_role(factory: Factory) -> None:
+    """A role predicate narrows both the page and the count."""
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        await _seed_documented(
+            factory,
+            [
+                _entity("pkg", role="module"),
+                _entity("pkg.Thing", role="class"),
+                _entity("pkg.Thing.find", role="method"),
+            ],
+        )
+
+        page = await entity_store.get_entities("py", roles=["class"], limit=10)
+
+        assert page.count == 1
+        assert [entry.name for entry in page.entries] == ["pkg.Thing"]
+
+
+@pytest.mark.asyncio
+async def test_get_entities_role_filter_ors_its_values(
+    factory: Factory,
+) -> None:
+    """Several roles admit an entity carrying any one of them."""
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        await _seed_documented(
+            factory,
+            [
+                _entity("pkg", role="module"),
+                _entity("pkg.Thing", role="class"),
+                _entity("pkg.Thing.find", role="method"),
+            ],
+        )
+
+        page = await entity_store.get_entities(
+            "py", roles=["class", "method"], limit=10
+        )
+
+        assert page.count == 2
+        assert [entry.name for entry in page.entries] == [
+            "pkg.Thing",
+            "pkg.Thing.find",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_get_entities_role_filter_no_entity_carries_is_empty(
+    factory: Factory,
+) -> None:
+    """A role nothing was declared with is an empty page, counted as none."""
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        await _seed_documented(factory, [_entity("pkg.Thing", role="class")])
+
+        page = await entity_store.get_entities(
+            "py", roles=["exception"], limit=10
+        )
+
+        assert page.count == 0
+        assert page.entries == []
+
+
+@pytest.mark.asyncio
+async def test_get_entities_role_filter_holds_across_pages(
+    factory: Factory,
+) -> None:
+    """Every page of a filtered walk carries only the asked-for roles.
+
+    The cursor encodes the ordering key alone, so the predicate has to be
+    reapplied on each request rather than travelling in the cursor. Walking
+    a filter whose matches are interleaved with non-matches is what would
+    catch it not being.
+    """
+    classes = [f"pkg.Thing{index:02d}" for index in range(5)]
+    functions = [f"pkg.run{index:02d}" for index in range(5)]
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        await _seed_documented(
+            factory,
+            [
+                _entity("pkg", role="module"),
+                *(_entity(name, role="class") for name in classes),
+                *(_entity(name, role="function") for name in functions),
+            ],
+        )
+
+        seen: list[str] = []
+        cursor = None
+        while True:
+            page = await entity_store.get_entities(
+                "py", roles=["class"], limit=2, cursor=cursor
+            )
+            assert page.count == len(classes)
+            seen.extend(entry.name for entry in page.entries)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+
+        assert seen == sorted(classes)
+
+
+@pytest.mark.asyncio
+async def test_get_children_filters_by_role(factory: Factory) -> None:
+    """A parent's children are narrowed by role the same way."""
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        await _seed_documented(
+            factory,
+            [
+                _entity("pkg", role="module"),
+                _entity("pkg.mod", role="module"),
+                _entity("pkg.Thing", role="class"),
+                _entity("pkg.Other", role="class"),
+            ],
+        )
+
+        page = await entity_store.get_children(
+            "py", "pkg", roles=["class"], limit=10
+        )
+
+        assert page is not None
+        assert page.count == 2
+        assert [entry.name for entry in page.entries] == [
+            "pkg.Other",
+            "pkg.Thing",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_get_children_role_filter_ors_its_values(
+    factory: Factory,
+) -> None:
+    """Several roles admit a child carrying any one of them."""
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        await _seed_documented(
+            factory,
+            [
+                _entity("pkg", role="module"),
+                _entity("pkg.mod", role="module"),
+                _entity("pkg.Thing", role="class"),
+                _entity("pkg.run", role="function"),
+            ],
+        )
+
+        page = await entity_store.get_children(
+            "py", "pkg", roles=["module", "function"], limit=10
+        )
+
+        assert page is not None
+        assert page.count == 2
+        assert [entry.name for entry in page.entries] == [
+            "pkg.mod",
+            "pkg.run",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_get_children_role_filter_is_not_a_missing_parent(
+    factory: Factory,
+) -> None:
+    """A filter that matches nothing is an empty page, not a 404's None.
+
+    The parent lookup happens before the predicate, so a known parent whose
+    children are all filtered out still answers as a known parent.
+    """
+    async with factory.db_session.begin():
+        entity_store = factory.create_intersphinx_entity_store()
+        await _seed_documented(
+            factory,
+            [
+                _entity("pkg", role="module"),
+                _entity("pkg.Thing", role="class"),
+            ],
+        )
+
+        page = await entity_store.get_children(
+            "py", "pkg", roles=["exception"], limit=10
+        )
+
+        assert page is not None
+        assert page.count == 0
+        assert page.entries == []
