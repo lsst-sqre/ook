@@ -731,11 +731,6 @@ class IntersphinxIngestService:
         # nothing to do with.
         await self._session.commit()
 
-        # Taken before the lock, so it predates anything another ingest of
-        # this source could commit while this one waits for the lock, holds
-        # it, or -- the window that matters -- has just dropped it in the
-        # rollback a refused write has to make. See `_record_refused_write`.
-        date_attempted = datetime.now(tz=UTC)
         locked = await self._source_store.lock_source(source.id)
         if locked is None:
             # Nothing of this ingest's own is pending -- the cache's
@@ -789,9 +784,7 @@ class IntersphinxIngestService:
             # drops the registration lock, which is why the stamp takes it
             # again rather than writing on the row as it was.
             await self._session.rollback()
-            return await self._record_refused_write(
-                locked, exc, logger=logger, date_attempted=date_attempted
-            )
+            return await self._record_refused_write(locked, exc, logger=logger)
         logger.info(
             "Ingested intersphinx source",
             entity_count=replaced.entity_count,
@@ -1077,7 +1070,6 @@ class IntersphinxIngestService:
         error: Exception,
         *,
         logger: BoundLogger,
-        date_attempted: datetime,
     ) -> SourceIngestResult | None:
         """Stamp a refused write's failure under a re-taken registration lock.
 
@@ -1100,13 +1092,20 @@ class IntersphinxIngestService:
 
         Or another ingest of this source -- another replica's sweep, a
         manual trigger -- can have taken the lock the rollback released and
-        run to completion, which its ``date_ingested`` being newer than
-        *date_attempted* is what says. The row is then that ingest's
-        statement about links that ingest wrote, and stamping ``failure``
-        over it would claim the site's links are broken when they are the
-        current ones, and would cost the next sweep a full re-ingest into
-        the bargain, since `_is_already_ingested` wants a success. The stamp
-        is skipped and the attempt still returns its failure, because what a
+        run to completion, which the re-read row's ``date_ingested``
+        differing from the one *source* carries is what says. Nothing can
+        move that stamp while the first lock is held, so a row that moved
+        between the two reads was moved by whoever held the lock in
+        between. Comparing the two snapshots rather than either of them
+        against a clock is the point: every replica stamps ``date_ingested``
+        off its own, and two hosts that disagree about the time would
+        otherwise have this write ``failure`` over a fresh success, or skip
+        a stamp nobody else made. The row is then that ingest's statement
+        about links that ingest wrote, and stamping ``failure`` over it
+        would claim the site's links are broken when they are the current
+        ones, and would cost the next sweep a full re-ingest into the
+        bargain, since `_is_already_ingested` wants a success. The stamp is
+        skipped and the attempt still returns its failure, because what a
         run's summary counts is what each attempt did rather than what the
         row ended up saying.
 
@@ -1114,13 +1113,13 @@ class IntersphinxIngestService:
         ----------
         source
             The source as it stood under the lock the rollback dropped.
+            Its ``date_ingested`` is the snapshot a re-read one is compared
+            against, so this must be the row read under that lock rather
+            than the one the ingest set out with.
         error
             The database's refusal, for the log's error type.
         logger
             The logger, already bound to this source.
-        date_attempted
-            When this ingest set out to take the registration lock. Any
-            ``date_ingested`` newer than it belongs to another ingest.
 
         Returns
         -------
@@ -1134,10 +1133,7 @@ class IntersphinxIngestService:
             logger.info("Skipped intersphinx source deleted during its ingest")
             return None
 
-        if (
-            relocked.date_ingested is not None
-            and relocked.date_ingested > date_attempted
-        ):
+        if relocked.date_ingested != source.date_ingested:
             await self._session.rollback()
             logger.info(
                 "Left a refused intersphinx write's failure unstamped",

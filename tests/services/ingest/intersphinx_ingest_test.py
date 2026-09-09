@@ -1802,6 +1802,135 @@ async def test_a_refused_write_does_not_stamp_over_a_newer_ingest(
 
 
 @pytest.mark.asyncio
+async def test_a_refused_write_reads_a_newer_ingest_off_a_slow_clock(
+    factory: Factory,
+    database_engine: AsyncEngine,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A concurrent ingest is recognized however its host's clock is set.
+
+    The ingest that takes the lock this one's rollback released is another
+    replica's, and it stamps ``date_ingested`` off its own clock. Nothing
+    keeps two replicas' clocks together, so that stamp can be *older* than
+    the moment this replica set out -- and a check that compared the two
+    would read a fresh success as ancient and write ``failure`` over the
+    very links it names. What the row was under this ingest's own first
+    lock is the comparison that has no clock in it: the row moved, whatever
+    either host thinks the time is.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, A_ONLY_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    service = factory.create_intersphinx_ingest_service()
+    assert await service.ingest_source(await _get_source(factory, source_id))
+
+    await _expire_cached_inventory(factory, INVENTORY_URL)
+    _serve_inventory(respx_mock, INVENTORY_URL, A_AND_SHARED_INVENTORY)
+    _link_to_a_missing_entity(monkeypatch, source_id=source_id, once=True)
+    source = await _get_source(factory, source_id)
+
+    async with _second_factory(database_engine) as other:
+
+        async def reingest() -> None:
+            other_service = other.create_intersphinx_ingest_service()
+            result = await other_service.ingest_source(
+                await _get_source(other, source_id)
+            )
+            assert result is not None
+            assert result.status is SourceIngestStatus.success
+            # The stamp that success just wrote, redated to what a replica
+            # whose clock runs a day behind this one's would have written
+            # in its place. Everything else about the row is untouched.
+            async with other.db_session.begin():
+                store = other.create_intersphinx_source_store()
+                await store.record_ingest_outcome(
+                    source_id,
+                    date_ingested=datetime.now(tz=UTC) - timedelta(days=1),
+                    status=SourceIngestStatus.success,
+                    error=None,
+                    content_digest=hashlib.sha256(
+                        A_AND_SHARED_INVENTORY
+                    ).hexdigest(),
+                )
+
+        _race_the_failure_stamp(
+            monkeypatch, source_id=source_id, race=reingest
+        )
+        refused = await asyncio.wait_for(
+            service.ingest_source(source), timeout=UNBLOCKED_TIMEOUT
+        )
+
+    assert refused is not None
+    assert refused.status is SourceIngestStatus.failure
+    # The row still describes the ingest that wrote the links it names,
+    # backdated stamp and all.
+    stamped = await _get_source(factory, source_id)
+    assert stamped.last_status is SourceIngestStatus.success
+    assert stamped.last_error is None
+    assert (
+        stamped.ingested_content_digest
+        == hashlib.sha256(A_AND_SHARED_INVENTORY).hexdigest()
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_write_stamps_a_row_no_other_ingest_touched(
+    factory: Factory,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused write stamps its failure on the row it locked, unmoved.
+
+    The mirror of the skew above: the last ingest to describe this source
+    ran on a replica whose clock runs *ahead*, so the ``date_ingested``
+    already on the row is stamped in this replica's future. Nothing at all
+    happens in the window the rollback opens here -- the row comes back
+    exactly as this ingest locked it -- and the failure it is owed has to
+    be written, because nothing else is going to write it and a row left
+    saying ``success`` describes links this ingest never stored.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, A_ONLY_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    service = factory.create_intersphinx_ingest_service()
+    assert await service.ingest_source(await _get_source(factory, source_id))
+
+    # That success, restamped as a replica running a day ahead would have.
+    async with factory.db_session.begin():
+        await factory.create_intersphinx_source_store().record_ingest_outcome(
+            source_id,
+            date_ingested=datetime.now(tz=UTC) + timedelta(days=1),
+            status=SourceIngestStatus.success,
+            error=None,
+            content_digest=hashlib.sha256(A_ONLY_INVENTORY).hexdigest(),
+        )
+
+    await _expire_cached_inventory(factory, INVENTORY_URL)
+    _serve_inventory(respx_mock, INVENTORY_URL, A_AND_SHARED_INVENTORY)
+    _link_to_a_missing_entity(monkeypatch, source_id=source_id)
+
+    refused = await service.ingest_source(
+        await _get_source(factory, source_id)
+    )
+
+    assert refused is not None
+    assert refused.status is SourceIngestStatus.failure
+    assert refused.error == _WRITE_CONFLICT_MESSAGE
+    stamped = await _get_source(factory, source_id)
+    assert stamped.last_status is SourceIngestStatus.failure
+    assert stamped.last_error == _WRITE_CONFLICT_MESSAGE
+    # A failure describes no links, so the digest of the ones still stored
+    # is left as the last success wrote it.
+    assert (
+        stamped.ingested_content_digest
+        == hashlib.sha256(A_ONLY_INVENTORY).hexdigest()
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_deregistration_cannot_prune_an_entity_an_ingest_linked(
     factory: Factory,
     database_engine: AsyncEngine,
