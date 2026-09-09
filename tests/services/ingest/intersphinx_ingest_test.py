@@ -1736,6 +1736,58 @@ async def test_a_refused_write_stamps_nothing_on_a_deregistered_source(
 
 
 @pytest.mark.asyncio
+async def test_a_refused_write_stamps_nothing_on_a_repointed_source(
+    factory: Factory,
+    database_engine: AsyncEngine,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused write whose site is repointed before its stamp is a no-op.
+
+    The other thing an operator can do to a registration in the window the
+    rollback opens, and it ends the way the same edit mid-fetch ends. The
+    write that was refused was built from the URL the registration used to
+    name; stamping its failure now would file it against the site the
+    registration names instead, where it would read as the new URL's first
+    ingest having failed -- which never happened, and which would be the
+    only thing the sources API said about a site nothing has yet read.
+    """
+    _serve_inventory(respx_mock, INVENTORY_URL, A_ONLY_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+    _link_to_a_missing_entity(monkeypatch, source_id=source_id)
+
+    async with _second_factory(database_engine) as other:
+
+        async def repoint() -> None:
+            async with other.db_session.begin():
+                store = other.create_intersphinx_source_store()
+                repointed = await store.update_source(
+                    source_id, url=OTHER_INVENTORY_URL
+                )
+                assert repointed is not None
+
+        _race_the_failure_stamp(monkeypatch, source_id=source_id, race=repoint)
+        summary = await asyncio.wait_for(
+            factory.create_intersphinx_ingest_service().ingest_sources(),
+            timeout=UNBLOCKED_TIMEOUT,
+        )
+
+    # The attempt reports no outcome at all, so the run counts it as neither
+    # a failure nor a success.
+    assert summary.results == []
+    assert summary.failed == 0
+    # The registration the repoint left says nothing about an ingest,
+    # because nothing has ingested the URL it now names.
+    stamped = await _get_source(factory, source_id)
+    assert stamped.url == OTHER_INVENTORY_URL
+    assert stamped.last_status is None
+    assert stamped.last_error is None
+    assert stamped.date_ingested is None
+
+
+@pytest.mark.asyncio
 async def test_a_refused_write_does_not_stamp_over_a_newer_ingest(
     factory: Factory,
     database_engine: AsyncEngine,

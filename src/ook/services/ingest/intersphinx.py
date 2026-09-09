@@ -644,8 +644,8 @@ class IntersphinxIngestService:
         digest and skipping the site that never wrote its links. That
         rollback releases the registration lock along with the links, so
         the failure is stamped under a lock taken again rather than on the
-        row as it was; see `_record_refused_write` for the two things that
-        re-read can find instead of a row to stamp.
+        row as it was; see `_record_refused_write` for the three things
+        that re-read can find instead of a row to stamp.
 
         An inventory that hashes to the one this source's last successful
         ingest read is recognized rather than re-read: the parse, the
@@ -714,7 +714,7 @@ class IntersphinxIngestService:
         SourceIngestResult or None
             The source's outcome, or None if the registration was
             deregistered or repointed between its inventory being fetched
-            and its links being written -- or deregistered between a
+            and its links being written -- or either of those between a
             refused write's rollback and the failure it was owed.
         """
         logger = self._logger.bind(source_id=source.id, url=source.url)
@@ -1082,13 +1082,23 @@ class IntersphinxIngestService:
         decides from what it finds there, exactly as `ingest_source` does
         after its first lock.
 
-        Two things can have happened in that window, and neither leaves a
-        failure worth writing.
+        Three things can have happened in that window, and none of them
+        leaves a failure worth writing.
 
         The registration can be gone, and then there is nothing to stamp and
         nothing to report -- None, as a deregistration mid-fetch returns,
         and for the same reason: Ook has nothing to say about a site nobody
         registered any more.
+
+        An operator can have repointed it, and that ends the same way, for
+        the reason a repoint mid-fetch does: the write that was refused was
+        built from the inventory this registration named when the lock was
+        first taken, so a failure stamped after the move would describe the
+        site the registration names now on the strength of an attempt
+        against the site it used to. Read off the sources API it would say
+        the new URL's first ingest had failed, which nothing has yet tried.
+        The URL is compared before the ``date_ingested`` below so a repoint
+        is answered as one whatever else happened in the window.
 
         Or another ingest of this source -- another replica's sweep, a
         manual trigger -- can have taken the lock the rollback released and
@@ -1113,9 +1123,9 @@ class IntersphinxIngestService:
         ----------
         source
             The source as it stood under the lock the rollback dropped.
-            Its ``date_ingested`` is the snapshot a re-read one is compared
-            against, so this must be the row read under that lock rather
-            than the one the ingest set out with.
+            Its ``url`` and ``date_ingested`` are the snapshots a re-read
+            row is compared against, so this must be the row read under
+            that lock rather than the one the ingest set out with.
         error
             The database's refusal, for the log's error type.
         logger
@@ -1125,12 +1135,21 @@ class IntersphinxIngestService:
         -------
         SourceIngestResult or None
             This attempt's failure, or None if the registration was
-            deleted between the rollback and the stamp.
+            deleted or repointed between the rollback and the stamp.
         """
         relocked = await self._source_store.lock_source(source.id)
         if relocked is None:
             await self._session.rollback()
             logger.info("Skipped intersphinx source deleted during its ingest")
+            return None
+
+        if relocked.url != source.url:
+            await self._session.rollback()
+            logger.info(
+                "Skipped intersphinx source repointed during its ingest",
+                fetched_url=source.url,
+                registered_url=relocked.url,
+            )
             return None
 
         if relocked.date_ingested != source.date_ingested:
