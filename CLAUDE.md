@@ -126,3 +126,10 @@ Application configuration is handled through Pydantic settings in `src/ook/confi
 - Type checking is enforced using mypy (see `typing` nox session) using the `from __future__ import annotations` feature for forward references.
 - Docstrings use the Numpydoc style, though types are omitted in docstrings as per project convention. Return and yield types are still specified by their type.
 - Pytest tests use the functional style with fixtures for setup and teardown rather than class-based tests.
+
+## API Conventions
+
+Two conventions govern the Pydantic models under `src/ook/handlers`. Both are written up in the "HTTP API" style guide in `docs/dev/development.rst` and enforced by the guard test in `tests/api_field_naming_test.py`.
+
+- **Date-valued fields carry a `date_` prefix** — `date_created`, `date_checked`, `date_next_check` — never an `_at` or `_timestamp` suffix.
+- **Identifiers are Crockford Base32 IDs** from `ook.domain.base32id` (`Base32Id`), minted in-app with `autoincrement=False` on the column, never the database's autoincrement integer; autoincrement keys stay internal.

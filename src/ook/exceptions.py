@@ -25,6 +25,7 @@ __all__ = [
     "InvalidInventoryUrlError",
     "InvalidOidcTokenError",
     "InvalidOrcidError",
+    "InventoryParseError",
     "LinkCheckTooManyUrlsError",
     "LtdSlugClassificationError",
     "NotFoundError",
@@ -69,6 +70,17 @@ class LtdSlugClassificationError(Exception):
 
 class DocumentParsingError(Exception):
     """Raised when there is a document parsing error."""
+
+
+class InventoryParseError(Exception):
+    """Raised when an intersphinx ``objects.inv`` payload cannot be parsed.
+
+    Every way a payload can fail to parse is this one class, so the ingest
+    service's per-source failure policy can record the failure and move on
+    to the next source. Nothing about a malformed inventory is the client's
+    fault -- the bytes come from an upstream documentation site -- so this
+    is a plain exception rather than a `~safir.fastapi.ClientRequestError`.
+    """
 
 
 class NotFoundError(ClientRequestError):

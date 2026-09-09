@@ -40,6 +40,7 @@ dependencies = [
     "lxml",
     "cssselect", # for lxml
     "lsst-felis", # SDM Schemas support
+    "sphobjinv>=2.3", # Sphinx objects.inv inventory parsing
     "markdown-it-py[linkify,plugins]",
     "aiohttp>=2.0,<4.0", # for algoliasearch
     "async_timeout>=2.0,<4.0", # for algoliasearch

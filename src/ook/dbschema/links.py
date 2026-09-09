@@ -1,4 +1,8 @@
-"""Database model for SDM Schema Links."""
+"""Database models for documentation links.
+
+Every link is a row in the polymorphic ``link`` table, and each link
+domain adds a joined-table subtype naming the entity the link points at.
+"""
 
 from __future__ import annotations
 
@@ -11,9 +15,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
 
 if TYPE_CHECKING:
+    from .intersphinxentities import SqlIntersphinxEntity
+    from .intersphinxsources import SqlIntersphinxSource
     from .sdmschemas import SqlSdmColumn, SqlSdmSchema, SqlSdmTable
 
 __all__ = [
+    "SqlIntersphinxLink",
     "SqlLink",
     "SqlSdmColumnLink",
     "SqlSdmSchemaLink",
@@ -145,3 +152,56 @@ class SqlSdmColumnLink(SqlLink):
         "SqlSdmColumn", back_populates="links"
     )
     """The SDM column this link belongs to."""
+
+
+class SqlIntersphinxLink(SqlLink):
+    """A SQLAlchemy model for a link to a Sphinx-documented object.
+
+    Two foreign keys, because an intersphinx link is a statement about a
+    pair: this documentation site documents this object. The entity FK is
+    what a reader's query resolves against, and the source FK is what makes
+    a re-ingest able to replace exactly one site's links and leave every
+    other site's alone.
+    """
+
+    __tablename__ = "links_intersphinx"
+
+    __mapper_args__ = {  # noqa: RUF012
+        "polymorphic_identity": "intersphinx",
+    }
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("link.id", ondelete="CASCADE"), primary_key=True
+    )
+    """The primary key, shared with the ``link`` row this subtype extends.
+
+    ``ON DELETE CASCADE`` so the per-source replace in the ingest path can
+    delete the base ``link`` rows in one statement without orphaning their
+    subtype rows.
+    """
+
+    entity_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("intersphinx_entity.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    """The ID of the entity this link documents."""
+
+    source_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("intersphinx_source.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    """The ID of the registered source this link was ingested from."""
+
+    entity: Mapped[SqlIntersphinxEntity] = relationship(
+        "SqlIntersphinxEntity", back_populates="links"
+    )
+    """The entity this link documents."""
+
+    source: Mapped[SqlIntersphinxSource] = relationship(
+        "SqlIntersphinxSource", back_populates="links"
+    )
+    """The registered source this link was ingested from."""

@@ -3,21 +3,53 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Path, Query
+from pydantic import StringConstraints
 from safir.models import ErrorModel
 
 from ook.config import config
 from ook.dependencies.context import RequestContext, context_dependency
 from ook.exceptions import NotFoundError
+from ook.storage.intersphinxentitystore import IntersphinxEntityCursor
 from ook.storage.linkstore import (
     SdmColumnLinksCollectionCursor,
     SdmLinksCollectionCursor,
     SdmTableLinksCollectionCursor,
 )
 
-from .models import Link, SdmDomainInfo, SdmLinks
+from .models import (
+    Link,
+    LinkDomainSummary,
+    PythonDomainInfo,
+    PythonObjectLinks,
+    SdmDomainInfo,
+    SdmLinks,
+)
 
 router = APIRouter(prefix=f"{config.path_prefix}/links", tags=["links"])
 """FastAPI router for the links API."""
+
+ENTITY_DOMAIN_TYPE_HEADER = "X-Ook-Entity-Domain-Type"
+"""Header naming the Sphinx role of the entity a response describes."""
+
+ENTITY_DOMAIN_TYPE_HEADER_SPEC = {
+    ENTITY_DOMAIN_TYPE_HEADER: {
+        "description": (
+            "The Sphinx role the entity this response describes was"
+            " declared with, without its domain prefix -- the same value"
+            " the collection endpoints report as ``domain_type``. The"
+            " vocabulary is whatever a documented site's Sphinx extensions"
+            " emit, so an unfamiliar value is a role the client does not"
+            " model rather than an error. Present on every ``200``."
+        ),
+        "schema": {"type": "string"},
+    }
+}
+"""OpenAPI ``headers`` entry for the entity domain-type header.
+
+Written once here and referenced from the route's ``responses`` rather than
+inlined at the route, so the description a client reads cannot drift from
+the header the handler sets.
+"""
 
 # Common path parameters
 
@@ -30,6 +62,56 @@ table_name_path = Annotated[str, Path(title="Table name", examples=["Object"])]
 column_name_path = Annotated[
     str, Path(title="Column name", examples=["detect_isPrimary"])
 ]
+
+python_object_name_path = Annotated[
+    str,
+    Path(
+        title="Python object name",
+        description=(
+            "The fully qualified name of the Python object, which is what a "
+            "Sphinx cross-reference targets."
+        ),
+        examples=["lsst.afw.table.SourceCatalog"],
+    ),
+]
+
+# Common query parameters
+
+python_domain_type_query = Annotated[
+    list[Annotated[str, StringConstraints(min_length=1)]] | None,
+    Query(
+        title="Sphinx role filter",
+        description=(
+            "Keep only objects declared with one of these Sphinx roles, "
+            "written without the ``py:`` prefix. Repeat the parameter to "
+            "accept several roles -- `?domain_type=class&domain_type="
+            "exception` lists objects that are either -- and omit it to "
+            "list every role. Any non-empty value is accepted, because the "
+            "role vocabulary is whatever a documented site's Sphinx "
+            "extensions emit: a role no stored object carries answers with "
+            "an empty page rather than an error. An empty value names no "
+            "role at all and is rejected."
+        ),
+        examples=[["class", "exception"]],
+    ),
+]
+
+
+@router.get(
+    "/domains",
+    summary="List the link domains",
+    response_description="The link domains and their URI templates",
+)
+async def get_link_domains(
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[LinkDomainSummary]:
+    """List every link domain, with the URI templates each one publishes.
+
+    This is the entry point to the Links API: a client discovers which
+    domains exist and how to address their entities here, instead of
+    hard-coding a path per domain.
+    """
+    return LinkDomainSummary.create_all(request=context.request)
 
 
 @router.get(
@@ -341,3 +423,202 @@ async def get_sdm_schema_column_links(
                 f"{table_name} in schema {schema_name}."
             )
         return [Link.from_domain_link(link) for link in links]
+
+
+@router.get(
+    "/domains/python",
+    summary="Information about the Python domain",
+    response_description="Information about the Python domain",
+)
+async def get_python_domain_info(
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> PythonDomainInfo:
+    """Get information about the Python domain."""
+    return PythonDomainInfo.create(request=context.request)
+
+
+@router.get(
+    "/domains/python/objects",
+    summary="List Python objects' doc links",
+    response_description="List of Python objects and their doc links",
+)
+async def get_python_objects(
+    *,
+    domain_type: python_domain_type_query = None,
+    cursor: Annotated[
+        str | None,
+        Query(
+            title="Pagination cursor",
+            description="Cursor to navigate paginated results",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Query(
+            title="Row limit",
+            description="Maximum number of entries to return",
+            examples=[100],
+            ge=1,
+            le=100,
+        ),
+    ] = 100,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[PythonObjectLinks]:
+    """List every Python object Ook knows, with its documentation links.
+
+    A domain nothing has been ingested into is an empty collection rather
+    than a 404: the endpoint answers about a domain, which exists whether
+    or not any source has been registered for it yet.
+
+    Passing `domain_type` narrows the listing to objects declared with
+    those Sphinx roles, and narrows `X-Total-Count` with it, so a filtered
+    listing pages against its own total. The filter travels in the query
+    string the `Link` header preserves, so following a next URL keeps it.
+
+    An object is stored once per name however many sites document it, and
+    the first declaration wins when one inventory declares a name under two
+    roles -- so such a name carries only its first role and matches only
+    that filter value. Across sites the tie breaks the other way round: a
+    name two registered sites declare under different roles carries the
+    role and display name the most recently ingested of them gave it, so
+    the role reported here can change as sites are re-ingested. That is
+    what lets a site correct the role it declares.
+    """
+    parsed_cursor = (
+        IntersphinxEntityCursor.from_str(cursor) if cursor else None
+    )
+
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        results = await link_service.get_python_objects(
+            roles=domain_type, limit=limit, cursor=parsed_cursor
+        )
+        response = context.response
+        request = context.request
+        response.headers["Link"] = results.link_header(request.url)
+        response.headers["X-Total-Count"] = str(results.count)
+        return PythonObjectLinks.from_domain(
+            domain_collection=results.entries, request=request
+        )
+
+
+@router.get(
+    "/domains/python/objects/{name}/children",
+    summary="List a Python object's children's doc links",
+    response_description=(
+        "List of the objects the named object contains, with their doc links"
+    ),
+    responses={404: {"description": "Not found", "model": ErrorModel}},
+)
+async def get_python_object_children(
+    *,
+    name: python_object_name_path,
+    domain_type: python_domain_type_query = None,
+    cursor: Annotated[
+        str | None,
+        Query(
+            title="Pagination cursor",
+            description="Cursor to navigate paginated results",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Query(
+            title="Row limit",
+            description="Maximum number of entries to return",
+            examples=[100],
+            ge=1,
+            le=100,
+        ),
+    ] = 100,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[PythonObjectLinks]:
+    """List the objects one Python object directly contains.
+
+    Direct children only -- a module's classes and functions, a class's
+    methods -- so one page is one level of the hierarchy. Walking a subtree
+    means following this endpoint down it.
+
+    An object that contains nothing answers with an empty page, which is a
+    different answer from the 404 a name nothing in the domain answers to
+    gets.
+
+    Passing `domain_type` narrows the page to children declared with those
+    Sphinx roles, and narrows `X-Total-Count` with it, on every page. A
+    known object none of whose children carry the roles asked for still
+    answers with an empty page rather than a 404, because the name is
+    resolved before the filter is applied.
+
+    An object is stored once per name however many sites document it, and
+    the first declaration wins when one inventory declares a name under two
+    roles -- so such a name carries only its first role and matches only
+    that filter value. Across sites the tie breaks the other way round: a
+    name two registered sites declare under different roles carries the
+    role and display name the most recently ingested of them gave it, so
+    the role reported here can change as sites are re-ingested. That is
+    what lets a site correct the role it declares.
+    """
+    parsed_cursor = (
+        IntersphinxEntityCursor.from_str(cursor) if cursor else None
+    )
+
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        results = await link_service.get_python_object_children(
+            name, roles=domain_type, limit=limit, cursor=parsed_cursor
+        )
+        if results is None:
+            raise NotFoundError(f"No Python object named {name} is known.")
+        response = context.response
+        request = context.request
+        response.headers["Link"] = results.link_header(request.url)
+        response.headers["X-Total-Count"] = str(results.count)
+        return PythonObjectLinks.from_domain(
+            domain_collection=results.entries, request=request
+        )
+
+
+@router.get(
+    "/domains/python/objects/{name}",
+    summary="Get a Python object's doc links",
+    response_description="List of doc links for a Python object",
+    responses={
+        200: {"headers": ENTITY_DOMAIN_TYPE_HEADER_SPEC},
+        404: {"description": "Not found", "model": ErrorModel},
+    },
+)
+async def get_python_object_links(
+    name: python_object_name_path,
+    context: Annotated[RequestContext, Depends(context_dependency)],
+) -> list[Link]:
+    """Get the documentation links for one Python object.
+
+    A name no registered site documents is a 404. Ook stores an object only
+    while some site gives it a page, so the list is never empty.
+
+    The body is a bare list of links, matching every other single-entity
+    endpoint in this API, so the one fact about the object itself that a
+    client cannot read off a link -- the Sphinx role it was declared with --
+    rides in the `X-Ook-Entity-Domain-Type` response header instead. It is
+    the same value the collection endpoints report as `domain_type`. Only
+    that scalar travels this way: should this endpoint ever need to say more
+    about the entity, the answer is to give it the `PythonObjectLinks`
+    envelope the collections use, not a second parallel header.
+
+    The role is set into the header unencoded because ingest guarantees it
+    can be: `~ook.domain.intersphinxentities.build_entities` declines any
+    object whose role is not ASCII, so nothing this endpoint can read back
+    fails the latin-1 encoding a header value gets.
+    """
+    logger = context.logger
+    logger.debug(
+        "Received request to get documentation links for a Python object.",
+        name=name,
+    )
+    async with context.session.begin():
+        link_service = context.factory.create_links_service()
+        entity = await link_service.get_python_object(name)
+        if entity is None:
+            raise NotFoundError(f"No Python object named {name} is known.")
+        context.response.headers[ENTITY_DOMAIN_TYPE_HEADER] = entity.role
+        return [Link.from_domain_link(link) for link in entity.links]

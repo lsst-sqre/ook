@@ -29,9 +29,11 @@ from .services.classification import ClassificationService
 from .services.githubmetadata import GitHubMetadataService
 from .services.githuboidc import GitHubOidcVerifier
 from .services.glossary import GlossaryService
+from .services.ingest.intersphinx import IntersphinxIngestService
 from .services.ingest.lssttexmf import LsstTexmfIngestService
 from .services.ingest.sdmschemas import SdmSchemasIngestService
 from .services.intersphinx import IntersphinxCacheService
+from .services.intersphinxsources import IntersphinxSourceService
 from .services.landerjsonldingest import LtdLanderJsonLdIngestService
 from .services.linkcheck import LinkCheckService, UrlChecker
 from .services.links import LinksService
@@ -42,6 +44,8 @@ from .services.sphinxtechnoteingest import SphinxTechnoteIngestService
 from .services.technoteingest import TechnoteIngestService
 from .storage.authorstore import AuthorStore
 from .storage.glossarystore import GlossaryStore
+from .storage.intersphinxentitystore import IntersphinxEntityStore
+from .storage.intersphinxsourcestore import IntersphinxSourceStore
 from .storage.intersphinxstore import IntersphinxInventoryStore
 from .storage.linkcheckstore import LinkCheckStore
 from .storage.linkstore import LinkStore
@@ -326,6 +330,42 @@ class Factory:
             logger=self._logger,
         )
 
+    def create_intersphinx_entity_store(self) -> IntersphinxEntityStore:
+        """Create an IntersphinxEntityStore."""
+        return IntersphinxEntityStore(
+            session=self._session,
+            logger=self._logger,
+        )
+
+    def create_intersphinx_source_store(self) -> IntersphinxSourceStore:
+        """Create an IntersphinxSourceStore."""
+        return IntersphinxSourceStore(
+            session=self._session,
+            logger=self._logger,
+        )
+
+    def create_intersphinx_source_service(self) -> IntersphinxSourceService:
+        """Create an IntersphinxSourceService."""
+        return IntersphinxSourceService(
+            source_store=self.create_intersphinx_source_store(),
+            entity_store=self.create_intersphinx_entity_store(),
+            logger=self._logger,
+        )
+
+    def create_intersphinx_ingest_service(self) -> IntersphinxIngestService:
+        """Create an IntersphinxIngestService.
+
+        The service commits its own transactions, one per source, so it must
+        be called without a surrounding transaction.
+        """
+        return IntersphinxIngestService(
+            cache_service=self.create_intersphinx_cache_service(),
+            entity_store=self.create_intersphinx_entity_store(),
+            source_store=self.create_intersphinx_source_store(),
+            session=self._session,
+            logger=self._logger,
+        )
+
     def create_intersphinx_cache_service(self) -> IntersphinxCacheService:
         """Create an IntersphinxCacheService."""
         return IntersphinxCacheService(
@@ -479,6 +519,7 @@ class Factory:
         return LinksService(
             logger=self._logger,
             link_store=self.create_link_store(),
+            entity_store=self.create_intersphinx_entity_store(),
         )
 
     def create_author_service(self) -> AuthorService:

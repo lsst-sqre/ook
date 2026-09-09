@@ -19,7 +19,11 @@ from sqlalchemy.exc import OperationalError
 from structlog.testing import capture_logs
 
 from ook.config import config
-from ook.domain.intersphinx import IntersphinxInventory, InventoryFetchStatus
+from ook.domain.intersphinx import (
+    IntersphinxInventory,
+    InventoryCacheStatus,
+    InventoryFetchStatus,
+)
 from ook.domain.redirects import MAX_REDIRECTS
 from ook.exceptions import InvalidInventoryUrlError, UpstreamInventoryError
 from ook.factory import Factory
@@ -3455,3 +3459,300 @@ async def test_refresh_logs_terminal_url_and_hop_count(
         and event.get("redirect_hops") == 1
         for event in captured
     )
+
+
+@pytest.mark.asyncio
+async def test_when_stale_revalidates_a_stale_row(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """``when_stale`` sends a conditional GET for a row past the TTL.
+
+    A ``304`` keeps the stored content and bumps the freshness anchor, so
+    the caller is handed a copy upstream has just confirmed rather than the
+    stale one the default mode would have served.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(days=1),
+    )
+    route = respx_mock.get(INVENTORY_URL).mock(return_value=Response(304))
+
+    # A revalidating serve commits its own short transactions, so it is
+    # called without a surrounding one.
+    service = factory.create_intersphinx_cache_service()
+    served = await service.get_inventory(
+        INVENTORY_URL,
+        revalidate=intersphinx_service.RevalidationMode.when_stale,
+    )
+
+    assert route.call_count == 1
+    assert served.cache_status is InventoryCacheStatus.hit
+    assert served.inventory.content == INVENTORY_BODY
+    stored = await _get_stored(factory)
+    assert stored.content == INVENTORY_BODY
+    _assert_stamped_at_write_time(stored.date_fetched, not_before=now)
+
+
+@pytest.mark.asyncio
+async def test_when_stale_serves_a_fresh_row_without_upstream(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """``when_stale`` leaves a row inside the TTL alone.
+
+    The point of the mode is that a caller pays for freshness only when the
+    stored copy has actually aged out, so a site ingested twice in a row
+    costs one conditional GET, not two.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=now - timedelta(minutes=1),
+        date_requested=now - timedelta(minutes=1),
+    )
+    route = respx_mock.get(INVENTORY_URL).mock(return_value=Response(304))
+
+    service = factory.create_intersphinx_cache_service()
+    served = await service.get_inventory(
+        INVENTORY_URL,
+        revalidate=intersphinx_service.RevalidationMode.when_stale,
+    )
+
+    assert route.call_count == 0
+    assert served.cache_status is InventoryCacheStatus.hit
+    assert served.inventory.content == INVENTORY_BODY
+
+
+@pytest.mark.asyncio
+async def test_when_stale_honours_the_refresh_backoff(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A row inside its refresh backoff is served stale, not re-asked.
+
+    The backoff is what holds a broken origin to the refresh cadence, and
+    an ingest run that re-asked it once per sweep would defeat it.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(hours=2),
+    )
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_inventory_store()
+        await store.update_refresh_failure(
+            INVENTORY_URL,
+            now=now - timedelta(minutes=1),
+            error="upstream said 503",
+            expected_date_fetched=now - timedelta(hours=2),
+        )
+    route = respx_mock.get(INVENTORY_URL).mock(return_value=Response(304))
+
+    service = factory.create_intersphinx_cache_service()
+    served = await service.get_inventory(
+        INVENTORY_URL,
+        revalidate=intersphinx_service.RevalidationMode.when_stale,
+    )
+
+    assert route.call_count == 0
+    assert served.cache_status is InventoryCacheStatus.stale
+    assert served.inventory.content == INVENTORY_BODY
+
+
+@pytest.mark.asyncio
+async def test_when_stale_replaces_content_on_200(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A ``200`` inline revalidation serves the bytes it just fetched."""
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(hours=2),
+    )
+    republished = b"# Sphinx inventory version 2\nrepublished payload"
+    respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(
+            200,
+            content=republished,
+            headers={"ETag": '"republished"'},
+        )
+    )
+
+    service = factory.create_intersphinx_cache_service()
+    served = await service.get_inventory(
+        INVENTORY_URL,
+        revalidate=intersphinx_service.RevalidationMode.when_stale,
+    )
+
+    assert served.cache_status is InventoryCacheStatus.hit
+    assert served.inventory.content == republished
+    stored = await _get_stored(factory)
+    assert stored.content == republished
+    assert stored.etag == '"republished"'
+
+
+@pytest.mark.asyncio
+async def test_when_stale_serves_stale_when_revalidation_fails(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A failed inline revalidation serves the stored copy rather than raise.
+
+    The cache's keep-serving-stale contract, reached from the request side:
+    a site whose origin is down is ingested from the copy Ook already has,
+    and the caller is told the copy could not be revalidated.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=now - timedelta(hours=2),
+        date_requested=now - timedelta(hours=2),
+    )
+    respx_mock.get(INVENTORY_URL).mock(return_value=Response(503))
+
+    service = factory.create_intersphinx_cache_service()
+    served = await service.get_inventory(
+        INVENTORY_URL,
+        revalidate=intersphinx_service.RevalidationMode.when_stale,
+    )
+
+    assert served.cache_status is InventoryCacheStatus.stale
+    assert served.inventory.content == INVENTORY_BODY
+
+
+@pytest.mark.asyncio
+async def test_a_failed_inline_revalidation_records_the_backoff(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A failed inline revalidation marks the row's refresh backoff.
+
+    The stored copy -- content, validators, and freshness anchor alike --
+    is left untouched, exactly as the refresh job leaves it, so it keeps
+    serving stale at its true age.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    stale_fetched = now - timedelta(hours=2)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=stale_fetched,
+        date_requested=stale_fetched,
+    )
+    respx_mock.get(INVENTORY_URL).mock(return_value=Response(503))
+
+    service = factory.create_intersphinx_cache_service()
+    await service.get_inventory(
+        INVENTORY_URL,
+        revalidate=intersphinx_service.RevalidationMode.when_stale,
+    )
+
+    stored = await _get_stored(factory)
+    assert stored.date_refresh_failed is not None
+    assert stored.date_fetched == stale_fetched
+    assert stored.content == INVENTORY_BODY
+    assert stored.last_fetch_error is not None
+
+
+@pytest.mark.asyncio
+async def test_always_revalidates_a_row_inside_the_ttl(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """``always`` sends the conditional GET however fresh the row is.
+
+    The mode an operator's explicit "ingest this source" reaches for: a
+    site that republished a minute ago is parsed from the copy it publishes
+    now, at the cost of one conditional request.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        date_fetched=now - timedelta(minutes=1),
+        date_requested=now - timedelta(minutes=1),
+    )
+    republished = b"# Sphinx inventory version 2\nrepublished payload"
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=republished)
+    )
+
+    service = factory.create_intersphinx_cache_service()
+    served = await service.get_inventory(
+        INVENTORY_URL,
+        revalidate=intersphinx_service.RevalidationMode.always,
+    )
+
+    assert route.call_count == 1
+    assert served.cache_status is InventoryCacheStatus.hit
+    assert served.inventory.content == republished
+
+
+@pytest.mark.asyncio
+async def test_a_revalidating_mode_leaves_a_cold_miss_alone(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """With nothing stored there is nothing to revalidate.
+
+    The cold-miss path is reached unchanged, so a revalidating caller's
+    first ingest of a site behaves exactly as the default mode's does.
+    """
+    route = respx_mock.get(INVENTORY_URL).mock(
+        return_value=Response(200, content=INVENTORY_BODY)
+    )
+
+    service = factory.create_intersphinx_cache_service()
+    served = await service.get_inventory(
+        INVENTORY_URL,
+        revalidate=intersphinx_service.RevalidationMode.always,
+    )
+    await factory.db_session.commit()
+
+    assert route.call_count == 1
+    assert served.cache_status is InventoryCacheStatus.miss
+    assert served.inventory.content == INVENTORY_BODY
+
+
+@pytest.mark.asyncio
+async def test_a_revalidating_mode_still_raises_from_the_negative_cache(
+    factory: Factory,
+    respx_mock: respx.Router,
+) -> None:
+    """A live negative-cache row raises whatever mode asked for it.
+
+    Negative-cache behaviour is untouched by revalidation: there is no
+    stored copy to serve stale, so the failure is still the answer.
+    """
+    now = datetime.now(tz=UTC)
+    await _seed_stale_inventory(
+        factory,
+        INVENTORY_URL,
+        content=None,
+        etag=None,
+        last_modified=None,
+        date_fetched=now - timedelta(seconds=1),
+        date_requested=now - timedelta(seconds=1),
+        last_fetch_status=InventoryFetchStatus.failure,
+    )
+    route = respx_mock.get(INVENTORY_URL).mock(return_value=Response(304))
+
+    service = factory.create_intersphinx_cache_service()
+    with pytest.raises(UpstreamInventoryError):
+        await service.get_inventory(
+            INVENTORY_URL,
+            revalidate=intersphinx_service.RevalidationMode.always,
+        )
+
+    assert route.call_count == 0

@@ -44,7 +44,54 @@ __all__ = [
     "HostResolver",
     "IntersphinxCacheService",
     "IntersphinxRefreshSummary",
+    "RevalidationMode",
 ]
+
+
+class RevalidationMode(Enum):
+    """How hard `IntersphinxCacheService.get_inventory` works for freshness.
+
+    The cache serves a stored copy without contacting upstream, and for the
+    public cache endpoint that is the whole point: a client gets an answer
+    at Postgres latency and the ``refresh-intersphinx`` job keeps what it
+    gets warm. A caller that consumes an inventory's *contents* rather than
+    relaying its bytes — the ingest run, which turns them into links —
+    cannot be satisfied by that, because the copy it parses would then be
+    only as current as the last refresh run, and an operator re-ingesting a
+    site that has just republished would parse the old inventory. This
+    selects which of the two a call is.
+
+    Every mode past `never` reuses the refresh job's own revalidation, so
+    there is one conditional-GET implementation and one keep-serving-stale
+    contract, whichever path asked for it.
+    """
+
+    never = auto()
+    """Serve any content-bearing row as it stands (the default).
+
+    The public cache endpoint's behaviour: no upstream request is made for
+    a row that has content, however old it is.
+    """
+
+    when_stale = auto()
+    """Revalidate a content-bearing row that is past the freshness TTL.
+
+    The same predicate the refresh job's due list applies, minus its active
+    window (the caller *is* the client request that makes the inventory
+    active): a row inside the TTL is served as it stands, and a row whose
+    last refresh failure is still within the TTL keeps its backoff and is
+    served stale rather than re-asking a broken origin per call.
+    """
+
+    always = auto()
+    """Send the conditional GET even for a row inside the TTL.
+
+    For a caller that has been told, specifically, to go and look — the
+    ``source_url`` ingest trigger an operator reaches for after a site
+    republishes. It overrides the backoff as well as the TTL: an operator
+    naming one source is asking for the request, and it costs exactly one
+    conditional GET.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +148,32 @@ class _RefreshResult(Enum):
 
     superseded = auto()
     """The write was dropped: the row changed since the due-list read."""
+
+
+@dataclass(frozen=True, slots=True)
+class _RefreshOutcome:
+    """One completed revalidation: how it ended, and the copy it leaves.
+
+    The refresh job needs only `result` — it counts outcomes and moves on —
+    but the request-side path has to *serve* the inventory it just
+    revalidated, and neither branch of `IntersphinxCacheService._refresh_one`
+    leaves that lying around: the ``304`` branch writes a subset of the
+    record's columns and the ``200`` branch replaces its content. Returning
+    the record the write was built from is what lets one revalidation
+    implementation answer both callers.
+    """
+
+    result: _RefreshResult
+    """How the revalidation ended."""
+
+    inventory: IntersphinxInventory
+    """The inventory as this revalidation left it.
+
+    Accurate for `_RefreshResult.refreshed` and `_RefreshResult.revalidated`.
+    For `_RefreshResult.superseded` it describes the copy the revalidation
+    started from, which is by definition *not* what the row now holds — a
+    caller that serves it must re-read the row instead.
+    """
 
 
 class _BackoffWrite(Enum):
@@ -322,12 +395,20 @@ class IntersphinxCacheService:
 
     This is the deep module for the intersphinx cache: `get_inventory` is
     the single entry point that resolves an origin inventory URL to its
-    bytes, fetching from the origin and populating the cache on a miss. Any
-    populated cache entry is served from Postgres without contacting
-    upstream — a fetch within ``ttl`` is served as a fresh cache hit, an
-    older one is served stale (proactive refresh is the background job's
-    responsibility) — so the request path never depends on the origin once
-    a copy exists.
+    bytes, fetching from the origin and populating the cache on a miss. By
+    default any populated cache entry is served from Postgres without
+    contacting upstream — a fetch within ``ttl`` is served as a fresh cache
+    hit, an older one is served stale (keeping it warm is the background
+    refresh job's business) — so the public cache endpoint never depends on
+    the origin once a copy exists.
+
+    A caller that needs the inventory's *contents* current rather than its
+    bytes fast — Ook's own ingest run, which turns them into documentation
+    links — passes a `RevalidationMode` and gets the same conditional GET
+    the refresh job performs, inline, before the copy is served. It is one
+    implementation (`_refresh_one`) either way, so the guard, the withheld
+    validators, the ``date_fetched``-guarded writes, and the
+    keep-serving-stale contract cannot drift between the two paths.
 
     Before any upstream fetch the origin URL passes an SSRF guard: it must
     use ``https`` and its host must not resolve to a private, link-local,
@@ -439,19 +520,46 @@ class IntersphinxCacheService:
         self._max_content_size = max_content_size
         self._resolve_host = resolve_host or _default_resolve_host
 
-    async def get_inventory(self, url: str) -> ServedInventory:
+    async def get_inventory(
+        self,
+        url: str,
+        *,
+        revalidate: RevalidationMode = RevalidationMode.never,
+    ) -> ServedInventory:
         """Resolve an origin inventory URL to its cached record.
 
         On a cold miss the origin is fetched synchronously, stored, and
         returned. When the URL is already cached with content, the stored
-        copy is served without contacting upstream and its last-requested
-        time is bumped — a fetch within the TTL is a fresh cache hit, an
-        older one is served stale.
+        copy is served and its last-requested time is bumped — by default
+        without contacting upstream at all, so a fetch within the TTL is a
+        fresh cache hit and an older one is served stale.
+
+        ``revalidate`` is what a caller that needs the *contents* current,
+        rather than the bytes served fast, reaches for: it revalidates the
+        stored copy inline through the same conditional-GET implementation
+        the refresh job uses (`_refresh_one`), with the same
+        keep-serving-stale contract — a revalidation that fails serves the
+        stored copy as `~InventoryCacheStatus.stale` and records the refresh
+        backoff rather than raising. The cold-miss and negative-cache paths
+        are untouched by it: there is nothing to revalidate without a stored
+        copy.
+
+        A revalidating call commits its own short transactions — the
+        ``date_requested`` bump before the conditional GET, and the outcome
+        after it — so that no row lock is held across an HTTP fetch, the same
+        invariant `refresh_inventories` keeps. It must therefore be called
+        with no pending writes of the caller's own, and with no surrounding
+        transaction. The default mode commits nothing and leaves transaction
+        boundaries to the caller, as the rest of the request path does.
 
         Parameters
         ----------
         url
             The full origin ``objects.inv`` URL.
+        revalidate
+            Whether a content-bearing row is revalidated against its origin
+            before being served, and under what condition. Defaults to
+            `RevalidationMode.never`, the public cache endpoint's behaviour.
 
         Returns
         -------
@@ -460,21 +568,33 @@ class IntersphinxCacheService:
             this serve was decided under. The status is reported rather than
             left for the caller to infer, because the record does not carry
             it: a cold miss stamps the same just-now ``date_fetched`` a fast
-            hit has, and telling either from a stale serve needs the TTL.
+            hit has, and telling either from a stale serve needs the TTL. It
+            describes the freshness the caller actually got, so a successful
+            inline revalidation reports `~InventoryCacheStatus.hit` and one
+            that failed reports `~InventoryCacheStatus.stale`.
 
         Raises
         ------
         UpstreamInventoryError
             Raised on a cold-miss upstream fetch failure, and on a repeat
             request served from the negative cache within the negative TTL.
+            Never raised for a failed inline revalidation, which has a stored
+            copy to fall back on.
         """
         cached = await self._inventory_store.get_inventory(url)
         if cached is not None and cached.content is not None:
             now = datetime.now(tz=UTC)
             await self._inventory_store.touch_date_requested(url, now=now)
+            requested = replace(cached, date_requested=now)
+            if self._is_revalidation_due(requested, mode=revalidate, now=now):
+                # Commit the bump as its own short transaction: the
+                # conditional GET below can run for the whole fetch budget,
+                # and the row lock this UPDATE took must not outlive it.
+                await self._session.commit()
+                return await self._serve_revalidated(requested)
             cache_status = self._log_cache_serve(cached, now=now)
             return ServedInventory(
-                inventory=replace(cached, date_requested=now),
+                inventory=requested,
                 cache_status=cache_status,
             )
         if cached is not None and self._is_negative_cache_fresh(cached):
@@ -488,6 +608,134 @@ class IntersphinxCacheService:
                 cached.last_fetch_error or _GENERIC_UPSTREAM_ERROR
             )
         return await self._fetch_and_store(url)
+
+    def _is_revalidation_due(
+        self,
+        inventory: IntersphinxInventory,
+        *,
+        mode: RevalidationMode,
+        now: datetime,
+    ) -> bool:
+        """Decide whether this serve revalidates its stored copy first.
+
+        The `~RevalidationMode.when_stale` arm is deliberately the same rule
+        `IntersphinxInventoryStore.get_stale_active_inventories` selects the
+        refresh due list by -- stale past the TTL, and not inside a refresh
+        backoff -- so an inventory is judged identically whichever path asks.
+        It is restated here rather than shared because the store's copy is
+        SQL over a whole table and this one is Python over one row; the
+        store's docstring and this one name each other so a change to the
+        rule lands in both. The due list's third clause, the active window,
+        has no counterpart here: the caller *is* a client request for this
+        inventory, which is the very thing that window tests for.
+
+        Parameters
+        ----------
+        inventory
+            The content-bearing row this call is about to serve.
+        mode
+            The revalidation mode the caller asked for.
+        now
+            The reference time for the TTL and backoff comparisons.
+
+        Returns
+        -------
+        bool
+            Whether to revalidate before serving.
+        """
+        if mode is RevalidationMode.never:
+            return False
+        if mode is RevalidationMode.always:
+            return True
+        is_stale = (
+            inventory.date_fetched is None
+            or now - inventory.date_fetched > self._ttl
+        )
+        backing_off = (
+            inventory.date_refresh_failed is not None
+            and now - inventory.date_refresh_failed <= self._ttl
+        )
+        return is_stale and not backing_off
+
+    async def _serve_revalidated(
+        self, inventory: IntersphinxInventory
+    ) -> ServedInventory:
+        """Revalidate a stored copy inline and serve what that produced.
+
+        The request-side half of the revalidation `refresh_inventories` does
+        in bulk, over the same `_refresh_one`. It owns the commit for the one
+        outcome it produced, and it never raises: a revalidation failure is
+        this service's keep-serving-stale contract, not the caller's problem,
+        so the stored copy is served as `~InventoryCacheStatus.stale` with the
+        refresh backoff recorded.
+        """
+        try:
+            outcome = await self._refresh_one(inventory)
+        except (httpx.HTTPError, InvalidInventoryUrlError) as exc:
+            # No rollback needed: every failure caught here is raised before
+            # `_refresh_one` writes anything, so the session is idle.
+            return await self._serve_unrevalidated(inventory, exc)
+        await self._session.commit()
+        if outcome.result is _RefreshResult.superseded:
+            return await self._serve_current_row(inventory)
+        return ServedInventory(
+            inventory=outcome.inventory,
+            cache_status=InventoryCacheStatus.hit,
+        )
+
+    async def _serve_unrevalidated(
+        self,
+        inventory: IntersphinxInventory,
+        error: httpx.HTTPError | InvalidInventoryUrlError,
+    ) -> ServedInventory:
+        """Serve a stored copy whose inline revalidation failed.
+
+        The stored copy -- content, validators, and the ``date_fetched``
+        freshness anchor alike -- is left exactly as it was, so it keeps
+        being served at its true age, and only the failure columns and the
+        backoff marker are written. That backoff is what keeps a broken
+        origin from being re-asked once per ingest of the site: the next
+        `~RevalidationMode.when_stale` serve inside the TTL skips the fetch
+        and serves stale straight away.
+        """
+        detail = self._describe_refresh_error(error, url=inventory.url)
+        backoff = await self._record_refresh_failure(inventory, detail=detail)
+        self._logger.warning(
+            "Serving an unrevalidated intersphinx inventory from cache",
+            url=inventory.url,
+            cache_status=InventoryCacheStatus.stale,
+            error=detail,
+            backoff_recorded=backoff is _BackoffWrite.recorded,
+        )
+        return ServedInventory(
+            inventory=inventory, cache_status=InventoryCacheStatus.stale
+        )
+
+    async def _serve_current_row(
+        self, inventory: IntersphinxInventory
+    ) -> ServedInventory:
+        """Serve whatever the row holds now, after a superseded outcome.
+
+        A superseded revalidation is one whose write was dropped because the
+        row moved under its fetch -- a concurrent cold miss or refresh
+        committed a newer copy. The record this revalidation built describes
+        the copy it started from and is exactly what must not be served, so
+        the row is read back instead. A row that has since lost its content
+        is not a state the store can reach (negative caching never displaces
+        content), so the fallback is only to serve the copy in hand, stale.
+        """
+        current = await self._inventory_store.get_inventory(inventory.url)
+        await self._session.commit()
+        if current is None or current.content is None:
+            return ServedInventory(
+                inventory=inventory, cache_status=InventoryCacheStatus.stale
+            )
+        return ServedInventory(
+            inventory=current,
+            cache_status=self._log_cache_serve(
+                current, now=datetime.now(tz=UTC)
+            ),
+        )
 
     async def refresh_inventories(
         self, *, now: datetime | None = None, limit: int | None = None
@@ -515,9 +763,14 @@ class IntersphinxCacheService:
         list for one TTL. Without that backoff a broken origin would be
         retried on every run, sorting ahead of every healthy inventory and
         (since each attempt can walk a whole redirect chain) delaying them
-        behind it, for the entire active window. This is the background
-        counterpart to the request path: the request path never blocks on
-        upstream because this job keeps the cache warm.
+        behind it, for the entire active window.
+
+        This job exists for the *client-facing* cache: it keeps the copies
+        people fetch through the public inventory endpoint warm, so that
+        endpoint never blocks on an origin. Nothing inside Ook waits on it —
+        the ingest run revalidates the inventories it parses itself, through
+        `get_inventory`'s `RevalidationMode` — so there is no ordering
+        between this job and any other.
 
         Every row's outcome is timestamped when it is written, not when the
         batch started. The batch is serial and each inventory can spend the
@@ -587,7 +840,7 @@ class IntersphinxCacheService:
         unrecorded = 0
         for inventory in due:
             try:
-                result = await self._refresh_one(inventory)
+                outcome = await self._refresh_one(inventory)
             except (httpx.HTTPError, InvalidInventoryUrlError) as exc:
                 # No rollback: every failure this catches is raised before
                 # `_refresh_one` writes anything, so the session is idle
@@ -613,7 +866,7 @@ class IntersphinxCacheService:
             # Commit this inventory's outcome immediately so a later crash in
             # the batch cannot lose it and no transaction spans the next fetch.
             await self._session.commit()
-            results[result] += 1
+            results[outcome.result] += 1
         summary = IntersphinxRefreshSummary(
             considered=len(due),
             refreshed=results[_RefreshResult.refreshed],
@@ -636,15 +889,16 @@ class IntersphinxCacheService:
     async def _record_refresh_failure(
         self, inventory: IntersphinxInventory, *, detail: str
     ) -> _BackoffWrite:
-        """Record one inventory's failed refresh in its own transaction.
+        """Record one inventory's failed revalidation in its own transaction.
 
         Writing the failure gives the inventory its ``date_refresh_failed``
-        backoff marker, which holds it out of the due list for one TTL so a
-        broken origin is retried on the normal cadence instead of heading
-        every run. The write is stamped now rather than at batch start, so
-        the backoff runs from this attempt, and guarded on the freshness
-        anchor the due-list read saw, so a row a client cold miss refreshed
-        under this run is left alone.
+        backoff marker, which holds it out of the due list — and out of an
+        inline `RevalidationMode.when_stale` serve — for one TTL, so a broken
+        origin is retried on the normal cadence instead of heading every run
+        or being re-asked once per ingest of the site. The write is stamped
+        now rather than at batch start, so the backoff runs from this
+        attempt, and guarded on the freshness anchor the caller read, so a
+        row a client cold miss refreshed under this fetch is left alone.
 
         A database error here is caught rather than allowed to propagate.
         This is bookkeeping *about* a failure, in the handler whose whole
@@ -654,12 +908,15 @@ class IntersphinxCacheService:
         remote possibility. Letting it out would strand every inventory after
         this one unrefreshed, skip the end-of-run summary, and leave this row
         with its old ``date_fetched`` and no backoff marker, at the head of
-        the next run's due list, ready to abort that batch the same way.
+        the next run's due list, ready to abort that batch the same way. The
+        inline caller inherits the same treatment for the same reason: it has
+        a stored copy to serve, and losing that serve to a bookkeeping error
+        would be the worse outcome.
 
         Parameters
         ----------
         inventory
-            The inventory whose refresh failed, as the due-list read saw it.
+            The inventory whose revalidation failed, as its caller read it.
         detail
             The client-facing failure description to store.
 
@@ -697,7 +954,8 @@ class IntersphinxCacheService:
     ) -> str:
         """Describe a refresh failure for storage in ``last_fetch_error``.
 
-        This is the refresh path's error boundary, and the scrub of the
+        This is the revalidation paths' error boundary — the batch job's and
+        the inline request-side one's alike — and the scrub of the
         guard's rejection reason lives here rather than at the raise site:
         `_guard_url` is shared with the request path, whose 400 for a
         client-supplied URL keeps the specific, actionable reason. Only the
@@ -730,16 +988,30 @@ class IntersphinxCacheService:
 
     async def _refresh_one(
         self, inventory: IntersphinxInventory
-    ) -> _RefreshResult:
+    ) -> _RefreshOutcome:
         """Revalidate one cached inventory against its origin.
 
-        Returns which way the refresh ended: a ``304`` revalidated the stored
-        copy in place, a ``200`` replaced its content, or the write was
-        dropped because the row changed under this fetch. Raises on a guard
-        rejection, an upstream failure, an exhausted time budget, or an
-        oversized response so the caller can log the failure, record its
-        backoff, and skip to the next inventory, leaving the stored copy
-        untouched.
+        The single conditional-GET implementation, shared by the proactive
+        `refresh_inventories` batch and the request-side revalidation
+        `get_inventory` performs for a `RevalidationMode` past
+        `~RevalidationMode.never`. Both paths need the same guard, the same
+        withheld-validator rules, the same ``date_fetched``-guarded writes and
+        the same leave-the-stored-copy-alone failure contract, so they get
+        them from here rather than from two implementations that have to be
+        kept in step.
+
+        Returns which way the refresh ended -- a ``304`` revalidated the
+        stored copy in place, a ``200`` replaced its content, or the write was
+        dropped because the row changed under this fetch -- together with the
+        record that write was built from, which the request-side caller
+        serves. Raises on a guard rejection, an upstream failure, an exhausted
+        time budget, or an oversized response so the caller can log the
+        failure, record its backoff, and skip to the next inventory (or serve
+        the stored copy stale), leaving the stored copy untouched.
+
+        Committing is the caller's business, so that each can pick its own
+        boundary: the batch commits each inventory's outcome as it lands, and
+        the request-side path commits the one outcome it produced.
 
         Both writes are guarded on the ``date_fetched`` the due-list read saw
         and report whether they landed: a row in the due list is stale by
@@ -790,22 +1062,23 @@ class IntersphinxCacheService:
             # Write only what a revalidation changes: date_requested belongs
             # to the request path, and the content the 304 just said did not
             # move stays as the last 200 wrote it.
+            written = outcome
             landed = await self._inventory_store.update_revalidation_outcome(
-                outcome, expected_date_fetched=inventory.date_fetched
+                written, expected_date_fetched=inventory.date_fetched
             )
             result = _RefreshResult.revalidated
             message = "Revalidated intersphinx inventory (304 Not Modified)"
         else:
             response.raise_for_status()
+            written = replace(
+                outcome,
+                content=fetch.content,
+                content_type=response.headers.get("Content-Type"),
+                etag=response.headers.get("ETag"),
+                last_modified=response.headers.get("Last-Modified"),
+            )
             landed = await self._inventory_store.update_refresh_outcome(
-                replace(
-                    outcome,
-                    content=fetch.content,
-                    content_type=response.headers.get("Content-Type"),
-                    etag=response.headers.get("ETag"),
-                    last_modified=response.headers.get("Last-Modified"),
-                ),
-                expected_date_fetched=inventory.date_fetched,
+                written, expected_date_fetched=inventory.date_fetched
             )
             result = _RefreshResult.refreshed
             message = "Refreshed intersphinx inventory (200 OK)"
@@ -819,7 +1092,7 @@ class IntersphinxCacheService:
             final_url=fetch.final_url,
             redirect_hops=len(fetch.redirect_hops),
         )
-        return result
+        return _RefreshOutcome(result=result, inventory=written)
 
     async def _revalidate(
         self, inventory: IntersphinxInventory, *, deadline: float
