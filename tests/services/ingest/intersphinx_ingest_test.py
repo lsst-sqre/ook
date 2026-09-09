@@ -18,6 +18,7 @@ from httpx import Response
 from safir.database import create_async_session, create_database_engine
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from structlog.testing import capture_logs
 
 from ook.config import config
 from ook.dbschema.intersphinxentities import SqlIntersphinxEntity
@@ -1252,6 +1253,64 @@ async def test_an_unparseable_inventory_is_a_recorded_failure(
     assert source is not None
     assert source.last_status is SourceIngestStatus.failure
     assert source.last_error is not None
+
+
+NON_ASCII_ROLE = "クラス"
+"""A Sphinx role that will not encode as a response header value.
+
+Outside latin-1, which is what Starlette encodes a header with, so an
+object carrying it would be a 500 from the single-object endpoint that
+names an object's role in one. Roles are directive names and ASCII in
+practice; this is the shape of the one an extension could emit.
+"""
+
+
+NON_ASCII_ROLE_INVENTORY = _inventory(
+    [
+        ("pkg", "module", "api.html#module-pkg"),
+        ("pkg.Odd", NON_ASCII_ROLE, "api.html#pkg.Odd"),
+        ("pkg.Thing", "class", "api.html#pkg.Thing"),
+    ]
+)
+"""An inventory with one object Ook will not store, among two it will."""
+
+
+@pytest.mark.asyncio
+async def test_an_object_with_an_unservable_role_costs_only_itself(
+    factory: Factory, respx_mock: respx.Router
+) -> None:
+    """One odd object is skipped, named in a warning, and nothing else."""
+    _serve_inventory(respx_mock, INVENTORY_URL, NON_ASCII_ROLE_INVENTORY)
+    source_id = await _register_source(
+        factory, url=INVENTORY_URL, title="A docs"
+    )
+
+    with capture_logs() as captured:
+        summary = (
+            await factory.create_intersphinx_ingest_service().ingest_sources()
+        )
+
+    # The site is ingested, and only the object Ook cannot serve is missing.
+    assert summary.failed == 0
+    assert summary.succeeded == 1
+    assert summary.results[0].link_count == 2
+    assert [name for name, _, _ in await _stored_python_domain(factory)] == [
+        "pkg",
+        "pkg.Thing",
+    ]
+    source = await _get_source(factory, source_id)
+    assert source.last_status is SourceIngestStatus.success
+
+    warnings = [
+        event
+        for event in captured
+        if event["log_level"] == "warning"
+        and event.get("skipped_names") is not None
+    ]
+    assert len(warnings) == 1
+    assert warnings[0]["skipped_names"] == ["pkg.Odd"]
+    assert warnings[0]["skipped_count"] == 1
+    assert warnings[0]["source_id"] == source_id
 
 
 async def _age_cached_inventory(factory: Factory, url: str) -> None:

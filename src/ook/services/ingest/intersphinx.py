@@ -330,6 +330,15 @@ class _ParsedInventory:
     entities: list[InventoryEntity]
     """The entities the inventory declares, in the order it declares them."""
 
+    skipped_names: list[str]
+    """The names of the objects the parse declined, in inventory order.
+
+    Empty for an ordinary inventory. Carried through the parse rather than
+    logged inside it because `_parse_fetched_inventory` is a pure function
+    with no source to name the objects against; the ingest that owns the
+    source reports them.
+    """
+
     cache_status: InventoryCacheStatus
     """How fresh the inventory these entities were parsed from was."""
 
@@ -431,9 +440,11 @@ def _parse_fetched_inventory(fetched: _FetchedInventory) -> _ParsedInventory:
     InventoryParseError
         Raised if the payload is not a readable inventory.
     """
+    built = build_entities(parse_inventory(fetched.content))
     return _ParsedInventory(
         url=fetched.url,
-        entities=build_entities(parse_inventory(fetched.content)),
+        entities=built.entities,
+        skipped_names=built.skipped_names,
         cache_status=fetched.cache_status,
     )
 
@@ -759,6 +770,16 @@ class IntersphinxIngestService:
             parsed = _parse_fetched_inventory(fetched)
         except _INGEST_FAILURES as exc:
             return await self._record_failure(locked, exc, logger=logger)
+
+        if parsed.skipped_names:
+            # One warning for the source rather than one per object, and
+            # not a failure: an inventory Ook can only read around is still
+            # worth every other object in it.
+            logger.warning(
+                "Skipped intersphinx objects whose Sphinx role is not ASCII",
+                skipped_count=len(parsed.skipped_names),
+                skipped_names=parsed.skipped_names,
+            )
 
         try:
             replaced = await self._store_links(locked, parsed)

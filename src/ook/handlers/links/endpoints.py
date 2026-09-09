@@ -596,6 +596,11 @@ async def get_python_object_links(
     that scalar travels this way: should this endpoint ever need to say more
     about the entity, the answer is to give it the `PythonObjectLinks`
     envelope the collections use, not a second parallel header.
+
+    The role is set into the header unencoded because ingest guarantees it
+    can be: `~ook.domain.intersphinxentities.build_entities` declines any
+    object whose role is not ASCII, so nothing this endpoint can read back
+    fails the latin-1 encoding a header value gets.
     """
     logger = context.logger
     logger.debug(

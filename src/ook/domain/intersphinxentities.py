@@ -14,6 +14,11 @@ Sphinx domain's name hierarchy, which is not a property of the row at all:
 it is decided by looking at the rest of the inventory, and the same row
 yields a different parent depending on what else the site documents.
 
+Reading an inventory drops objects as well as keeping them, so the reading
+itself is a value: `BuiltEntities` carries the entities alongside the names
+of the objects that were declined, which is the only place an ingest can
+learn that a site was read around rather than read whole.
+
 `IntersphinxEntityLinks` is the model on the way back out -- one stored
 entity with the links every source contributed for it, which is the shape
 the question "where is this object documented?" is answered in.
@@ -35,6 +40,7 @@ from .links import Link
 __all__ = [
     "PYTHON_SPHINX_DOMAIN",
     "SPHINX_DOMAIN_HIERARCHIES",
+    "BuiltEntities",
     "IntersphinxEntityLinks",
     "IntersphinxSourceLink",
     "InventoryEntity",
@@ -128,6 +134,39 @@ class InventoryEntity:
     common and is not an error -- a site is free to document a class
     without documenting its module -- and treating it as one would fail an
     ingest over a gap in someone else's documentation.
+    """
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BuiltEntities:
+    """One inventory read into entities, and what reading it cost.
+
+    `build_entities` keeps some of an inventory's objects and drops others,
+    and a caller handed only the entities cannot tell a site Ook read whole
+    from one it read around. The two travel together so an ingest can say,
+    once per source, which of that site's objects it declined.
+    """
+
+    entities: list[InventoryEntity]
+    """The objects Ook models, each placed in its Sphinx domain's
+    hierarchy, in the order the inventory declared them.
+    """
+
+    skipped_names: list[str]
+    """The names of the objects that were dropped despite being in a
+    modelled domain, in the order the inventory declared them.
+
+    Empty for an ordinary inventory. An object lands here when its Sphinx
+    role is not ASCII, which is the one thing a role has to be: the role is
+    served back in the ``X-Ook-Entity-Domain-Type`` response header, and a
+    value that will not encode makes that one object a 500 on an endpoint
+    whose collections serve it fine. Sphinx roles are directive names and
+    ASCII in practice, so this guards what is stored rather than describing
+    something that happens.
+
+    Objects in a Sphinx domain Ook does not model are not reported here.
+    They are not a site's mistake, and naming every ``std`` label a real
+    inventory carries would bury the objects a site actually lost.
     """
 
 
@@ -349,11 +388,17 @@ def build_entities(
     hierarchies: Mapping[
         str, SphinxDomainHierarchy
     ] = SPHINX_DOMAIN_HIERARCHIES,
-) -> list[InventoryEntity]:
+) -> BuiltEntities:
     """Select the objects Ook models and resolve each one's parent.
 
-    Objects in a Sphinx domain with no hierarchy strategy are dropped. A
-    parent is linked only when the same inventory documents it *in the
+    Objects in a Sphinx domain with no hierarchy strategy are dropped, as
+    is one whose role is not ASCII, since the role is served back in a
+    response header that could not carry it. A dropped object is dropped
+    whole: it is no longer available as a parent either, so a class under a
+    module Ook declined comes back top level rather than nesting under a
+    name that will not be stored.
+
+    A parent is linked only when the same inventory documents it *in the
     same Sphinx domain*, so an entity whose parent is missing comes back
     top level rather than pointing at a name nothing will resolve.
 
@@ -373,17 +418,29 @@ def build_entities(
 
     Returns
     -------
-    list of InventoryEntity
-        The kept objects, in the order they were given.
+    BuiltEntities
+        The kept objects, in the order they were given, together with the
+        names of the modelled-domain objects that were declined.
     """
     modelled = [obj for obj in objects if obj.sphinx_domain in hierarchies]
 
-    documented: dict[str, set[str]] = {}
+    kept: list[InventoryObject] = []
+    skipped_names: list[str] = []
     for obj in modelled:
+        # An inventory role is parsed as a run of non-whitespace, so it can
+        # carry anything but a line break. Only ASCII is stored, because
+        # only ASCII survives the latin-1 encoding a response header gets.
+        if obj.role.isascii():
+            kept.append(obj)
+        else:
+            skipped_names.append(obj.name)
+
+    documented: dict[str, set[str]] = {}
+    for obj in kept:
         documented.setdefault(obj.sphinx_domain, set()).add(obj.name)
 
     entities: list[InventoryEntity] = []
-    for obj in modelled:
+    for obj in kept:
         parent_name = hierarchies[obj.sphinx_domain].parent_name(obj.name)
         if (
             parent_name is not None
@@ -400,4 +457,4 @@ def build_entities(
                 parent_name=parent_name,
             )
         )
-    return entities
+    return BuiltEntities(entities=entities, skipped_names=skipped_names)

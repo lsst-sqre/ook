@@ -73,7 +73,9 @@ def synthetic_entities(
     """Build the synthetic inventory's modelled entities, keyed by
     name.
     """
-    return by_name(build_entities(parse_inventory(synthetic_inventory)))
+    return by_name(
+        build_entities(parse_inventory(synthetic_inventory)).entities
+    )
 
 
 @pytest.fixture(scope="session")
@@ -209,7 +211,7 @@ def test_build_entities_drops_domains_ook_does_not_model(
 def test_build_entities_preserves_the_inventory_order(
     synthetic_inventory: bytes,
 ) -> None:
-    entities = build_entities(parse_inventory(synthetic_inventory))
+    entities = build_entities(parse_inventory(synthetic_inventory)).entities
 
     assert [entity.name for entity in entities] == [
         "example.pkg",
@@ -270,7 +272,7 @@ def test_build_entities_ignores_a_parent_in_another_sphinx_domain() -> None:
         ),
     ]
 
-    entities = build_entities(objects)
+    entities = build_entities(objects).entities
 
     assert [entity.name for entity in entities] == ["example.pkg.Thing"]
     assert entities[0].parent_name is None
@@ -295,7 +297,7 @@ def test_parses_the_real_pipelines_inventory(
 def test_builds_python_entities_from_the_real_pipelines_inventory(
     pipelines_inventory: bytes,
 ) -> None:
-    entities = build_entities(parse_inventory(pipelines_inventory))
+    entities = build_entities(parse_inventory(pipelines_inventory)).entities
 
     assert {entity.sphinx_domain for entity in entities} == {
         PYTHON_SPHINX_DOMAIN
@@ -332,7 +334,89 @@ def test_a_parent_documented_only_outside_the_py_domain_is_not_linked(
         for obj in objects
     )
 
-    entities_by_name = by_name(build_entities(objects))
+    entities_by_name = by_name(build_entities(objects).entities)
 
     assert "lsst.afw.table" not in entities_by_name
     assert entities_by_name["lsst.afw.table.SourceCatalog"].parent_name is None
+
+
+NON_ASCII_ROLE = "クラス"
+"""A Sphinx role that will not encode as a header value.
+
+Outside latin-1, which is the codec Starlette encodes a response header
+with, so this is the role the single-object endpoint could not name in its
+``X-Ook-Entity-Domain-Type`` header. Sphinx roles are directive names and
+ASCII in practice; this is the shape of the one an extension could emit.
+"""
+
+
+def _py_object(name: str, *, role: str) -> InventoryObject:
+    """Build one ``py``-domain inventory object with the given role."""
+    return InventoryObject(
+        sphinx_domain=PYTHON_SPHINX_DOMAIN,
+        role=role,
+        name=name,
+        display_name=name,
+        uri=f"api.html#{name}",
+    )
+
+
+def test_build_entities_drops_an_object_whose_role_is_not_ascii() -> None:
+    """One unservable role costs that object, and nothing around it."""
+    built = build_entities(
+        [
+            _py_object("example.pkg", role="module"),
+            _py_object("example.pkg.Odd", role=NON_ASCII_ROLE),
+            _py_object("example.pkg.Thing", role="class"),
+        ]
+    )
+
+    assert [entity.name for entity in built.entities] == [
+        "example.pkg",
+        "example.pkg.Thing",
+    ]
+    assert built.skipped_names == ["example.pkg.Odd"]
+
+
+def test_build_entities_does_not_nest_under_a_dropped_parent() -> None:
+    """A dropped object is no parent: nothing is stored to point at."""
+    built = build_entities(
+        [
+            _py_object("example.pkg", role=NON_ASCII_ROLE),
+            _py_object("example.pkg.Thing", role="class"),
+        ]
+    )
+
+    assert [entity.name for entity in built.entities] == ["example.pkg.Thing"]
+    assert built.entities[0].parent_name is None
+    assert built.skipped_names == ["example.pkg"]
+
+
+def test_build_entities_skips_nothing_from_an_ordinary_inventory(
+    synthetic_inventory: bytes,
+) -> None:
+    built = build_entities(parse_inventory(synthetic_inventory))
+
+    assert built.skipped_names == []
+
+
+def test_build_entities_does_not_report_an_unmodelled_domains_object() -> None:
+    """A ``std`` label is dropped for its domain, and is not a bad role.
+
+    Reporting it would name every label a real inventory carries and bury
+    the objects a site actually lost.
+    """
+    built = build_entities(
+        [
+            InventoryObject(
+                sphinx_domain="std",
+                role=NON_ASCII_ROLE,
+                name="some-label",
+                display_name="Some Label",
+                uri="index.html#some-label",
+            )
+        ]
+    )
+
+    assert built.entities == []
+    assert built.skipped_names == []
