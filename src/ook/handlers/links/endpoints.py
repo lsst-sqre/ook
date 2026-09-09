@@ -478,7 +478,11 @@ async def get_python_objects(
     An object is stored once per name however many sites document it, and
     the first declaration wins when one inventory declares a name under two
     roles -- so such a name carries only its first role and matches only
-    that filter value.
+    that filter value. Across sites the tie breaks the other way round: a
+    name two registered sites declare under different roles carries the
+    role and display name the most recently ingested of them gave it, so
+    the role reported here can change as sites are re-ingested. That is
+    what lets a site correct the role it declares.
     """
     parsed_cursor = (
         IntersphinxEntityCursor.from_str(cursor) if cursor else None
@@ -548,7 +552,11 @@ async def get_python_object_children(
     An object is stored once per name however many sites document it, and
     the first declaration wins when one inventory declares a name under two
     roles -- so such a name carries only its first role and matches only
-    that filter value.
+    that filter value. Across sites the tie breaks the other way round: a
+    name two registered sites declare under different roles carries the
+    role and display name the most recently ingested of them gave it, so
+    the role reported here can change as sites are re-ingested. That is
+    what lets a site correct the role it declares.
     """
     parsed_cursor = (
         IntersphinxEntityCursor.from_str(cursor) if cursor else None

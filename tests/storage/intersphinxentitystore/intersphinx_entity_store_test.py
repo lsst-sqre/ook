@@ -288,6 +288,39 @@ async def test_upsert_entities_merges_duplicate_identity(
 
 
 @pytest.mark.asyncio
+async def test_upsert_entities_takes_the_latest_sites_declaration(
+    factory: Factory,
+) -> None:
+    """Across sites the most recently ingested declaration wins.
+
+    Within one inventory the first of two declarations wins, but each site
+    is ingested on its own, so two sites declaring one name under different
+    roles leave whichever ran last standing -- and it flips back when the
+    first site is ingested again. Making the role sticky instead would stop
+    a site from ever correcting the role it declares.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_intersphinx_entity_store()
+        site_a = _entity("pkg.thing", role="class", display_name="Thing")
+        site_b = _entity("pkg.thing", role="function", display_name="thing()")
+
+        await store.upsert_entities([site_a])
+        await store.upsert_entities([site_b])
+
+        stored = await store.get_entity("py", "pkg.thing")
+        assert stored is not None
+        assert stored.role == "function"
+        assert stored.display_name == "thing()"
+
+        await store.upsert_entities([site_a])
+
+        stored = await store.get_entity("py", "pkg.thing")
+        assert stored is not None
+        assert stored.role == "class"
+        assert stored.display_name == "Thing"
+
+
+@pytest.mark.asyncio
 async def test_get_entity_unknown(factory: Factory) -> None:
     """An unstored name resolves to None rather than an empty entity."""
     async with factory.db_session.begin():

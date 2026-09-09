@@ -193,6 +193,13 @@ class IntersphinxEntityStore:
         `recompute_containment`, which the caller runs after replacing the
         links this batch belongs to.
 
+        Across batches the write is a plain last-writer-wins: each site is
+        ingested on its own, so a name two sites declare under different
+        roles ends up with the role and display name the most recent of
+        them gave it, and takes the other back when that site is ingested
+        again. Deliberately not sticky -- a role held against the site that
+        declared it could never be corrected.
+
         Parameters
         ----------
         entities
