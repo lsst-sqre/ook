@@ -8,8 +8,12 @@ from __future__ import annotations
 from faststream.kafka import KafkaBroker
 
 from .config import config
+from .messagecontext import MessageContextMiddleware
 
 __all__ = ["kafka_broker"]
 
 
-kafka_broker = KafkaBroker(**config.kafka.to_faststream_params())
+kafka_broker = KafkaBroker(
+    **config.kafka.to_faststream_params(),
+    middlewares=[MessageContextMiddleware],
+)

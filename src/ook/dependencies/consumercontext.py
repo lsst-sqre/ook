@@ -5,16 +5,19 @@ from typing import Annotated, Any
 
 from aiokafka import ConsumerRecord
 from fastapi import Depends
-from faststream.kafka import KafkaMessage as _KafkaMessage
-from faststream_fastapi import Context
 from safir.dependencies.db_session import db_session_dependency
 from sqlalchemy.ext.asyncio import AsyncSession
 from structlog import get_logger
 from structlog.stdlib import BoundLogger
 
 from ..factory import Factory, ProcessContext
+from ..messagecontext import current_message
 
-KafkaMessage = Annotated[_KafkaMessage, Context("message")]
+__all__ = [
+    "ConsumerContext",
+    "ConsumerContextDependency",
+    "consumer_context_dependency",
+]
 
 
 @dataclass(slots=True, kw_only=True)
@@ -49,6 +52,10 @@ class ConsumerContextDependency:
     portions of the context that are shared by all requests are collected into
     the single process-global `~ook.factory.ProcessContext` and reused
     with each request.
+
+    The message itself comes from `MessageContextMiddleware`, which must be
+    registered on the broker, rather than from a FastStream ``Context``
+    parameter (see the middleware for why).
     """
 
     def __init__(self) -> None:
@@ -56,15 +63,23 @@ class ConsumerContextDependency:
 
     async def __call__(
         self,
-        message: KafkaMessage,
         session: Annotated[AsyncSession, Depends(db_session_dependency)],
     ) -> ConsumerContext:
         """Create a per-request context."""
+        message = current_message.get()
+        if message is None:
+            msg = (
+                "No message is being consumed on this task; is "
+                "MessageContextMiddleware registered on the broker?"
+            )
+            raise RuntimeError(msg)
+        record: ConsumerRecord | tuple[ConsumerRecord, ...] = (
+            message.raw_message
+        )
+
         # Get the message from the FastStream context
-        if isinstance(message.raw_message, tuple):
-            record = message.raw_message[0]
-        else:
-            record = message.raw_message
+        if isinstance(record, tuple):
+            record = record[0]
 
         # Add the Kafka context to the logger
         logger = get_logger(__name__)  # eventually use a logger dependency
