@@ -1,0 +1,3 @@
+### Other changes
+
+- Update to faststream 0.7.5 and faststream-fastapi 1.3.1. Kafka consumers now learn which message they are handling from a broker middleware, `MessageContextMiddleware`, instead of from `faststream_fastapi.Context("message")`, which resolves to nothing under faststream 0.7.5 and made every consumer fail with `AttributeError: 'EmptyPlaceholder' object has no attribute 'raw_message'`. This replaces the temporary `faststream<0.7.5` cap. faststream-fastapi 1.3.1 also now starts the broker inside the application lifespan rather than around it, so nothing in Ook's startup may rely on a connected broker (nothing did).
