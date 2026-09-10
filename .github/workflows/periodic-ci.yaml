@@ -6,7 +6,7 @@
 name: Periodic CI
 
 env:
-  UV_VERSION: "0.12.7"
+  UV_VERSION: "0.12.13"
 
 "on":
   schedule:
