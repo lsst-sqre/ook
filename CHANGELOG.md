@@ -441,7 +441,7 @@ contains properly formatted address strings using international standards.
 
 ### New features
 
-- Ook now uses [faststream](https://faststream.airt.ai/latest/) for managing its Kafka consumer and producer. This is also how the Squarebot ecosystem operates. With this change, Ook no longer uses the Confluent Schema Registry. Schemas are instead developed as Pydantic models.
+- Ook now uses [faststream](https://faststream.ag2.ai/latest/) for managing its Kafka consumer and producer. This is also how the Squarebot ecosystem operates. With this change, Ook no longer uses the Confluent Schema Registry. Schemas are instead developed as Pydantic models.
 
 ### Other changes
 
