@@ -74,7 +74,7 @@ dev = [
     "uv",
 ]
 docs = [
-    "documenteer[guide]",
+    "documenteer[guide]==2.5.0b4",
     "autodoc_pydantic",
 ]
 lint = [
