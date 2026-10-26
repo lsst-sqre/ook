@@ -98,6 +98,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+
+    env:
+      HAS_OOK_TOKEN: ${{ secrets.OOK_TOKEN != '' }}
+
     steps:
       - uses: actions/checkout@v7
         with:
@@ -113,18 +121,26 @@ jobs:
 
       - name: Run nox
         run: uv run --group=nox nox -s docs
+        env:
+          OOK_TOKEN: ${{ secrets.OOK_TOKEN }}
 
-      # Only attempt documentation uploads for long-lived branches, tagged
-      # releases, and pull requests from ticket branches.  This avoids version
-      # clutter in the docs and failures when a PR doesn't have access to
-      # secrets.
-      - name: Upload to LSST the Docs
-        uses: lsst-sqre/ltd-upload@v1
+      - name: Check links
+        if: env.HAS_OOK_TOKEN == 'true'
+        run: uv run --group=nox nox -s docs-linkcheck
+        env:
+          OOK_TOKEN: ${{ secrets.OOK_TOKEN }}
+
+      # Upload to Docverse. Fork and dependabot pull requests can't read the
+      # DOCVERSE_TOKEN secret, which is why the condition below excludes them.
+      - name: Upload to Docverse
+        uses: lsst-sqre/docverse-upload@v1
         with:
+          org: rubin
           project: ook
           dir: "docs/_build/html"
-          username: ${{ secrets.LTD_USERNAME }}
-          password: ${{ secrets.LTD_PASSWORD }}
+          token: ${{ secrets.DOCVERSE_TOKEN }}
+          github-token: ${{ github.token }}
+          comment-on-pr: "true"
         if: >
           github.event_name != 'merge_group'
           && (github.event_name != 'pull_request'
