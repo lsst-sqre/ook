@@ -6,23 +6,27 @@ backend) cannot see where a request actually connects. Tests that need to
 assert on the socket target build the guarded client with
 `FakeNetworkBackend` instead: it records every ``connect_tcp`` target and
 the TLS ``server_hostname`` of each connection, and answers every HTTP/1.1
-request on it with a canned ``200``.
+request on it with a canned ``200`` -- or, given a responder, with whatever
+response the responder builds for that connection and request.
 """
 
 from __future__ import annotations
 
 import asyncio
 import ssl
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 import httpcore
 
-__all__ = ["FakeConnection", "FakeNetworkBackend", "FakeRequest"]
-
-_RESPONSE = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
-"""The response every request on a fake connection receives."""
+__all__ = [
+    "FakeConnection",
+    "FakeNetworkBackend",
+    "FakeRequest",
+    "FakeResponder",
+    "raw_response",
+]
 
 
 @dataclass(slots=True)
@@ -61,11 +65,47 @@ class FakeConnection:
     """Whether the client closed the connection."""
 
 
-class _FakeStream(httpcore.AsyncNetworkStream):
-    """A network stream answering each request with `_RESPONSE`."""
+FakeResponder = Callable[[FakeConnection, FakeRequest], bytes]
+"""Type of a callable building the raw HTTP/1.1 response to a request
+written to a fake connection (see `raw_response`).
+"""
 
-    def __init__(self, connection: FakeConnection) -> None:
+
+def raw_response(
+    status_code: int = 200, headers: Mapping[str, str] | None = None
+) -> bytes:
+    """Build a raw, bodiless HTTP/1.1 response for a fake connection.
+
+    Parameters
+    ----------
+    status_code
+        The response status code.
+    headers
+        Extra response headers. ``Content-Length: 0`` is always sent.
+
+    Returns
+    -------
+    bytes
+        The response head, ready to be read off a fake stream.
+    """
+    lines = [f"HTTP/1.1 {status_code} Fake", "Content-Length: 0"]
+    lines.extend(f"{name}: {value}" for name, value in (headers or {}).items())
+    return ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1")
+
+
+def _respond_ok(connection: FakeConnection, request: FakeRequest) -> bytes:
+    """Answer every request with a bodiless ``200``."""
+    return raw_response(200)
+
+
+class _FakeStream(httpcore.AsyncNetworkStream):
+    """A network stream answering each request through a responder."""
+
+    def __init__(
+        self, connection: FakeConnection, responder: FakeResponder
+    ) -> None:
         self._connection = connection
+        self._responder = responder
         self._written = b""
         self._pending: list[bytes] = []
 
@@ -78,8 +118,9 @@ class _FakeStream(httpcore.AsyncNetworkStream):
         self._written += buffer
         while b"\r\n\r\n" in self._written:
             head, self._written = self._written.split(b"\r\n\r\n", 1)
-            self._connection.requests.append(_parse_request(head))
-            self._pending.append(_RESPONSE)
+            request = _parse_request(head)
+            self._connection.requests.append(request)
+            self._pending.append(self._responder(self._connection, request))
 
     async def aclose(self) -> None:
         self._connection.closed = True
@@ -98,10 +139,20 @@ class _FakeStream(httpcore.AsyncNetworkStream):
 
 
 class FakeNetworkBackend(httpcore.AsyncNetworkBackend):
-    """A network backend that records sockets instead of opening them."""
+    """A network backend that records sockets instead of opening them.
 
-    def __init__(self) -> None:
+    Parameters
+    ----------
+    responder
+        Builds the response to each request from the connection it was
+        written to (whose ``server_hostname`` names the hostname the request
+        was made for) and the request itself. Defaults to a bodiless
+        ``200`` for every request.
+    """
+
+    def __init__(self, responder: FakeResponder = _respond_ok) -> None:
         self.connections: list[FakeConnection] = []
+        self._responder = responder
 
     async def connect_tcp(
         self,
@@ -113,7 +164,7 @@ class FakeNetworkBackend(httpcore.AsyncNetworkBackend):
     ) -> httpcore.AsyncNetworkStream:
         connection = FakeConnection(host=host, port=port)
         self.connections.append(connection)
-        return _FakeStream(connection)
+        return _FakeStream(connection, self._responder)
 
     async def connect_unix_socket(
         self,

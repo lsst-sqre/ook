@@ -1,11 +1,14 @@
-"""Tests for the Kafka broker ownership semantics of ``ook.factory``.
+"""Tests for the process-context singletons of ``ook.factory``.
 
-The FastStream application, the CLI, and the test suite's ``factory``
-fixture all reach for the same module-level ``ook.kafkabroker.kafka_broker``
-singleton. A standalone factory must therefore only manage that broker's
-lifecycle when nothing else has started it; stopping a broker it does not
-own would close the producer and stop the subscribers of a still-running
-application.
+Most of these cover the Kafka broker's ownership semantics. The FastStream
+application, the CLI, and the test suite's ``factory`` fixture all reach for
+the same module-level ``ook.kafkabroker.kafka_broker`` singleton. A
+standalone factory must therefore only manage that broker's lifecycle when
+nothing else has started it; stopping a broker it does not own would close
+the producer and stop the subscribers of a still-running application.
+
+The rest cover the process context's two HTTP clients: the guarded client
+for user-supplied URLs and the plain client for everything else.
 """
 
 from __future__ import annotations
@@ -22,16 +25,14 @@ from httpx import AsyncClient
 from safir.database import create_database_engine
 
 from ook.config import config
-from ook.factory import Factory
+from ook.factory import Factory, ProcessContext
 from ook.kafkabroker import kafka_broker
+from ook.services.guardedhttp import GuardedTransport
 from tests.support.algoliasearch import MockSearchClient
 from tests.support.github import GitHubMocker
 
 POLL_TIMEOUT = 60.0
 """Seconds to wait for the Kafka consumer to complete a check."""
-
-PINNED_IP = "93.184.216.34"
-"""The address every host resolves to under the patched SSRF guard DNS."""
 
 
 async def _poll_until_complete(
@@ -76,9 +77,9 @@ async def test_shared_broker_round_trips_after_the_factory_fixture(
     """A submitted link check is still published and consumed after the
     preceding ``factory``-fixture test was torn down.
     """
-    mock_github.router.route(
-        host=PINNED_IP, headers={"Host": "example.com"}
-    ).mock(return_value=httpx.Response(200))
+    mock_github.router.route(host="example.com").mock(
+        return_value=httpx.Response(200)
+    )
 
     response = await client.post(
         "/ook/linkcheck/checks",
@@ -143,3 +144,27 @@ async def test_standalone_factory_stops_the_broker_it_started(
         await engine.dispose()
 
     assert broker._connection is None
+
+
+@pytest.mark.asyncio
+async def test_process_context_routes_clients_by_caller(
+    mock_algoliasearch: MockSearchClient,
+) -> None:
+    """The URL checker fetches user-supplied URLs through the guarded
+    client, while GitHub OIDC verification keeps the plain client, and
+    closing the process context closes both.
+    """
+    broker = KafkaBroker(**config.kafka.to_faststream_params())
+    context = await ProcessContext.create(kafka_broker=broker)
+    try:
+        guarded = context.guarded_http_client
+        assert isinstance(guarded._transport, GuardedTransport)
+        assert guarded is not context.http_client
+        assert not isinstance(context.http_client._transport, GuardedTransport)
+        assert context.url_checker._http_client is guarded
+        assert context.github_oidc_verifier._http_client is context.http_client
+    finally:
+        await context.aclose()
+
+    assert context.http_client.is_closed
+    assert context.guarded_http_client.is_closed

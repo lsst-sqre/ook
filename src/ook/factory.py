@@ -29,6 +29,7 @@ from .services.classification import ClassificationService
 from .services.githubmetadata import GitHubMetadataService
 from .services.githuboidc import GitHubOidcVerifier
 from .services.glossary import GlossaryService
+from .services.guardedhttp import create_guarded_client
 from .services.ingest.intersphinx import IntersphinxIngestService
 from .services.ingest.lssttexmf import LsstTexmfIngestService
 from .services.ingest.sdmschemas import SdmSchemasIngestService
@@ -71,7 +72,18 @@ class ProcessContext:
     """
 
     http_client: AsyncClient
-    """Shared HTTP client."""
+    """Shared HTTP client for URLs Ook chooses itself (GitHub OIDC and
+    JWKS, LTD, technote metadata, and the like).
+    """
+
+    guarded_http_client: AsyncClient
+    """Shared HTTP client for user-supplied URLs, guarded against SSRF.
+
+    Built by `~ook.services.guardedhttp.create_guarded_client`: every
+    socket it opens dials an address the SSRF guard validated, while the
+    request URL keeps its hostname so the connection pool stays keyed by
+    hostname. The process-wide URL checker fetches through it.
+    """
 
     kafka_broker: KafkaBroker
     """The aiokafka broker provided through the FastStream Kafka router."""
@@ -104,9 +116,10 @@ class ProcessContext:
         """Create a ProcessContext."""
         # Not using Safir's http_client_dependency because I found that in
         # standalone Factory setting the http_client wasn't opened, for some
-        # reason. Ook doesn't use any http_client beyond this one from
+        # reason. Ook doesn't use any http_client beyond these two from
         # ProcessContext.
         http_client = AsyncClient()
+        guarded_http_client = create_guarded_client()
 
         # Use the provided broker (typically for CLI contexts)
         broker = kafka_broker or default_kafka_broker
@@ -114,7 +127,7 @@ class ProcessContext:
         algolia_client = await algolia_client_dependency()
 
         url_checker = UrlChecker(
-            http_client=http_client,
+            http_client=guarded_http_client,
             logger=structlog.get_logger("ook"),
             request_timeout=config.linkcheck_request_timeout,
             max_concurrency=config.linkcheck_max_concurrency,
@@ -130,6 +143,7 @@ class ProcessContext:
 
         return cls(
             http_client=http_client,
+            guarded_http_client=guarded_http_client,
             kafka_broker=broker,
             kafka_ingest_publisher=broker.publisher(
                 config.ingest_kafka_topic, title="ook-ingest-requests"
@@ -150,6 +164,7 @@ class ProcessContext:
         """
         await self.algolia_client.close_async()
         await self.http_client.aclose()
+        await self.guarded_http_client.aclose()
 
 
 class Factory:
@@ -246,6 +261,13 @@ class Factory:
     def http_client(self) -> AsyncClient:
         """The shared HTTP client."""
         return self._process_context.http_client
+
+    @property
+    def guarded_http_client(self) -> AsyncClient:
+        """The shared HTTP client for user-supplied URLs, guarded against
+        SSRF (see `ook.services.guardedhttp`).
+        """
+        return self._process_context.guarded_http_client
 
     @property
     def url_checker(self) -> UrlChecker:

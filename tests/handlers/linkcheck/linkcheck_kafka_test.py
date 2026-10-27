@@ -28,13 +28,6 @@ from tests.support.github import GitHubMocker
 POLL_TIMEOUT = 60.0
 """Seconds to wait for the Kafka consumer to complete a check."""
 
-PINNED_IP = "93.184.216.34"
-"""The address every host resolves to under the ``_patched_linkcheck_dns``
-fixture. The SSRF guard pins each request to the validated address, so the
-outbound request URL host is this IP while the ``Host`` header keeps the
-original hostname.
-"""
-
 
 async def _poll_until_complete(
     client: AsyncClient, location: str
@@ -71,13 +64,9 @@ async def test_post_enqueues_and_consumer_executes(
             return httpx.Response(404)
         return httpx.Response(200)
 
-    # The SSRF guard pins each request to the validated address, so the
-    # request URL host is the resolved IP; match on that (the router's
-    # api.github.com base_url would otherwise default the host) while the
-    # Host header still carries the original hostname.
-    mock_github.router.route(
-        host=PINNED_IP, headers={"Host": "example.com"}
-    ).mock(side_effect=handler)
+    # Match on the checked hostname, which the request URL keeps (the
+    # router's api.github.com base_url would otherwise default the host).
+    mock_github.router.route(host="example.com").mock(side_effect=handler)
 
     # A submission with due URLs is enqueued and executed.
     response = await client.post(
@@ -125,11 +114,9 @@ async def test_recheck_message_advances_ladder(
     statuses through the retry ladder: a failing link past the broken
     threshold becomes broken.
     """
-    # The SSRF guard pins each request to the validated address; match on
-    # that IP while the Host header still carries the original hostname.
-    mock_github.router.route(
-        host=PINNED_IP, headers={"Host": "recheck.example.com"}
-    ).mock(return_value=httpx.Response(404))
+    mock_github.router.route(host="recheck.example.com").mock(
+        return_value=httpx.Response(404)
+    )
 
     url = "https://recheck.example.com/gone"
     now = datetime.now(tz=UTC).replace(microsecond=0)
@@ -198,11 +185,9 @@ async def test_forced_recheck_message_rechecks_not_due_url(
     """A forced RecheckUrlsMessage re-checks a URL whose recheck time has
     not arrived, which an unforced message would skip as not due.
     """
-    # The SSRF guard pins each request to the validated address; match on
-    # that IP while the Host header still carries the original hostname.
-    mock_github.router.route(
-        host=PINNED_IP, headers={"Host": "forced.example.com"}
-    ).mock(return_value=httpx.Response(200))
+    mock_github.router.route(host="forced.example.com").mock(
+        return_value=httpx.Response(200)
+    )
 
     url = "https://forced.example.com/misdirected"
     now = datetime.now(tz=UTC).replace(microsecond=0)
