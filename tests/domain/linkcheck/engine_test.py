@@ -552,6 +552,144 @@ def test_hard_failure_resets_blocked_count() -> None:
     assert state.consecutive_blocked_count == 0
 
 
+FORCED_BLOCKED_NEXT_CHECK = T0 + timedelta(hours=4)
+"""The recheck time already scheduled for the blocked prior state the
+forced-recheck tests start from.
+"""
+
+
+def make_backed_off_blocked_state() -> LinkState:
+    """Create a blocked prior state three blocks into its backoff, with its
+    next recheck already scheduled.
+    """
+    return LinkState(
+        url=URL,
+        status=LinkStatus.blocked,
+        date_checked=T0,
+        date_last_ok=T0 - timedelta(days=1),
+        consecutive_blocked_count=3,
+        status_code=403,
+        error="HTTP 403 (likely blocked by bot protection; server=cloudflare)",
+        date_next_check=FORCED_BLOCKED_NEXT_CHECK,
+    )
+
+
+def test_forced_inconclusive_recheck_keeps_blocked_backoff() -> None:
+    """A forced recheck of a blocked link that comes back inconclusive
+    again is schedule-neutral: the blocked counter and the next recheck
+    time stay where the schedule left them, while the check time, status
+    code and error reflect the new response.
+    """
+    prior = make_backed_off_blocked_state()
+    date_checked = T0 + timedelta(hours=1)
+    state = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=transient_at(date_checked, 421),
+        ladder=LADDER,
+        forced=True,
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.consecutive_blocked_count == 3
+    assert state.date_next_check == FORCED_BLOCKED_NEXT_CHECK
+    assert state.date_checked == date_checked
+    assert state.status_code == 421
+    assert state.error == "HTTP 421 (transient server error)"
+    assert state.date_last_ok == prior.date_last_ok
+
+
+def test_scheduled_inconclusive_recheck_extends_blocked_backoff() -> None:
+    """The same inconclusive outcome on a scheduled (unforced) recheck
+    counts as another block and backs the next recheck off further.
+    """
+    prior = make_backed_off_blocked_state()
+    date_checked = T0 + timedelta(hours=4)
+    state = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=transient_at(date_checked, 421),
+        ladder=LADDER,
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.consecutive_blocked_count == 4
+    # Fourth consecutive block: 1h base doubled three times = 8h.
+    assert state.date_next_check == date_checked + timedelta(hours=8)
+
+
+@pytest.mark.parametrize(
+    "prior",
+    [
+        make_ok_state(T0),
+        LinkState(
+            url=URL,
+            status=LinkStatus.broken,
+            date_checked=T0,
+            date_failing_since=T0 - timedelta(days=3),
+            failure_count=4,
+            status_code=404,
+            error="HTTP 404",
+            date_next_check=T0 + timedelta(hours=24),
+        ),
+    ],
+    ids=["ok", "broken"],
+)
+def test_forced_inconclusive_recheck_of_unblocked_link_starts_backoff(
+    prior: LinkState,
+) -> None:
+    """A forced recheck of a link that was not blocked starts the blocked
+    backoff when it comes back inconclusive, exactly as a scheduled check
+    would: only an already-blocked link's backoff is held in place.
+    """
+    date_checked = T0 + timedelta(hours=1)
+    state = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=transient_at(date_checked, 421),
+        ladder=LADDER,
+        forced=True,
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.consecutive_blocked_count == 1
+    assert state.date_next_check == (
+        date_checked + LADDER.blocked_recheck_interval
+    )
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        LinkCheckOutcome(
+            date_checked=T0 + timedelta(hours=1),
+            result=CheckResult.success,
+            status_code=200,
+        ),
+        LinkCheckOutcome(
+            date_checked=T0 + timedelta(hours=1),
+            result=CheckResult.success,
+            status_code=200,
+            redirect_status_code=301,
+            redirect_url="https://example.com/moved",
+        ),
+        fail_at(T0 + timedelta(hours=1)),
+    ],
+    ids=["ok", "redirected", "failure"],
+)
+def test_forced_conclusive_recheck_of_blocked_link_is_unchanged(
+    outcome: LinkCheckOutcome,
+) -> None:
+    """A forced recheck of a blocked link that settles it is evaluated
+    exactly as a scheduled recheck would be.
+    """
+    prior = make_backed_off_blocked_state()
+    forced = evaluate_outcome(
+        url=URL, prior=prior, outcome=outcome, ladder=LADDER, forced=True
+    )
+    scheduled = evaluate_outcome(
+        url=URL, prior=prior, outcome=outcome, ladder=LADDER
+    )
+    assert forced == scheduled
+
+
 def test_unsupported_outcome_is_unsupported() -> None:
     """An unsupported check outcome yields ``unsupported`` and never
     enters the retry ladder.

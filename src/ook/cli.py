@@ -386,7 +386,9 @@ async def run_linkcheck_recheck(
     ),
     help=(
         "Also recheck still-referenced URLs whose stored status is this"
-        " value, even if they are not due. Repeatable."
+        " value, even if they are not due. Repeatable. A forced recheck"
+        " never lengthens a still-blocked URL's backoff: one that comes"
+        " back inconclusive again keeps its next scheduled recheck."
     ),
 )
 @run_with_asyncio
@@ -408,7 +410,11 @@ async def linkcheck_recheck(
     force a one-off recheck of the still-referenced URLs whose stored
     result matches any of them, regardless of when they are next due:
     for example, to re-verify rows stored before a change in how a
-    status code is classified.
+    status code is classified. A forced recheck never lengthens a
+    still-blocked URL's backoff: a blocked URL that comes back
+    inconclusive again keeps its blocked count and next scheduled
+    recheck, while a URL the forced recheck settles is updated as a
+    scheduled recheck would update it.
     """
     logger = structlog.get_logger("ook")
     engine = create_database_engine(

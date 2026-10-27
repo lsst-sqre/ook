@@ -787,6 +787,52 @@ async def test_execute_recheck_force_rechecks_not_due_url(
 
 
 @pytest.mark.asyncio
+async def test_execute_recheck_force_keeps_still_blocked_schedule(
+    factory: Factory,
+) -> None:
+    """A forced recheck of a blocked URL that is still inconclusive leaves
+    its blocked backoff and next recheck time as the schedule had them,
+    while recording the new response.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    date_next_check = now + timedelta(hours=6)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(421)
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            url = "https://docs.example.com/still-misdirected"
+            await store.upsert_url_state(
+                LinkState(
+                    url=url,
+                    status=LinkStatus.blocked,
+                    date_checked=now - timedelta(hours=2),
+                    date_last_ok=now - timedelta(days=2),
+                    consecutive_blocked_count=3,
+                    status_code=403,
+                    error="HTTP 403 (likely blocked by bot protection)",
+                    date_next_check=date_next_check,
+                )
+            )
+            ids = await store.upsert_checked_urls([url])
+
+            await service.execute_recheck([ids[url]], force=True)
+
+            state = await store.get_url_state(url)
+            assert state is not None
+            assert state.status is LinkStatus.blocked
+            assert state.consecutive_blocked_count == 3
+            assert state.date_next_check == date_next_check
+            assert state.date_checked > now - timedelta(hours=2)
+            assert state.status_code == 421
+            assert state.error is not None
+            assert "misdirected request" in state.error
+
+
+@pytest.mark.asyncio
 async def test_list_forced_recheck_urls(factory: Factory) -> None:
     """The forced-recheck enumeration lists still-referenced URLs whose
     stored status code or status matches a filter, even when not due.

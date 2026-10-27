@@ -341,7 +341,10 @@ class LinkCheckService:
             If true, recheck every supported URL whether or not it is
             due, as enqueued by the scheduled recheck's forcing options
             (see `list_forced_recheck_urls`). A redelivered forced request
-            rechecks its URLs again.
+            rechecks its URLs again. A forced recheck never lengthens a
+            still-blocked URL's backoff: one that comes back inconclusive
+            again keeps its blocked count and next recheck time (see
+            `~ook.domain.linkcheck.evaluate_outcome`).
         """
         records = await self._store.get_urls_by_ids(url_ids)
         if len(records) < len(set(url_ids)):
@@ -370,6 +373,7 @@ class LinkCheckService:
                 prior=states.get(url),
                 outcome=outcome,
                 ladder=self._retry_ladder,
+                forced=force,
             )
             await self._store.upsert_url_state(state)
 

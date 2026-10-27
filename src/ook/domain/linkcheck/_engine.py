@@ -343,6 +343,7 @@ def evaluate_outcome(
     prior: LinkState | None,
     outcome: LinkCheckOutcome,
     ladder: RetryLadderConfig,
+    forced: bool = False,
 ) -> LinkState:
     """Compute a link's next state from its prior state and a check
     outcome.
@@ -362,6 +363,13 @@ def evaluate_outcome(
     ladder
         Retry-ladder thresholds, supplied by the caller (bound to
         application configuration in the service layer).
+    forced
+        Whether the check was a forced recheck, made off schedule at an
+        operator's request rather than because the link was due. A forced
+        recheck of a ``blocked`` link that comes back inconclusive again is
+        schedule-neutral: it keeps the prior blocked counter and next
+        recheck time, so it never lengthens the link's backoff. Every other
+        outcome is evaluated exactly as a scheduled check's would be.
 
     Returns
     -------
@@ -434,10 +442,22 @@ def evaluate_outcome(
         # cadence as they accumulate, so a permanently blocked link
         # converges to the slow broken cadence instead of rechecking hourly
         # forever.
-        prior_blocked = (
-            prior.consecutive_blocked_count if prior is not None else 0
-        )
-        blocked_count = prior_blocked + 1
+        #
+        # A forced recheck of a link that is already blocked is the
+        # exception: it is an off-schedule probe, so when it is inconclusive
+        # again it leaves the backoff exactly where the schedule had it,
+        # rather than counting as another block and pushing the next
+        # scheduled recheck further out.
+        if forced and prior is not None and prior.status is LinkStatus.blocked:
+            blocked_count = prior.consecutive_blocked_count
+            blocked_next_check = prior.date_next_check
+        else:
+            blocked_count = (
+                prior.consecutive_blocked_count if prior is not None else 0
+            ) + 1
+            blocked_next_check = outcome.date_checked + _blocked_recheck_delay(
+                ladder, blocked_count
+            )
         return LinkState(
             url=url,
             status=LinkStatus.blocked,
@@ -452,10 +472,7 @@ def evaluate_outcome(
             redirect_status_code=None,
             redirect_url=None,
             error=outcome.error,
-            date_next_check=(
-                outcome.date_checked
-                + _blocked_recheck_delay(ladder, blocked_count)
-            ),
+            date_next_check=blocked_next_check,
             result_source=result_source,
             contributed_by=outcome.contributed_by,
         )
