@@ -47,6 +47,7 @@ from ._query import (
     create_checked_url_ids_stmt,
     create_due_urls_stmt,
     create_origin_links_stmt,
+    create_referenced_urls_by_state_stmt,
     create_url_occurrences_stmt,
     create_url_record_stmt,
     create_url_states_stmt,
@@ -776,6 +777,43 @@ class LinkCheckStore:
         result = await self._session.execute(
             create_due_urls_stmt(
                 now=now, ttl=ttl, limit=limit, referenced_only=referenced_only
+            )
+        )
+        return [DueUrl(id=row.id, url=row.url) for row in result.all()]
+
+    async def get_referenced_urls_by_state(
+        self,
+        *,
+        status_codes: Sequence[int],
+        statuses: Sequence[LinkStatus],
+    ) -> list[DueUrl]:
+        """Enumerate still-referenced URLs by their stored link state.
+
+        Unlike `get_due_urls`, this ignores the recheck schedule: a URL
+        matches when its most recent HTTP status code is one of
+        ``status_codes`` or its health status is one of ``statuses``. The
+        scheduled recheck uses this to force a one-off recheck of rows
+        stored under a classification that has since changed.
+
+        Parameters
+        ----------
+        status_codes
+            The stored HTTP status codes to match.
+        statuses
+            The stored health statuses to match.
+
+        Returns
+        -------
+        list of DueUrl
+            The matching URLs that still occur on at least one origin
+            page, ordered by id. Unsupported URLs never match, and no
+            URLs match when both filters are empty.
+        """
+        if not status_codes and not statuses:
+            return []
+        result = await self._session.execute(
+            create_referenced_urls_by_state_stmt(
+                status_codes=status_codes, statuses=statuses
             )
         )
         return [DueUrl(id=row.id, url=row.url) for row in result.all()]

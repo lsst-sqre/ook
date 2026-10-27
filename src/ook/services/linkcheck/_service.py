@@ -318,7 +318,9 @@ class LinkCheckService:
             checked_url_count=len(urls),
         )
 
-    async def execute_recheck(self, url_ids: Sequence[int]) -> None:
+    async def execute_recheck(
+        self, url_ids: Sequence[int], *, force: bool = False
+    ) -> None:
         """Execute a scheduled recheck of stored URLs.
 
         The URLs that are still due are resolved with the URL checker
@@ -335,6 +337,11 @@ class LinkCheckService:
             least once and may outlive their URL records, so unknown
             ids are skipped; URLs whose results have been refreshed
             since enqueueing are skipped as no longer due.
+        force
+            If true, recheck every supported URL whether or not it is
+            due, as enqueued by the scheduled recheck's forcing options
+            (see `list_forced_recheck_urls`). A redelivered forced request
+            rechecks its URLs again.
         """
         records = await self._store.get_urls_by_ids(url_ids)
         if len(records) < len(set(url_ids)):
@@ -349,7 +356,9 @@ class LinkCheckService:
         ]
         states = await self._store.get_url_states(supported_urls)
         urls = [
-            url for url in supported_urls if self._is_due(states.get(url), now)
+            url
+            for url in supported_urls
+            if self._is_due(states.get(url), now, force=force)
         ]
 
         outcomes = await asyncio.gather(
@@ -599,6 +608,38 @@ class LinkCheckService:
             now=now, ttl=self._freshness_ttl, referenced_only=True
         )
 
+    async def list_forced_recheck_urls(
+        self,
+        *,
+        status_codes: Sequence[int],
+        statuses: Sequence[LinkStatus],
+    ) -> list[DueUrl]:
+        """Enumerate still-referenced URLs to recheck regardless of their
+        recheck schedule.
+
+        This backs the scheduled recheck's one-off forcing options: an
+        operator re-verifies rows stored under a classification that has
+        since changed (for example, 421 responses that are now
+        inconclusive) without waiting for their ``date_next_check``.
+
+        Parameters
+        ----------
+        status_codes
+            The stored HTTP status codes to match.
+        statuses
+            The stored health statuses to match.
+
+        Returns
+        -------
+        list of DueUrl
+            The URLs whose stored status code or status matches any
+            filter and that still occur on at least one origin page,
+            ordered by id. Empty when no filter is given.
+        """
+        return await self._store.get_referenced_urls_by_state(
+            status_codes=status_codes, statuses=statuses
+        )
+
     async def purge_expired_records(self) -> PurgeResult:
         """Purge expired check records and orphaned URL records.
 
@@ -713,16 +754,22 @@ class LinkCheckService:
             limit=limit,
         )
 
-    def _is_due(self, state: LinkState | None, now: datetime) -> bool:
-        """Determine whether a URL needs a (re)check at submission.
+    def _is_due(
+        self, state: LinkState | None, now: datetime, *, force: bool = False
+    ) -> bool:
+        """Determine whether a URL needs a (re)check.
 
         Mirrors the store's due-URL enumeration rule: never-checked,
         ladder-recheck-time arrived, or stale beyond the freshness TTL.
+        A forced recheck ignores the schedule, but an unsupported URL is
+        never due.
         """
         if state is None:
             return True
         if state.status is LinkStatus.unsupported:
             return False
+        if force:
+            return True
         if state.date_next_check is not None and state.date_next_check <= now:
             return True
         return state.date_checked <= now - self._freshness_ttl

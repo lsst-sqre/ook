@@ -87,9 +87,11 @@ async def handle_linkcheck_execution(
             await service.execute_check(message.check_id)
         logger.info("Finished link-check execution request.")
     else:
-        context.rebind_logger(url_count=len(message.url_ids))
+        context.rebind_logger(
+            url_count=len(message.url_ids), force=message.force
+        )
         logger = context.logger
         logger.info("Starting link-recheck request.")
         async with factory.db_session.begin():
-            await service.execute_recheck(message.url_ids)
+            await service.execute_recheck(message.url_ids, force=message.force)
         logger.info("Finished link-recheck request.")

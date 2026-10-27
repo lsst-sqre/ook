@@ -188,3 +188,69 @@ async def test_recheck_message_advances_ladder(
             )
         await asyncio.sleep(0.2)
     assert data["failure_count"] == 4
+
+
+@pytest.mark.asyncio
+async def test_forced_recheck_message_rechecks_not_due_url(
+    mock_github: GitHubMocker,
+    client: AsyncClient,
+) -> None:
+    """A forced RecheckUrlsMessage re-checks a URL whose recheck time has
+    not arrived, which an unforced message would skip as not due.
+    """
+    # The SSRF guard pins each request to the validated address; match on
+    # that IP while the Host header still carries the original hostname.
+    mock_github.router.route(
+        host=PINNED_IP, headers={"Host": "forced.example.com"}
+    ).mock(return_value=httpx.Response(200))
+
+    url = "https://forced.example.com/misdirected"
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    try:
+        session = await create_async_session(engine)
+        try:
+            store = LinkCheckStore(
+                session=session, logger=structlog.get_logger("test")
+            )
+            async with session.begin():
+                # A 421 stored as blocked, not due for hours.
+                await store.upsert_url_state(
+                    LinkState(
+                        url=url,
+                        status=LinkStatus.blocked,
+                        date_checked=now - timedelta(minutes=5),
+                        date_last_ok=now - timedelta(days=2),
+                        status_code=421,
+                        error="HTTP 421 (misdirected request)",
+                        date_next_check=now + timedelta(hours=6),
+                    )
+                )
+                ids = await store.upsert_checked_urls([url])
+        finally:
+            await session.close()
+    finally:
+        await engine.dispose()
+
+    message = RecheckUrlsMessageV1(url_ids=[ids[url]], force=True)
+    await kafka_broker.publish(
+        message.model_dump(mode="json"), topic=config.linkcheck_kafka_topic
+    )
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + POLL_TIMEOUT
+    while True:
+        response = await client.get("/ook/linkcheck/urls", params={"url": url})
+        assert response.status_code == 200
+        data = response.json()
+        if data["status"] == "ok":
+            break
+        if loop.time() > deadline:
+            pytest.fail(
+                f"URL {url} did not become ok within {POLL_TIMEOUT}s;"
+                f" last status was {data['status']!r}"
+            )
+        await asyncio.sleep(0.2)
+    assert data["status_code"] == 200

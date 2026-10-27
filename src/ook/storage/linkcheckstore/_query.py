@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import ColumnElement, Select, func, or_, select
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.orm import aliased
 
@@ -26,6 +26,7 @@ __all__ = [
     "create_checked_url_ids_stmt",
     "create_due_urls_stmt",
     "create_origin_links_stmt",
+    "create_referenced_urls_by_state_stmt",
     "create_url_occurrences_stmt",
     "create_url_record_stmt",
     "create_url_states_stmt",
@@ -359,3 +360,59 @@ def create_due_urls_stmt(
     if limit is not None:
         stmt = stmt.limit(limit)
     return stmt
+
+
+def create_referenced_urls_by_state_stmt(
+    *,
+    status_codes: Sequence[int],
+    statuses: Sequence[LinkStatus],
+) -> Select:
+    """Create a select statement enumerating still-referenced URLs by
+    their stored link state.
+
+    A URL matches when its most recent HTTP status code is one of
+    ``status_codes`` or its health status is one of ``statuses``,
+    regardless of when it is next due. Only URLs that still occur on at
+    least one origin page are selected, and unsupported URLs never match:
+    they only change status if the URL itself changes.
+
+    Parameters
+    ----------
+    status_codes
+        The stored HTTP status codes to match.
+    statuses
+        The stored health statuses to match.
+
+    Returns
+    -------
+    Select
+        A statement selecting ``(id, url)`` rows for the matching URLs,
+        ordered by id.
+
+    Raises
+    ------
+    ValueError
+        Raised if neither a status code nor a status is given.
+    """
+    conditions: list[ColumnElement[bool]] = []
+    if status_codes:
+        conditions.append(SqlCheckedUrl.status_code.in_(list(status_codes)))
+    if statuses:
+        conditions.append(
+            SqlCheckedUrl.status.in_([status.value for status in statuses])
+        )
+    if not conditions:
+        raise ValueError("At least one status code or status is required")
+    return (
+        select(SqlCheckedUrl.id, SqlCheckedUrl.url)
+        .where(
+            or_(*conditions),
+            SqlCheckedUrl.status.is_distinct_from(
+                LinkStatus.unsupported.value
+            ),
+            select(SqlUrlOccurrence.id)
+            .where(SqlUrlOccurrence.checked_url_id == SqlCheckedUrl.id)
+            .exists(),
+        )
+        .order_by(SqlCheckedUrl.id.asc())
+    )
