@@ -27,7 +27,7 @@ from ook.config import config
 from ook.database import init_database
 from ook.domain.algoliarecord import MinimalDocumentModel
 from ook.domain.kafka import RecheckUrlsMessageV1
-from ook.domain.linkcheck import LinkStatus
+from ook.domain.linkcheck import FORCEABLE_STATUSES, LinkStatus
 from ook.factory import Factory
 from ook.services.algoliadocindex import AlgoliaDocIndexService
 from ook.services.ingest.intersphinx import IntersphinxIngestSummary
@@ -386,9 +386,7 @@ async def run_linkcheck_recheck(
     "--include-status",
     "include_statuses",
     multiple=True,
-    type=click.Choice(
-        [LinkStatus.broken, LinkStatus.blocked, LinkStatus.failing]
-    ),
+    type=click.Choice(list(FORCEABLE_STATUSES)),
     help=(
         "Also recheck still-referenced URLs whose stored status is this"
         " value, even if they are not due. Repeatable. A forced recheck"

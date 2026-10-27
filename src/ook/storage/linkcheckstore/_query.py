@@ -14,7 +14,7 @@ from ook.dbschema.linkcheck import (
     SqlLinkCheckUrl,
     SqlUrlOccurrence,
 )
-from ook.domain.linkcheck import CheckUrlStatus, LinkStatus
+from ook.domain.linkcheck import FORCEABLE_STATUSES, CheckUrlStatus, LinkStatus
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -31,18 +31,6 @@ __all__ = [
     "create_url_record_stmt",
     "create_url_states_stmt",
 ]
-
-_UNFORCEABLE_STATUSES = (
-    LinkStatus.ok,
-    LinkStatus.redirected,
-    LinkStatus.unsupported,
-)
-"""Stored statuses that a forced recheck never reaches.
-
-Healthy rows have nothing to re-verify, and unsupported URLs only change
-status if the URL itself changes, so forcing filters only ever select
-``broken``, ``blocked`` or ``failing`` rows.
-"""
 
 
 def create_checked_url_ids_stmt(urls: list[str]) -> Select:
@@ -421,8 +409,8 @@ def create_referenced_urls_by_state_stmt(
         select(SqlCheckedUrl.id, SqlCheckedUrl.url)
         .where(
             or_(*conditions),
-            SqlCheckedUrl.status.not_in(
-                [status.value for status in _UNFORCEABLE_STATUSES]
+            SqlCheckedUrl.status.in_(
+                [status.value for status in FORCEABLE_STATUSES]
             ),
             select(SqlUrlOccurrence.id)
             .where(SqlUrlOccurrence.checked_url_id == SqlCheckedUrl.id)

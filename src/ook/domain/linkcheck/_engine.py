@@ -447,8 +447,16 @@ def evaluate_outcome(
         # exception: it is an off-schedule probe, so when it is inconclusive
         # again it leaves the backoff exactly where the schedule had it,
         # rather than counting as another block and pushing the next
-        # scheduled recheck further out.
-        if forced and prior is not None and prior.status is LinkStatus.blocked:
+        # scheduled recheck further out. A blocked prior with no scheduled
+        # recheck (a legacy or hand-built row) has no schedule to preserve,
+        # so it takes the computed backoff like a scheduled recheck would:
+        # a forced recheck must never leave a blocked row unscheduled.
+        if (
+            forced
+            and prior is not None
+            and prior.status is LinkStatus.blocked
+            and prior.date_next_check is not None
+        ):
             blocked_count = prior.consecutive_blocked_count
             blocked_next_check = prior.date_next_check
         else:

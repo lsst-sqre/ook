@@ -616,6 +616,33 @@ def test_scheduled_inconclusive_recheck_extends_blocked_backoff() -> None:
     assert state.date_next_check == date_checked + timedelta(hours=8)
 
 
+def test_forced_inconclusive_recheck_of_unscheduled_blocked_link() -> None:
+    """A forced recheck of a blocked link that has no scheduled recheck
+    cannot preserve a schedule it does not have: it takes the computed
+    backoff like a scheduled recheck, so the row never stays unscheduled.
+    """
+    prior = make_backed_off_blocked_state().model_copy(
+        update={"date_next_check": None}
+    )
+    date_checked = T0 + timedelta(hours=1)
+    state = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=transient_at(date_checked, 421),
+        ladder=LADDER,
+        forced=True,
+    )
+    scheduled = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=transient_at(date_checked, 421),
+        ladder=LADDER,
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.date_next_check is not None
+    assert state == scheduled
+
+
 @pytest.mark.parametrize(
     "prior",
     [
