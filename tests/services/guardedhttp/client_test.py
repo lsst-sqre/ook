@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import socket
 from collections.abc import Sequence
+from typing import Any
 
 import httpcore
 import httpx
@@ -258,12 +259,16 @@ async def test_create_guarded_client_honors_limits() -> None:
 
 @pytest.mark.asyncio
 async def test_create_guarded_client_passes_client_options() -> None:
-    """Other ``httpx.AsyncClient`` options reach the client."""
+    """``httpx.AsyncClient`` options applied at the client layer reach the
+    client.
+    """
     async with create_guarded_client(
-        headers={"User-Agent": "ook-test"}, timeout=3.0
+        headers={"User-Agent": "ook-test"}, timeout=3.0, follow_redirects=True
     ) as client:
+        assert isinstance(client._transport, GuardedTransport)
         assert client.headers["User-Agent"] == "ook-test"
         assert client.timeout == httpx.Timeout(3.0)
+        assert client.follow_redirects is True
 
 
 @pytest.mark.parametrize("option", ["transport", "mounts", "proxy"])
@@ -273,6 +278,27 @@ def test_create_guarded_client_refuses_bypass_options(option: str) -> None:
     """
     with pytest.raises(TypeError, match=option):
         create_guarded_client(**{option: None})
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("verify", False),
+        ("cert", "client.pem"),
+        ("trust_env", False),
+        ("http1", False),
+        ("http2", True),
+    ],
+)
+def test_create_guarded_client_refuses_transport_options(
+    option: str, value: Any
+) -> None:
+    """Options httpx only applies when it builds the transport itself are
+    refused rather than silently ignored, since the guarded transport fixes
+    its own TLS context and speaks HTTP/1.1 only.
+    """
+    with pytest.raises(TypeError, match=rf"does not accept {option}:"):
+        create_guarded_client(**{option: value})
 
 
 @pytest.mark.asyncio

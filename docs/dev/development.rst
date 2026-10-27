@@ -286,6 +286,8 @@ The guarded client
    A plain ``httpx.AsyncClient`` for URLs Ook chooses itself: GitHub OIDC and JWKS verification, LTD, technote metadata, and the like.
 
 ``create_guarded_client`` refuses the ``transport``, ``mounts``, and ``proxy`` options, any of which would route requests around the guarded transport, and leaves HTTP/2 off, so there is no connection coalescing across hostnames either.
+It also refuses ``verify``, ``cert``, ``trust_env``, ``http1``, and ``http2``: httpx applies those only to a transport it builds itself, so a client given the guarded transport would silently ignore them, while the guarded transport keeps the TLS defaults of ``httpx.create_ssl_context()`` and speaks HTTP/1.1 only.
+Options httpx applies at the client layer, such as ``timeout``, ``headers``, and ``follow_redirects``, pass through.
 
 The caller hands each validated address to the network backend through a :py:class:`contextvars.ContextVar`.
 A service validates a hop's host and makes that hop's request inside ``pinned_to``, which records host → address for the duration of the block:

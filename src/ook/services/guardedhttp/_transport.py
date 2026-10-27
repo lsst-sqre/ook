@@ -6,6 +6,20 @@ it connects to a guard-validated address. Requests keep their hostname --
 **no service rewrites a URL host to an IP** -- so the pool stays keyed by
 hostname, and TLS SNI and certificate verification use the hostname with no
 ``sni_hostname`` extension or ``Host`` override.
+
+`create_guarded_client` refuses two groups of ``httpx.AsyncClient`` options
+rather than forwarding them:
+
+- ``transport``, ``mounts`` and ``proxy`` would route requests around the
+  guarded transport.
+- ``verify``, ``cert``, ``trust_env``, ``http1`` and ``http2`` only configure
+  a transport that httpx builds itself, so a client given the guarded
+  transport would silently ignore them. The guarded transport fixes its own
+  TLS context (the defaults of ``httpx.create_ssl_context()``) and speaks
+  HTTP/1.1 only, and the SSRF guard's TLS behavior is not configurable.
+
+Options httpx applies at the client layer, such as ``timeout``, ``headers``
+and ``follow_redirects``, pass through unchanged.
 """
 
 from __future__ import annotations
@@ -33,6 +47,17 @@ keyed and nothing else (keep-alive stays on, idle connections expire after
 _FORBIDDEN_CLIENT_OPTIONS = frozenset({"mounts", "proxy", "transport"})
 """``httpx.AsyncClient`` options that would route requests around the
 guarded transport.
+"""
+
+_FIXED_TRANSPORT_OPTIONS = frozenset(
+    {"cert", "http1", "http2", "trust_env", "verify"}
+)
+"""``httpx.AsyncClient`` options that only configure the transport httpx
+builds itself.
+
+A client given a transport ignores them, so a caller passing one would
+believe a TLS or protocol setting is in effect when the guarded transport's
+own fixed settings are.
 """
 
 
@@ -109,9 +134,14 @@ def create_guarded_client(
     logger
         Logger for the transport's fallback warning.
     **kwargs
-        Other ``httpx.AsyncClient`` options, such as ``timeout`` or
-        ``headers``. Options that would route requests around the guarded
-        transport (``transport``, ``mounts``, ``proxy``) are refused.
+        Other ``httpx.AsyncClient`` options that httpx applies at the client
+        layer, such as ``timeout``, ``headers`` or ``follow_redirects``.
+        Two groups of options are refused: those that would route requests
+        around the guarded transport (``transport``, ``mounts``, ``proxy``),
+        and those that only configure a transport httpx builds itself
+        (``verify``, ``cert``, ``trust_env``, ``http1``, ``http2``), which
+        the client would silently ignore because the guarded transport
+        fixes its own TLS context and speaks HTTP/1.1 only.
 
     Returns
     -------
@@ -123,13 +153,21 @@ def create_guarded_client(
     ------
     TypeError
         Raised if ``kwargs`` includes an option that would bypass the
-        guarded transport.
+        guarded transport or that the guarded transport would ignore. The
+        message names the option.
     """
     forbidden = sorted(_FORBIDDEN_CLIENT_OPTIONS & kwargs.keys())
     if forbidden:
         raise TypeError(
             f"create_guarded_client() does not accept {', '.join(forbidden)}:"
             " it would route requests around the guarded transport"
+        )
+    fixed = sorted(_FIXED_TRANSPORT_OPTIONS & kwargs.keys())
+    if fixed:
+        raise TypeError(
+            f"create_guarded_client() does not accept {', '.join(fixed)}:"
+            " the guarded transport fixes its own TLS context and speaks"
+            " HTTP/1.1 only, so the client would ignore it"
         )
     transport = GuardedTransport(
         limits=limits or DEFAULT_LIMITS,
