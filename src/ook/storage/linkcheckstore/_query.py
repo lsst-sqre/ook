@@ -32,6 +32,18 @@ __all__ = [
     "create_url_states_stmt",
 ]
 
+_UNFORCEABLE_STATUSES = (
+    LinkStatus.ok,
+    LinkStatus.redirected,
+    LinkStatus.unsupported,
+)
+"""Stored statuses that a forced recheck never reaches.
+
+Healthy rows have nothing to re-verify, and unsupported URLs only change
+status if the URL itself changes, so forcing filters only ever select
+``broken``, ``blocked`` or ``failing`` rows.
+"""
+
 
 def create_checked_url_ids_stmt(urls: list[str]) -> Select:
     """Create a select statement mapping canonical URLs to their IDs.
@@ -372,9 +384,11 @@ def create_referenced_urls_by_state_stmt(
 
     A URL matches when its most recent HTTP status code is one of
     ``status_codes`` or its health status is one of ``statuses``,
-    regardless of when it is next due. Only URLs that still occur on at
-    least one origin page are selected, and unsupported URLs never match:
-    they only change status if the URL itself changes.
+    regardless of when it is next due. Only unhealthy URLs that still
+    occur on at least one origin page are selected: a URL stored ``ok``,
+    ``redirected`` or ``unsupported`` never matches, even when its stored
+    status code does, so either filter only ever reaches ``broken``,
+    ``blocked`` or ``failing`` rows.
 
     Parameters
     ----------
@@ -407,8 +421,8 @@ def create_referenced_urls_by_state_stmt(
         select(SqlCheckedUrl.id, SqlCheckedUrl.url)
         .where(
             or_(*conditions),
-            SqlCheckedUrl.status.is_distinct_from(
-                LinkStatus.unsupported.value
+            SqlCheckedUrl.status.not_in(
+                [status.value for status in _UNFORCEABLE_STATUSES]
             ),
             select(SqlUrlOccurrence.id)
             .where(SqlUrlOccurrence.checked_url_id == SqlCheckedUrl.id)

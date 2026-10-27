@@ -625,6 +625,9 @@ class LinkCheckService:
         operator re-verifies rows stored under a classification that has
         since changed (for example, 421 responses that are now
         inconclusive) without waiting for their ``date_next_check``.
+        Forcing only reaches unhealthy rows: a URL stored ``ok``,
+        ``redirected`` or ``unsupported`` is never forced, even when its
+        stored status code matches, so a healthy URL keeps its schedule.
 
         Parameters
         ----------
@@ -636,9 +639,10 @@ class LinkCheckService:
         Returns
         -------
         list of DueUrl
-            The URLs whose stored status code or status matches any
-            filter and that still occur on at least one origin page,
-            ordered by id. Empty when no filter is given.
+            The ``broken``, ``blocked`` or ``failing`` URLs whose stored
+            status code or status matches any filter and that still occur
+            on at least one origin page, ordered by id. Empty when no
+            filter is given.
         """
         return await self._store.get_referenced_urls_by_state(
             status_codes=status_codes, statuses=statuses

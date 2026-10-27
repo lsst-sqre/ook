@@ -305,10 +305,13 @@ async def run_linkcheck_recheck(
         The maximum number of URL ids per recheck message.
     include_status_codes
         Also force a recheck of the still-referenced URLs whose stored
-        HTTP status code is one of these, even if they are not due.
+        HTTP status code is one of these, even if they are not due. Only
+        URLs stored broken, blocked or failing are forced: a URL stored
+        ok, redirected or unsupported is never forced by its status code.
     include_statuses
         Also force a recheck of the still-referenced URLs whose stored
-        status is one of these, even if they are not due.
+        status is one of these, even if they are not due. Only the
+        broken, blocked and failing statuses can match.
 
     Returns
     -------
@@ -374,7 +377,9 @@ async def run_linkcheck_recheck(
     type=click.IntRange(min=100, max=599),
     help=(
         "Also recheck still-referenced URLs whose stored HTTP status code"
-        " is this value, even if they are not due. Repeatable."
+        " is this value, even if they are not due. Repeatable. Only URLs"
+        " stored broken, blocked or failing are forced: a URL stored ok,"
+        " redirected or unsupported keeps its schedule whatever its code."
     ),
 )
 @click.option(
@@ -410,9 +415,11 @@ async def linkcheck_recheck(
     force a one-off recheck of the still-referenced URLs whose stored
     result matches any of them, regardless of when they are next due:
     for example, to re-verify rows stored before a change in how a
-    status code is classified. A forced recheck never lengthens a
-    still-blocked URL's backoff: a blocked URL that comes back
-    inconclusive again keeps its blocked count and next scheduled
+    status code is classified. Forced rechecks only reach unhealthy
+    rows: a URL stored ok, redirected or unsupported is never forced,
+    even when its stored status code matches. A forced recheck never
+    lengthens a still-blocked URL's backoff: a blocked URL that comes
+    back inconclusive again keeps its blocked count and next scheduled
     recheck, while a URL the forced recheck settles is updated as a
     scheduled recheck would update it.
     """

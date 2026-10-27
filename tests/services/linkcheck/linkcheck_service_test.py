@@ -882,6 +882,51 @@ async def test_list_forced_recheck_urls(factory: Factory) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_forced_recheck_urls_excludes_healthy(
+    factory: Factory,
+) -> None:
+    """A forcing status code only reaches unhealthy rows: still-referenced
+    URLs stored ``ok`` or ``redirected`` never match, even when their
+    stored status code does, while a ``broken`` URL whose stored code is
+    stale from an earlier check does.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            for url, status, status_code in (
+                ("https://example.com/ok", LinkStatus.ok, 200),
+                ("https://example.com/moved", LinkStatus.redirected, 301),
+                ("https://example.com/stale-code", LinkStatus.broken, 200),
+            ):
+                await store.upsert_url_state(
+                    LinkState(
+                        url=url,
+                        status=status,
+                        date_checked=now,
+                        status_code=status_code,
+                        date_next_check=now + timedelta(hours=6),
+                    )
+                )
+                await store.replace_origin_occurrences(
+                    origin_base_url=f"https://{status.value}.lsst.io",
+                    occurrences=[UrlOccurrence(url=url, origin_path="a")],
+                )
+
+            forced = await service.list_forced_recheck_urls(
+                status_codes=[200, 301], statuses=[]
+            )
+            assert [f.url for f in forced] == [
+                "https://example.com/stale-code"
+            ]
+
+
+@pytest.mark.asyncio
 async def test_list_due_recheck_urls_referenced_only(
     factory: Factory,
 ) -> None:

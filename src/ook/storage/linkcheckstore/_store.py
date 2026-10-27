@@ -793,7 +793,10 @@ class LinkCheckStore:
         matches when its most recent HTTP status code is one of
         ``status_codes`` or its health status is one of ``statuses``. The
         scheduled recheck uses this to force a one-off recheck of rows
-        stored under a classification that has since changed.
+        stored under a classification that has since changed, so only
+        unhealthy rows match: a URL stored ``ok``, ``redirected`` or
+        ``unsupported`` never does, even when its stored status code
+        matches.
 
         Parameters
         ----------
@@ -805,9 +808,9 @@ class LinkCheckStore:
         Returns
         -------
         list of DueUrl
-            The matching URLs that still occur on at least one origin
-            page, ordered by id. Unsupported URLs never match, and no
-            URLs match when both filters are empty.
+            The matching ``broken``, ``blocked`` or ``failing`` URLs
+            that still occur on at least one origin page, ordered by id.
+            No URLs match when both filters are empty.
         """
         if not status_codes and not statuses:
             return []

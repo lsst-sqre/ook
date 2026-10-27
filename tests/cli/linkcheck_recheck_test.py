@@ -154,6 +154,44 @@ async def test_run_linkcheck_recheck_include_status_code(
 
 
 @pytest.mark.asyncio
+async def test_run_linkcheck_recheck_include_status_code_healthy(
+    factory: Factory, recheck_publisher: RecordingPublisher
+) -> None:
+    """Forcing a healthy status code enqueues nothing: a forced recheck
+    only reaches rows stored broken, blocked or failing, so a
+    still-referenced ``ok`` URL stored with a 200 is left to its schedule.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    store = factory.create_linkcheck_store()
+
+    async with factory.db_session.begin():
+        await store.upsert_url_state(
+            LinkState(
+                url="https://docs.example.com/healthy",
+                status=LinkStatus.ok,
+                date_checked=now,
+                date_last_ok=now,
+                status_code=200,
+            )
+        )
+        await store.replace_origin_occurrences(
+            origin_base_url="https://sqr-000.lsst.io",
+            occurrences=[
+                UrlOccurrence(
+                    url="https://docs.example.com/healthy", origin_path="a"
+                )
+            ],
+        )
+
+    summary = await run_linkcheck_recheck(factory, include_status_codes=[200])
+
+    assert summary.enqueued_url_ids == []
+    assert summary.forced_url_count == 0
+    assert summary.batch_count == 0
+    assert recheck_publisher.messages == []
+
+
+@pytest.mark.asyncio
 async def test_run_linkcheck_recheck_include_statuses(
     factory: Factory, recheck_publisher: RecordingPublisher
 ) -> None:
