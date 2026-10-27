@@ -17,6 +17,7 @@ from httpx import AsyncClient
 from structlog.stdlib import BoundLogger
 
 from ook.domain.linkcheck import (
+    TRANSIENT_CODES,
     CheckResult,
     LinkCheckOutcome,
     is_supported_url,
@@ -45,13 +46,9 @@ _SUCCESS_CODES = range(200, 300)
 _RATE_LIMITED_CODE = 429
 """HTTP status code signalling the client is being rate limited."""
 
-_TRANSIENT_CODES = frozenset({429, 503})
-"""HTTP status codes treated as transient server conditions.
-
-Following Sphinx linkcheck, a persistent 429 (rate limit) or a 503
-(server-side outage) says nothing about whether the link is broken, so
-these outcomes are inconclusive: they never escalate the failing→broken
-ladder.
+_MISDIRECTED_REQUEST_CODE = 421
+"""HTTP status code signalling the server refused the connection the
+request arrived on as not authoritative for the request's hostname.
 """
 
 _MAX_RETRY_AFTER_SECONDS = 60.0
@@ -60,10 +57,18 @@ header cannot stall a check indefinitely. The effective cap is further
 bounded by the per-request timeout budget.
 """
 
-_DIAGNOSTIC_HEADERS = ("server", "cf-mitigated", "cf-ray")
+_DIAGNOSTIC_HEADERS = (
+    "server",
+    "cf-mitigated",
+    "cf-ray",
+    "via",
+    "x-served-by",
+)
 """Terminal-response headers captured into failure error details, in the
-order they are rendered. These surface whether a 4xx/5xx block came from an
-edge mitigation (e.g. a Cloudflare challenge) rather than the origin.
+order they are rendered, each only when the response carries it. These
+surface whether a 4xx/5xx came from a CDN edge rather than the origin, and
+which edge: Cloudflare's ``server``/``cf-mitigated``/``cf-ray``, and the
+``via``/``x-served-by`` that Fastly and other Varnish-based edges stamp.
 """
 
 
@@ -119,12 +124,13 @@ class _FetchResult:
 
     @property
     def is_transient(self) -> bool:
-        """Whether this is a transient server condition (429/503).
+        """Whether this is a transient, inconclusive condition
+        (`~ook.domain.linkcheck.TRANSIENT_CODES`: 421/429/503).
 
-        A persistent rate limit or a server-side outage is inconclusive:
-        it does not confirm the link is broken.
+        A misdirected request, a persistent rate limit, or a server-side
+        outage does not confirm the link is broken.
         """
-        return self.status_code in _TRANSIENT_CODES
+        return self.status_code in TRANSIENT_CODES
 
     @property
     def is_bot_blocked(self) -> bool:
@@ -497,6 +503,8 @@ class UrlChecker:
             detail_parts.append("likely blocked by bot protection")
         elif result.status_code == _RATE_LIMITED_CODE:
             detail_parts.append("rate limited")
+        elif result.status_code == _MISDIRECTED_REQUEST_CODE:
+            detail_parts.append("misdirected request")
         elif result.is_transient:
             detail_parts.append("transient server error")
         detail_parts.extend(

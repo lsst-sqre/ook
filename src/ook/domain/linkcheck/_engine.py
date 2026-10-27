@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
 __all__ = [
+    "TRANSIENT_CODES",
     "accepts_contribution",
     "canonicalize_url",
     "contributed_outcome",
@@ -67,12 +68,27 @@ answering a client is the likeliest reason a URL Ook could not reach at all
 answers 403 from somewhere else.
 """
 
-_TRANSIENT_CODES = frozenset({429, 503})
-"""HTTP status codes treated as transient server conditions.
+TRANSIENT_CODES = frozenset({421, 429, 503})
+"""HTTP status codes treated as transient, inconclusive conditions.
 
-Matching the URL checker: a persistent rate limit or a server-side outage
-says nothing about whether the link is broken, so it never escalates the
-failing-to-broken ladder.
+Following Sphinx linkcheck, a persistent 429 (rate limit) or a 503
+(server-side outage) says nothing about whether the link is broken. Neither
+does a 421 (misdirected request): the server refused the connection the
+request arrived on — typically a keep-alive connection a CDN edge serving
+many hostnames from shared addresses attributed to a different hostname —
+not the URL itself. All three are inconclusive: they land in the ``blocked``
+disposition and never advance or reset the failing-to-broken ladder.
+
+This is the single definition shared by the URL checker's own responses and
+by contributed results, so a status code is judged the same way whichever
+vantage point observed it.
+"""
+
+_MISDIRECTED_REQUEST_CODE = 421
+"""HTTP status code for a misdirected request, one of `TRANSIENT_CODES`.
+
+Unlike a 429 or a 503, a bare 421 is obscure enough that a contributed one
+is labelled in its error, the same way the URL checker labels its own.
 """
 
 _MAX_BLOCKED_BACKOFF_DOUBLINGS = 30
@@ -216,8 +232,9 @@ def contributed_outcome(
     The classification is deliberately coarser than the URL checker's,
     which reads the response's own headers: a client reports a status code,
     not a response. A 2xx resolves the URL; a 403 is inconclusive (the
-    client was blocked in turn), as are the transient 429 and 503; anything
-    else is a confirmed failure that advances the retry ladder.
+    client was blocked in turn), as are the transient 421, 429 and 503
+    (`TRANSIENT_CODES`); anything else is a confirmed failure that advances
+    the retry ladder.
 
     Parameters
     ----------
@@ -254,6 +271,8 @@ def contributed_outcome(
         error = "The contributed check reached no terminal HTTP status"
     elif is_bot_blocked:
         error = f"HTTP {result.status_code} (likely blocked by bot protection)"
+    elif result.status_code == _MISDIRECTED_REQUEST_CODE:
+        error = f"HTTP {result.status_code} (misdirected request)"
     else:
         error = f"HTTP {result.status_code}"
     return LinkCheckOutcome(
@@ -264,7 +283,7 @@ def contributed_outcome(
         redirect_url=result.redirect_url,
         error=error,
         is_bot_blocked=is_bot_blocked,
-        is_transient=result.status_code in _TRANSIENT_CODES,
+        is_transient=result.status_code in TRANSIENT_CODES,
         contributed_by=repository,
     )
 
@@ -404,16 +423,17 @@ def evaluate_outcome(
         )
 
     if outcome.is_bot_blocked or outcome.is_transient:
-        # Both a bot-protection block and a transient server condition (a
-        # persistent 429 rate limit or a 503 outage) are inconclusive:
-        # the link may well be fine. Report ``blocked`` without discarding
-        # or extending the failing→broken streak (so an inconclusive check
-        # cannot push a link to broken nor reset progress toward it) and
-        # preserve the last-OK marker. Count the consecutive blocked
-        # outcomes (a dedicated counter, kept separate from the
-        # failing→broken ladder) and back off the recheck cadence as they
-        # accumulate, so a permanently blocked link converges to the slow
-        # broken cadence instead of rechecking hourly forever.
+        # Both a bot-protection block and a transient condition (a 421
+        # misdirected request, a persistent 429 rate limit, or a 503
+        # outage) are inconclusive: the link may well be fine. Report
+        # ``blocked`` without discarding or extending the failing→broken
+        # streak (so an inconclusive check cannot push a link to broken nor
+        # reset progress toward it) and preserve the last-OK marker. Count
+        # the consecutive blocked outcomes (a dedicated counter, kept
+        # separate from the failing→broken ladder) and back off the recheck
+        # cadence as they accumulate, so a permanently blocked link
+        # converges to the slow broken cadence instead of rechecking hourly
+        # forever.
         prior_blocked = (
             prior.consecutive_blocked_count if prior is not None else 0
         )

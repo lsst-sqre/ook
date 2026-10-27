@@ -15,7 +15,13 @@ import structlog
 
 import ook
 from ook.config import Configuration, config
-from ook.domain.linkcheck import CheckResult
+from ook.domain.linkcheck import (
+    CheckResult,
+    LinkState,
+    LinkStatus,
+    RetryLadderConfig,
+    evaluate_outcome,
+)
 from ook.domain.redirects import MAX_REDIRECTS
 from ook.factory import Factory
 from ook.services.linkcheck import HostResolver, UrlChecker
@@ -639,6 +645,37 @@ async def test_non_403_cloudflare_not_bot_annotated(
 
 
 @pytest.mark.asyncio
+async def test_varnish_edge_headers_in_failure_detail(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A failure served by a Fastly/Varnish edge carries its ``via`` and
+    ``x-served-by`` headers into the error detail, after the condition
+    label, so the edge that answered is identifiable from the stored
+    detail the way Cloudflare's ``server``/``cf-ray`` already are.
+    """
+    headers = {
+        "via": "1.1 varnish",
+        "x-served-by": "cache-xyz",
+        "server": "Varnish",
+    }
+    respx_mock.route(
+        method="HEAD", path="/misdirected", headers={"Host": "example.com"}
+    ).respond(421, headers=headers)
+    respx_mock.route(
+        method="GET", path="/misdirected", headers={"Host": "example.com"}
+    ).respond(421, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/misdirected")
+    assert outcome.result is CheckResult.failure
+    assert outcome.error == (
+        "HTTP 421 (misdirected request; server=Varnish; via=1.1 varnish; "
+        "x-served-by=cache-xyz)"
+    )
+
+
+@pytest.mark.asyncio
 async def test_503_is_transient(
     http_client: httpx.AsyncClient,
     respx_mock: respx.Router,
@@ -664,6 +701,93 @@ async def test_503_is_transient(
     assert outcome.error == "HTTP 503 (transient server error)"
     # 503 is not retried, so no wait occurs.
     assert sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_421_is_transient(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A terminal 421 (misdirected request) is inconclusive immediately:
+    the server refused the connection the request arrived on, not the URL,
+    so ``is_transient`` is set, the error names the condition, and there is
+    no in-run retry.
+    """
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    methods: list[str] = []
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        return httpx.Response(421)
+
+    respx_mock.route().mock(side_effect=responder)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/misdirected")
+    assert outcome.result is CheckResult.failure
+    assert outcome.status_code == 421
+    assert outcome.is_transient is True
+    assert outcome.is_bot_blocked is False
+    assert outcome.error == "HTTP 421 (misdirected request)"
+    # Only the usual HEAD→GET fallback; no wait and no retry on top.
+    assert methods == ["HEAD", "GET"]
+    assert sleeps == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "prior",
+    [
+        LinkState(
+            url="https://example.com/misdirected",
+            status=LinkStatus.ok,
+            date_checked=datetime(2026, 10, 1, tzinfo=UTC),
+            date_last_ok=datetime(2026, 10, 1, tzinfo=UTC),
+            status_code=200,
+        ),
+        LinkState(
+            url="https://example.com/misdirected",
+            status=LinkStatus.failing,
+            date_checked=datetime(2026, 10, 2, tzinfo=UTC),
+            date_last_ok=datetime(2026, 10, 1, tzinfo=UTC),
+            date_failing_since=datetime(2026, 10, 2, tzinfo=UTC),
+            failure_count=2,
+            status_code=404,
+        ),
+    ],
+    ids=["ok", "failing"],
+)
+async def test_421_never_advances_the_ladder(
+    prior: LinkState,
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A checked 421 lands in the inconclusive ``blocked`` disposition
+    against a prior ``ok`` or ``failing`` state, leaving the failing→broken
+    streak exactly as it was: a misdirected connection is no evidence the
+    link is broken, and no evidence it recovered either.
+    """
+    respx_mock.route().mock(return_value=httpx.Response(421))
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/misdirected")
+    state = evaluate_outcome(
+        url="https://example.com/misdirected",
+        prior=prior,
+        outcome=outcome,
+        ladder=RetryLadderConfig(),
+    )
+    assert state.status is LinkStatus.blocked
+    assert state.status_code == 421
+    assert state.failure_count == prior.failure_count
+    assert state.date_failing_since == prior.date_failing_since
 
 
 @pytest.mark.asyncio

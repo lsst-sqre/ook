@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from ook.domain.linkcheck import (
+    TRANSIENT_CODES,
     CheckResult,
     ContributedResult,
     LinkCheckOutcome,
@@ -456,6 +457,14 @@ def test_transient_never_seen_ok_is_blocked_not_broken() -> None:
     assert state.date_next_check == T0 + LADDER.blocked_recheck_interval
 
 
+def test_transient_codes() -> None:
+    """The inconclusive transient status codes are a misdirected request
+    (421), a rate limit (429), and a server-side outage (503), defined
+    once for both the URL checker and contributed results.
+    """
+    assert frozenset({421, 429, 503}) == TRANSIENT_CODES
+
+
 def make_blocked_state(
     date_checked: datetime, consecutive_blocked_count: int
 ) -> LinkState:
@@ -668,6 +677,7 @@ def test_contributed_success_stamps_the_receipt_time() -> None:
     ("status_code", "is_bot_blocked", "is_transient"),
     [
         (403, True, False),
+        (421, False, True),
         (429, False, True),
         (503, False, True),
         (404, False, False),
@@ -694,6 +704,35 @@ def test_contributed_failure_classification(
     assert outcome.is_transient is is_transient
     assert outcome.error is not None
     assert f"HTTP {status_code}" in outcome.error
+
+
+@pytest.mark.parametrize(
+    "prior",
+    [make_ok_state(T0), make_failing_state(T0, 2)],
+    ids=["ok", "failing"],
+)
+def test_contributed_421_is_inconclusive(prior: LinkState) -> None:
+    """A contributed 421 (misdirected request) is inconclusive exactly like
+    a server-checked one: it says the client's connection was refused, not
+    that the link is broken, so it lands ``blocked`` without advancing or
+    resetting the failing→broken streak.
+    """
+    date_checked = T0 + timedelta(hours=12)
+    result = ContributedResult(url=URL, status_code=421, date_checked=T0)
+
+    outcome = contributed_outcome(
+        result, repository="lsst-sqre/documenteer", received_at=date_checked
+    )
+
+    assert outcome.is_transient is True
+    assert outcome.error == "HTTP 421 (misdirected request)"
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=outcome, ladder=LADDER
+    )
+    assert state.status is LinkStatus.blocked
+    assert state.status_code == 421
+    assert state.failure_count == prior.failure_count
+    assert state.date_failing_since == prior.date_failing_since
 
 
 def test_contributed_result_without_a_response_is_a_failure() -> None:

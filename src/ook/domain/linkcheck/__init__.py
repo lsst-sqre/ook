@@ -1,6 +1,7 @@
 """Domain for external link checking."""
 
 from ._engine import (
+    TRANSIENT_CODES,
     accepts_contribution,
     canonicalize_url,
     contributed_outcome,
@@ -35,6 +36,7 @@ from ._models import (
 )
 
 __all__ = [
+    "TRANSIENT_CODES",
     "AcceptedContribution",
     "CheckResult",
     "CheckRunStatus",

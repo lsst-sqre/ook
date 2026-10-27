@@ -218,8 +218,9 @@ class LinkCheckOutcome(BaseModel):
     is_transient: bool = Field(
         False,
         description=(
-            "Whether the check hit a transient server condition (a"
-            " persistent HTTP 429 rate limit or an HTTP 503 outage),"
+            "Whether the check hit a transient server condition (an"
+            " HTTP 421 misdirected request, a persistent HTTP 429 rate"
+            " limit, or an HTTP 503 outage),"
             " making the failure inconclusive rather than a confirmed"
             " broken link. Like a bot block, this never escalates the"
             " failing→broken ladder."
@@ -282,8 +283,8 @@ class LinkState(BaseModel):
         ge=0,
         description=(
             "Number of consecutive inconclusive (bot-blocked or"
-            " transient 429/503) checks in the current streak. Reset to"
-            " zero by any conclusive outcome (success, hard failure, or"
+            " transient 421/429/503) checks in the current streak. Reset"
+            " to zero by any conclusive outcome (success, hard failure, or"
             " unsupported). Drives the blocked-recheck backoff so a"
             " permanently blocked link converges to a slow cadence."
         ),

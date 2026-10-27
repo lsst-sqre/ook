@@ -129,7 +129,7 @@ class SqlCheckedUrl(Base):
         Integer, nullable=False, default=0
     )
     """The number of consecutive inconclusive (bot-blocked or transient
-    429/503) checks in the current streak. Reset to zero by any
+    421/429/503) checks in the current streak. Reset to zero by any
     conclusive outcome; drives the blocked-recheck backoff.
     """
 
