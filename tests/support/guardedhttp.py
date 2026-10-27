@@ -72,25 +72,32 @@ written to a fake connection (see `raw_response`).
 
 
 def raw_response(
-    status_code: int = 200, headers: Mapping[str, str] | None = None
+    status_code: int = 200,
+    headers: Mapping[str, str] | None = None,
+    *,
+    body: bytes = b"",
 ) -> bytes:
-    """Build a raw, bodiless HTTP/1.1 response for a fake connection.
+    """Build a raw HTTP/1.1 response for a fake connection.
 
     Parameters
     ----------
     status_code
         The response status code.
     headers
-        Extra response headers. ``Content-Length: 0`` is always sent.
+        Extra response headers. A ``Content-Length`` matching ``body`` is
+        always sent.
+    body
+        The response body. Bodiless by default.
 
     Returns
     -------
     bytes
-        The response head, ready to be read off a fake stream.
+        The response head and body, ready to be read off a fake stream.
     """
-    lines = [f"HTTP/1.1 {status_code} Fake", "Content-Length: 0"]
+    lines = [f"HTTP/1.1 {status_code} Fake", f"Content-Length: {len(body)}"]
     lines.extend(f"{name}: {value}" for name, value in (headers or {}).items())
-    return ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1")
+    head = ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1")
+    return head + body
 
 
 def _respond_ok(connection: FakeConnection, request: FakeRequest) -> bytes:

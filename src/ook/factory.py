@@ -82,7 +82,8 @@ class ProcessContext:
     Built by `~ook.services.guardedhttp.create_guarded_client`: every
     socket it opens dials an address the SSRF guard validated, while the
     request URL keeps its hostname so the connection pool stays keyed by
-    hostname. The process-wide URL checker fetches through it.
+    hostname. The process-wide URL checker and the intersphinx inventory
+    cache fetch through it.
     """
 
     kafka_broker: KafkaBroker
@@ -389,9 +390,14 @@ class Factory:
         )
 
     def create_intersphinx_cache_service(self) -> IntersphinxCacheService:
-        """Create an IntersphinxCacheService."""
+        """Create an IntersphinxCacheService.
+
+        The cache fetches user-supplied inventory URLs, so it gets the
+        guarded client: every hop it requests dials the address its SSRF
+        guard validated.
+        """
         return IntersphinxCacheService(
-            http_client=self.http_client,
+            http_client=self.guarded_http_client,
             inventory_store=self.create_intersphinx_inventory_store(),
             session=self._session,
             ttl=config.intersphinx_ttl,

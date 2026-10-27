@@ -75,9 +75,9 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
 
 @pytest.fixture(autouse=True, scope="session")
 def _patched_ssrf_guard_dns() -> Iterator[None]:
-    """Resolve every hostname to a public address so the SSRF guards in the
-    link-check URL checker (through ``ook.services.guardedhttp``) and the
-    intersphinx cache never perform real DNS lookups.
+    """Resolve every hostname to a public address so the SSRF guard
+    (``ook.services.guardedhttp``) never performs real DNS lookups for the
+    link-check URL checker or the intersphinx cache.
 
     The application's Kafka consumer executes link checks in the
     background of any test that submits them, so DNS must resolve
@@ -88,9 +88,12 @@ def _patched_ssrf_guard_dns() -> Iterator[None]:
 
     The process context's ``UrlChecker`` has no injected resolver, so its
     guard looks up ``guardedhttp``'s ``default_resolve_host`` at call
-    time, as does the guarded client's fail-closed fallback. This is
-    session-scoped so the patch is in place before the session-scoped app
-    starts and stays in place for the whole session.
+    time, as does the guarded client's fail-closed fallback. A factory-built
+    intersphinx cache service instead reads its module's
+    ``_default_resolve_host`` (``guardedhttp``'s resolver, bound at import)
+    when it is constructed, so that module attribute is patched too. This
+    is session-scoped so the patch is in place before the session-scoped
+    app starts and stays in place for the whole session.
     """
     monkeypatch = pytest.MonkeyPatch()
 

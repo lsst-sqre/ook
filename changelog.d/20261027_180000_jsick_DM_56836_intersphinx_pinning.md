@@ -1,0 +1,3 @@
+### New features
+
+- The intersphinx inventory cache now connects to exactly the address its SSRF guard validated, closing a DNS-rebinding gap it has had since 0.25.0: a host could resolve to a public address for the guard's lookup and to an internal one for the connect. The cache fetches through the same `ook.services.guardedhttp` guarded client and host check as the link checker: the requested URL, every redirect hop, and the refresh job's re-check of a stored URL are each pinned to the address validated for that host, while requests keep their hostname for TLS and connection reuse. Error responses, negative caching, and ETag revalidation are unchanged.
