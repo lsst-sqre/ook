@@ -66,7 +66,9 @@ class GuardedTransport(httpx.AsyncHTTPTransport):
     ) -> None:
         # The parent constructor is deliberately not called: its only state
         # is this pool, which it would build around httpcore's default,
-        # unpinned network backend.
+        # unpinned network backend. Verified against httpx 0.28.1, which
+        # pyproject.toml bounds to <0.29; a later release that adds
+        # transport state fails test_guarded_transport_builds_all_parent_state.
         self._pool = httpcore.AsyncConnectionPool(
             ssl_context=httpx.create_ssl_context(),
             max_connections=limits.max_connections,

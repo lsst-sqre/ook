@@ -195,8 +195,8 @@ class UrlChecker:
     through this instance, and spaces requests to the same host by a
     politeness interval.
 
-    To close a DNS-rebinding TOCTOU gap, each request connects to the
-    exact address the SSRF guard validated: the guard
+    To close a DNS-rebinding TOCTOU gap, each socket a request opens
+    connects to the exact address the SSRF guard validated: the guard
     (`ook.services.guardedhttp.resolve_and_validate`) resolves and
     validates each hop's host, and the request is made inside
     `~ook.services.guardedhttp.pinned_to` that address, so the guarded

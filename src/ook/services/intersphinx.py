@@ -424,11 +424,11 @@ class IntersphinxCacheService:
     well-formed URL whose host simply will not resolve is not the client's
     mistake and is treated as an upstream failure like any other. The
     host check is `ook.services.guardedhttp.resolve_and_validate`, and every
-    request — the requested URL, each redirect hop, and the refresh path's
-    re-guarded stored URL alike — connects to exactly the address it
-    validated (see `_stream_hop`), so a DNS-rebinding answer between the
-    check and the connect cannot steer a socket anywhere the guard did not
-    accept.
+    socket a fetch opens — for the requested URL, each redirect hop, and the
+    refresh path's re-guarded stored URL alike — connects to the address
+    the guard validated (see `_stream_hop`), so a DNS-rebinding answer
+    between the check and the connect cannot steer a socket anywhere the
+    guard did not accept.
 
     Every upstream fetch is hardened against a hostile or misbehaving
     origin: redirects are followed by hand, one guarded hop at a time and
@@ -1311,11 +1311,11 @@ class IntersphinxCacheService:
         `MAX_REDIRECTS` hops so a redirect loop terminates. Every *new* host
         in the chain is guarded; a host the guard already accepted within
         this same fetch is not resolved again, which is what keeps a chain
-        that leaves a host and returns from paying for that host twice. Every
-        hop's request connects to the address the guard validated for that
-        hop's host — the one it just resolved, or for a returning host the
-        one it resolved earlier in the chain — rather than to whatever the
-        host resolves to at connect time; see `_stream_hop`.
+        that leaves a host and returns from paying for that host twice. A
+        socket a hop opens connects to the address the guard validated for
+        that hop's host — the one it just resolved, or for a returning host
+        the one it resolved earlier in the chain — rather than to whatever
+        the host resolves to at connect time; see `_stream_hop`.
 
         Only the terminal response's body is kept: a redirect hop's body is
         discarded and never counted against the size cap, and both the
@@ -1532,11 +1532,14 @@ class IntersphinxCacheService:
 
         The request runs inside `~ook.services.guardedhttp.pinned_to`, so
         the guarded client's network backend dials ``address`` rather than
-        re-resolving the hostname, and a DNS-rebinding answer between the
-        guard's lookup and the connect cannot steer the socket anywhere the
-        guard did not accept. The URL itself is never rewritten to the
-        address, so TLS SNI, certificate verification, the ``Host`` header,
-        and the connection pool's key all stay the hostname.
+        re-resolving the hostname if it opens a socket, and a DNS-rebinding
+        answer between the guard's lookup and the connect cannot steer the
+        socket anywhere the guard did not accept. A hop that reuses a pooled
+        keep-alive connection for the same hostname opens no socket; that
+        connection was itself opened to a validated address. The URL itself
+        is never rewritten to the address, so TLS SNI, certificate
+        verification, the ``Host`` header, and the connection pool's key all
+        stay the hostname.
 
         Parameters
         ----------

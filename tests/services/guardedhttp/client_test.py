@@ -229,6 +229,19 @@ async def test_create_guarded_client_uses_guarded_transport() -> None:
         assert pool._keepalive_expiry == DEFAULT_LIMITS.keepalive_expiry == 5
 
 
+def test_guarded_transport_builds_all_parent_state() -> None:
+    """`GuardedTransport` skips ``httpx.AsyncHTTPTransport.__init__`` and
+    builds the parent's only state, ``_pool``, itself.
+
+    If an httpx upgrade gives the parent transport any other instance
+    state, this fails at test time rather than the guarded client failing
+    at request time; re-verify the constructor against the new release.
+    """
+    parent_state = set(vars(httpx.AsyncHTTPTransport()))
+    assert parent_state == {"_pool"}
+    assert set(vars(GuardedTransport())) == parent_state
+
+
 @pytest.mark.asyncio
 async def test_create_guarded_client_honors_limits() -> None:
     """Explicit limits configure the guarded transport's pool."""

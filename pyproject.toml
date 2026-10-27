@@ -46,6 +46,7 @@ dependencies = [
     "pycountry>=24.6.1",
     "google-i18n-address>=3.1.0",
     "httpcore>=1.0,<2", # network backend for the SSRF-guarded HTTP client
+    "httpx>=0.28.1,<0.29", # GuardedTransport rebuilds AsyncHTTPTransport's state
 ]
 dynamic = ["version"]
 

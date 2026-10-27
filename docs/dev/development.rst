@@ -241,9 +241,9 @@ Outbound HTTP and the SSRF guard
 Ook fetches URLs it did not choose: the link checker requests every external URL a documentation build submits, and the intersphinx inventory cache fetches whatever ``objects.inv`` URL a client asks for.
 Both run inside the cluster, so an unguarded fetch could be steered by a submitted URL, or by a redirect its server returns, at internal services, the cloud metadata endpoint, or anything else reachable from Ook's pod: a server-side request forgery (SSRF).
 Every such fetch goes through the ``ook.services.guardedhttp`` package, Ook's single resolve-validate-pin implementation.
-The `DM-56836 research report`_ has the reproduction and the httpcore analysis behind its design.
+Its design, and the httpcore analysis behind it, are recorded in the PRD, `lsst-sqre/ook#426`_ (DM-56836); `Why the connection pool must be keyed by hostname`_ below summarizes them.
 
-.. _DM-56836 research report: https://claude.ai/artifact/1CXMu7bsM6TMNmLjvUcT4Q
+.. _lsst-sqre/ook#426: https://github.com/lsst-sqre/ook/issues/426
 
 Guard layers
 ------------
@@ -268,8 +268,9 @@ Every request passes four layers, and every redirect hop passes them again:
    The upstream chose that hop, not the client, so the cache answers a refused hop with a 502 rather than a 400.
 
 #. **Socket pinning.**
-   The socket connects to exactly the address the guard validated, not to whatever the hostname resolves to a moment later.
+   Each new socket connects to exactly the address the guard validated, not to whatever the hostname resolves to a moment later.
    This closes the DNS-rebinding gap between the guard's lookup and the connect, in which a short-lived or hostile DNS answer hands the guard a public address and the connect a private one.
+   The pin applies when a socket is opened: a request that reuses a pooled keep-alive connection for the same hostname opens no socket, so it rides one that was opened to an address the guard validated for an earlier request, and an idle connection leaves the pool once its keep-alive expiry (5 seconds by default) passes.
 
 The guarded client
 ------------------
