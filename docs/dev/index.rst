@@ -7,4 +7,5 @@ Development guide
    :maxdepth: 2
 
    development
+   outbound-http
    release
