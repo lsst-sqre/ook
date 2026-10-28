@@ -58,7 +58,7 @@ from faststream import BaseMiddleware
 
 if TYPE_CHECKING:
     from faststream._internal.context.repository import ContextRepo
-    from faststream.kafka import KafkaBroker
+    from faststream.kafka import KafkaBroker, Topic
 
 __all__ = [
     "DRAIN_TIMEOUT",
@@ -316,7 +316,7 @@ class _KafkaSubscriber(Protocol):
     running: bool
 
     @property
-    def topics(self) -> list[str]: ...
+    def topics(self) -> list[Topic]: ...
 
     @property
     def specification(self) -> Any: ...
@@ -344,9 +344,7 @@ def running_subscriptions(broker: KafkaBroker) -> dict[str, list[str]]:
             continue
         name: str = subscriber.specification.call_name
         for topic in subscriber.topics:
-            # faststream 0.7.8 yields ``Topic`` objects rather than names.
-            topic_name = topic if isinstance(topic, str) else topic.name
-            subscriptions.setdefault(topic_name, []).append(name)
+            subscriptions.setdefault(topic.name, []).append(name)
     return subscriptions
 
 

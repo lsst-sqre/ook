@@ -25,10 +25,7 @@ from ook.domain.algoliarecord import (
 )
 from ook.services.algoliadocindex import AlgoliaDocIndexService
 
-_FILTER_PATTERN = re.compile(
-    r'baseUrl:"(?P<base_url>[^"]+)"'
-    r'(?: AND NOT surrogateKey:"(?P<excluded_key>[^"]+)")?'
-)
+_FILTER_PATTERN = re.compile(r'baseUrl:"(?P<base_url>[^"]+)"')
 
 
 class LaggingIndex:
@@ -45,25 +42,26 @@ class LaggingIndex:
             record["objectID"]: dict(record) for record in records or []
         }
         self.pending: list[tuple[str, list[Any]]] = []
-        self.delete_calls: list[list[str]] = []
 
     async def save_objects_async(self, objects: list[dict[str, Any]]) -> None:
         self.pending.append(("save", [dict(obj) for obj in objects]))
 
     async def delete_objects_async(self, object_ids: list[str]) -> None:
-        self.delete_calls.append(list(object_ids))
         self.pending.append(("delete", list(object_ids)))
+
+    @property
+    def delete_calls(self) -> list[list[str]]:
+        """Return the object IDs of each queued delete, in call order."""
+        return [ids for op, ids in self.pending if op == "delete"]
 
     def browse_objects(self, settings: dict[str, Any]) -> list[dict[str, Any]]:
         match = _FILTER_PATTERN.fullmatch(settings["filters"])
         assert match is not None, settings["filters"]
         base_url = match.group("base_url")
-        excluded_key = match.group("excluded_key")
         return [
             dict(record)
             for record in self.records.values()
             if str(record["baseUrl"]) == base_url
-            and record.get("surrogateKey") != excluded_key
         ]
 
     def flush(self) -> None:
@@ -146,11 +144,11 @@ async def test_reingest_survives_indexing_lag() -> None:
 
     new_records = [make_record(BASE_URL, s, "new-key") for s in sections]
     await service.save_document_records(new_records)
+    assert index.delete_calls == []
     index.flush()
 
     assert len(index.records) == 3
     assert index.surrogate_keys(BASE_URL) == {"new-key"}
-    assert index.delete_calls == []
 
 
 @pytest.mark.asyncio
@@ -175,6 +173,7 @@ async def test_removed_sections_are_deleted() -> None:
             make_record(BASE_URL, "added", "new-key"),
         ]
     )
+    assert len(index.delete_calls) == 1
     index.flush()
 
     kept = {
@@ -185,7 +184,6 @@ async def test_removed_sections_are_deleted() -> None:
     assert kept == {f"{BASE_URL}#intro", f"{BASE_URL}#added"}
     assert index.surrogate_keys(BASE_URL) == {"new-key"}
     assert index.surrogate_keys(OTHER_URL) == {"other-key"}
-    assert len(index.delete_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -196,10 +194,10 @@ async def test_first_ingest_issues_no_delete() -> None:
     await service.save_document_records(
         [make_record(BASE_URL, s, "key") for s in ("intro", "method")]
     )
+    assert index.delete_calls == []
     index.flush()
 
     assert len(index.records) == 2
-    assert index.delete_calls == []
 
 
 @pytest.mark.asyncio
@@ -229,17 +227,37 @@ async def test_records_from_several_documents_are_replaced_per_url() -> None:
 
 @pytest.mark.asyncio
 async def test_mixed_surrogate_keys_for_one_url_are_rejected() -> None:
+    """A bad partition anywhere in the batch prevents every write, including
+    those for base URLs that were consistent.
+    """
     index = LaggingIndex()
     service = make_service(index)
 
     with pytest.raises(RuntimeError, match="Multiple surrogate keys"):
         await service.save_document_records(
             [
+                make_record(OTHER_URL, "intro", "fine"),
                 make_record(BASE_URL, "intro", "key-a"),
                 make_record(BASE_URL, "method", "key-b"),
             ]
         )
     assert index.pending == []
+
+
+@pytest.mark.asyncio
+async def test_empty_replacement_is_refused() -> None:
+    """An empty record set would delete the whole document, so it is an
+    error rather than a silent removal.
+    """
+    index = LaggingIndex(
+        [make_record(BASE_URL, "intro", "key").export_for_algolia()]
+    )
+    service = make_service(index)
+
+    with pytest.raises(ValueError, match="empty set"):
+        await service.replace_records(BASE_URL, [])
+    assert index.pending == []
+    assert len(index.records) == 1
 
 
 @pytest.mark.asyncio
@@ -255,10 +273,10 @@ async def test_doc_stub_replaces_previous_stub_under_lag() -> None:
     service = make_service(index)
 
     await service.save_doc_stub(stub)
+    assert index.delete_calls == []
     index.flush()
 
     assert len(index.records) == 1
     (record,) = index.records.values()
     assert record["objectID"] == previous["objectID"]
     assert record["surrogateKey"] != previous["surrogateKey"]
-    assert index.delete_calls == []

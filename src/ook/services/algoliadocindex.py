@@ -37,7 +37,7 @@ class AlgoliaDocIndexService:
 
         Parameters
         ----------
-        doc_records
+        records
             The document records to save. These records can be from different
             base URLs.
 
@@ -46,7 +46,8 @@ class AlgoliaDocIndexService:
         RuntimeError
             Raised if records for a given base URL have different surrogate
             keys. This is an indication that the surrogate keys are not
-            being generated correctly.
+            being generated correctly. Nothing is written to the index when
+            this is raised.
         """
         # Partition the records by base URL since each URL is replaced as a
         # unit: its stale records are deleted separately.
@@ -55,6 +56,9 @@ class AlgoliaDocIndexService:
         )
         for record in records:
             partitioned_records[record.base_url].append(record)
+
+        # Validate every partition before writing any of them so a bad batch
+        # cannot leave the index half-updated.
         for base_url, url_records in partitioned_records.items():
             surrogate_keys = {record.surrogate_key for record in url_records}
             if len(surrogate_keys) > 1:
@@ -62,6 +66,8 @@ class AlgoliaDocIndexService:
                     f"Multiple surrogate keys for base URL {base_url}: "
                     f"{surrogate_keys}"
                 )
+
+        for base_url, url_records in partitioned_records.items():
             record_objs = [
                 record.export_for_algolia() for record in url_records
             ]
@@ -93,8 +99,21 @@ class AlgoliaDocIndexService:
             The base URL whose records are being replaced.
         records
             The new records, exported for Algolia (with ``objectID`` and
-            ``baseUrl`` keys).
+            ``baseUrl`` keys). Must not be empty.
+
+        Raises
+        ------
+        ValueError
+            Raised if ``records`` is empty. An empty replacement would delete
+            every record for the base URL, which is never what an ingest
+            intends; removing a document is a deliberate operation that this
+            method does not provide.
         """
+        if not records:
+            raise ValueError(
+                f"Refusing to replace the records for {base_url} with an "
+                "empty set."
+            )
         existing_ids = await self.find_object_ids(base_url)
         await self._index.save_objects_async(records)
         new_ids = {record["objectID"] for record in records}
