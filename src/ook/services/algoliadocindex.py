@@ -48,8 +48,8 @@ class AlgoliaDocIndexService:
             keys. This is an indication that the surrogate keys are not
             being generated correctly.
         """
-        # Partition the records by base URL since each URL has a different
-        # surrogate key, and thus is old records need to be deleted separately.
+        # Partition the records by base URL since each URL is replaced as a
+        # unit: its stale records are deleted separately.
         partitioned_records: defaultdict[HttpUrl, list[DocumentRecord]] = (
             defaultdict(list)
         )
@@ -62,67 +62,67 @@ class AlgoliaDocIndexService:
                     f"Multiple surrogate keys for base URL {base_url}: "
                     f"{surrogate_keys}"
                 )
-            surrogate_key = surrogate_keys.pop()
             record_objs = [
                 record.export_for_algolia() for record in url_records
             ]
-            await self._index.save_objects_async(record_objs)
-            await self.delete_old_records(str(base_url), surrogate_key)
+            await self.replace_records(str(base_url), record_objs)
 
     async def save_doc_stub(self, doc: MinimalDocumentModel) -> None:
         """Add a manually-generated record to the document index."""
         record = doc.make_algolia_record().export_for_algolia()
-        await self._index.save_objects_async([record])
-        await self.delete_old_records(
-            base_url=record["baseUrl"],
-            surrogate_key=record["surrogateKey"],
-        )
-        await self.delete_old_records(
-            record["baseUrl"], record["surrogateKey"]
+        await self.replace_records(str(record["baseUrl"]), [record])
+
+    async def replace_records(
+        self, base_url: str, records: list[dict[str, Any]]
+    ) -> None:
+        """Replace the index's records for a base URL with new records.
+
+        The object IDs already indexed for the base URL are collected *before*
+        the new records are saved, and only the IDs absent from the new set
+        are deleted afterwards. Algolia applies writes asynchronously and in
+        order, so a browse issued right after a save may still see the
+        previous records. Because object IDs are derived from the URL and
+        section headings, those previous records share IDs with the fresh
+        ones; deleting them based on that stale view would wipe the records
+        that were just saved. Deciding what to delete from the pre-save
+        snapshot never collides with the new IDs.
+
+        Parameters
+        ----------
+        base_url
+            The base URL whose records are being replaced.
+        records
+            The new records, exported for Algolia (with ``objectID`` and
+            ``baseUrl`` keys).
+        """
+        existing_ids = await self.find_object_ids(base_url)
+        await self._index.save_objects_async(records)
+        new_ids = {record["objectID"] for record in records}
+        stale_ids = sorted(existing_ids - new_ids)
+        if stale_ids:
+            await self._index.delete_objects_async(stale_ids)
+        self._logger.debug(
+            "Replaced document records",
+            base_url=base_url,
+            saved_count=len(records),
+            deleted_count=len(stale_ids),
         )
 
-    async def find_old_records(
-        self, base_url: str, surrogate_key: str
-    ) -> list[dict[str, Any]]:
-        """Find all records for a URL that don't match the given surrogate
-        key.
-        """
-        filters = (
-            f"baseUrl:{self.escape_facet_value(base_url)}"
-            " AND NOT "
-            f"surrogateKey:{self.escape_facet_value(surrogate_key)}"
-        )
+    async def find_object_ids(self, base_url: str) -> set[str]:
+        """Find the object IDs of all records indexed for a base URL."""
         settings = {
-            "filters": filters,
-            "attributesToRetrieve": ["baseUrl", "surrogateKey"],
+            "filters": f"baseUrl:{self.escape_facet_value(base_url)}",
+            "attributesToRetrieve": ["objectID"],
             "attributesToHighlight": [],
         }
 
         # Ideally we want to use browse_objects_async here, but I think there's
         # a bug:
         # https://github.com/algolia/algoliasearch-client-python/issues/559
-        return list(self._index.browse_objects(settings))
-
-    async def delete_old_records(
-        self, base_url: str, surrogate_key: str
-    ) -> None:
-        """Delete all records for a URL that don't match the given surrogate
-        key.
-        """
-        records = await self.find_old_records(base_url, surrogate_key)
-        object_ids = [record["objectID"] for record in records]
-        if object_ids:
-            self._logger.debug(
-                "Collected old objectIDs for deletion",
-                base_url=base_url,
-                object_id_count=len(object_ids),
-            )
-            await self._index.delete_objects_async(object_ids)
-        self._logger.debug(
-            "No old objectIDs to delete",
-            base_url=base_url,
-            object_id_count=len(object_ids),
-        )
+        return {
+            record["objectID"]
+            for record in self._index.browse_objects(settings)
+        }
 
     @staticmethod
     def escape_facet_value(value: str) -> str:
