@@ -344,7 +344,9 @@ def running_subscriptions(broker: KafkaBroker) -> dict[str, list[str]]:
             continue
         name: str = subscriber.specification.call_name
         for topic in subscriber.topics:
-            subscriptions.setdefault(topic, []).append(name)
+            # faststream 0.7.8 yields ``Topic`` objects rather than names.
+            topic_name = topic if isinstance(topic, str) else topic.name
+            subscriptions.setdefault(topic_name, []).append(name)
     return subscriptions
 
 

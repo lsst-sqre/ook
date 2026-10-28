@@ -84,7 +84,7 @@ class SdmSchemasStore:
             },
         ).returning(SqlSdmTable.id, SqlSdmTable.name)
         result = await self._session.execute(table_stmt)
-        table_id_map = {name: id_ for id_, name in result.fetchall()}
+        table_id_map = {row.name: row.id for row in result.all()}
         await self._session.flush()
         self._logger.debug("Upserted tables", table_id_map=table_id_map)
 

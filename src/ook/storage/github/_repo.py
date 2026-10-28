@@ -175,7 +175,7 @@ class GitHubRepoStore:
 
         data = await self._gh.getitem(
             url,
-            url_vars,  # type: ignore[arg-type]
+            url_vars,
             accept="application/vnd.github.object+json",
         )
         return GitHubContents.model_validate(data)
@@ -213,6 +213,6 @@ class GitHubRepoStore:
 
         return await self._gh.getitem(
             url,
-            url_vars,  # type: ignore[arg-type]
+            url_vars,
             accept="application/vnd.github.raw+json",
         )

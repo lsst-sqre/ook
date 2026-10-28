@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 from typing import Any
 
 import dateparser
@@ -105,7 +105,7 @@ class ReducedLtdSphinxTechnote:
         return self._authors
 
     @property
-    def timestamp(self) -> datetime.datetime:
+    def timestamp(self) -> dt.datetime:
         """Timestamp associated with the technote (time when the document was
         updated).
         """
@@ -234,16 +234,14 @@ class ReducedLtdSphinxTechnote:
 
         return sections
 
-    def _reduce_timestamp(
-        self, doc: lxml.html.Html.Element
-    ) -> datetime.datetime:
+    def _reduce_timestamp(self, doc: lxml.html.Html.Element) -> dt.datetime:
         try:
             date_element = doc.cssselect('a[href="#change-record"]')[0]
         except IndexError:
-            return datetime.datetime.now(tz=datetime.UTC)
+            return dt.datetime.now(tz=dt.UTC)
         date_text = date_element.text_content()
         date = dateparser.parse(date_text, settings={"TIMEZONE": "UTC"})
         if date:
             return date
         else:
-            return datetime.datetime.now(tz=datetime.UTC)
+            return dt.datetime.now(tz=dt.UTC)

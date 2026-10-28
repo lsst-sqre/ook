@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 from dataclasses import dataclass
 from datetime import UTC
 from typing import Any
@@ -78,7 +78,7 @@ class ReducedLtdLanderDocument:
         return self._authors
 
     @property
-    def timestamp(self) -> datetime.datetime:
+    def timestamp(self) -> dt.datetime:
         """Timestamp associated with the technote (time when the document was
         updated).
         """
@@ -127,11 +127,11 @@ class ReducedLtdLanderDocument:
                 self._metadata["dateModified"], settings={"TIMEZONE": "UTC"}
             )
             if date:
-                self._timestamp: datetime.datetime = date
+                self._timestamp: dt.datetime = date
             else:
-                self._timestamp = datetime.datetime.now(tz=UTC)
+                self._timestamp = dt.datetime.now(tz=UTC)
         except Exception:
-            self._timestamp = datetime.datetime.now(tz=UTC)
+            self._timestamp = dt.datetime.now(tz=UTC)
 
         try:
             self._github_url: str | None = self._metadata["codeRepository"]
