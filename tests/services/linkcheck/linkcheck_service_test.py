@@ -749,6 +749,184 @@ async def test_execute_recheck_skips_fresh_urls(factory: Factory) -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_recheck_force_rechecks_not_due_url(
+    factory: Factory,
+) -> None:
+    """A forced recheck fetches a URL even though its recheck time has
+    not arrived, so an operator can re-verify stored rows on demand.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            url = "https://docs.example.com/misdirected"
+            await store.upsert_url_state(
+                LinkState(
+                    url=url,
+                    status=LinkStatus.blocked,
+                    date_checked=now - timedelta(minutes=5),
+                    date_last_ok=now - timedelta(days=2),
+                    status_code=421,
+                    error="HTTP 421 (misdirected request)",
+                    date_next_check=now + timedelta(hours=6),
+                )
+            )
+            ids = await store.upsert_checked_urls([url])
+
+            await service.execute_recheck([ids[url]], force=True)
+
+            state = await store.get_url_state(url)
+            assert state is not None
+            assert state.status is LinkStatus.ok
+            assert state.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_execute_recheck_force_keeps_still_blocked_schedule(
+    factory: Factory,
+) -> None:
+    """A forced recheck of a blocked URL that is still inconclusive leaves
+    its blocked backoff and next recheck time as the schedule had them,
+    while recording the new response.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    date_next_check = now + timedelta(hours=6)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(421)
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            url = "https://docs.example.com/still-misdirected"
+            await store.upsert_url_state(
+                LinkState(
+                    url=url,
+                    status=LinkStatus.blocked,
+                    date_checked=now - timedelta(hours=2),
+                    date_last_ok=now - timedelta(days=2),
+                    consecutive_blocked_count=3,
+                    status_code=403,
+                    error="HTTP 403 (likely blocked by bot protection)",
+                    date_next_check=date_next_check,
+                )
+            )
+            ids = await store.upsert_checked_urls([url])
+
+            await service.execute_recheck([ids[url]], force=True)
+
+            state = await store.get_url_state(url)
+            assert state is not None
+            assert state.status is LinkStatus.blocked
+            assert state.consecutive_blocked_count == 3
+            assert state.date_next_check == date_next_check
+            assert state.date_checked > now - timedelta(hours=2)
+            assert state.status_code == 421
+            assert state.error is not None
+            assert "misdirected request" in state.error
+
+
+@pytest.mark.asyncio
+async def test_list_forced_recheck_urls(factory: Factory) -> None:
+    """The forced-recheck enumeration lists still-referenced URLs whose
+    stored status code or status matches a filter, even when not due.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            for url, status, status_code in (
+                ("https://example.com/misdirected", LinkStatus.blocked, 421),
+                ("https://example.com/broken", LinkStatus.broken, 404),
+                ("https://example.com/ok", LinkStatus.ok, 200),
+            ):
+                await store.upsert_url_state(
+                    LinkState(
+                        url=url,
+                        status=status,
+                        date_checked=now,
+                        status_code=status_code,
+                        date_next_check=now + timedelta(hours=6),
+                    )
+                )
+                await store.replace_origin_occurrences(
+                    origin_base_url=f"https://{status_code}.lsst.io",
+                    occurrences=[UrlOccurrence(url=url, origin_path="a")],
+                )
+
+            forced = await service.list_forced_recheck_urls(
+                status_codes=[421], statuses=[LinkStatus.broken]
+            )
+            assert sorted(f.url for f in forced) == [
+                "https://example.com/broken",
+                "https://example.com/misdirected",
+            ]
+            # With no filters, nothing is forced.
+            assert (
+                await service.list_forced_recheck_urls(
+                    status_codes=[], statuses=[]
+                )
+                == []
+            )
+
+
+@pytest.mark.asyncio
+async def test_list_forced_recheck_urls_excludes_healthy(
+    factory: Factory,
+) -> None:
+    """A forcing status code only reaches unhealthy rows: still-referenced
+    URLs stored ``ok`` or ``redirected`` never match, even when their
+    stored status code does, while a ``broken`` URL whose stored code is
+    stale from an earlier check does.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("No HTTP request expected")
+
+    async with httpx.AsyncClient(transport=mock_transport(handler)) as hc:
+        service = make_service(factory, hc)
+        store = factory.create_linkcheck_store()
+        async with factory.db_session.begin():
+            for url, status, status_code in (
+                ("https://example.com/ok", LinkStatus.ok, 200),
+                ("https://example.com/moved", LinkStatus.redirected, 301),
+                ("https://example.com/stale-code", LinkStatus.broken, 200),
+            ):
+                await store.upsert_url_state(
+                    LinkState(
+                        url=url,
+                        status=status,
+                        date_checked=now,
+                        status_code=status_code,
+                        date_next_check=now + timedelta(hours=6),
+                    )
+                )
+                await store.replace_origin_occurrences(
+                    origin_base_url=f"https://{status.value}.lsst.io",
+                    occurrences=[UrlOccurrence(url=url, origin_path="a")],
+                )
+
+            forced = await service.list_forced_recheck_urls(
+                status_codes=[200, 301], statuses=[]
+            )
+            assert [f.url for f in forced] == [
+                "https://example.com/stale-code"
+            ]
+
+
+@pytest.mark.asyncio
 async def test_list_due_recheck_urls_referenced_only(
     factory: Factory,
 ) -> None:

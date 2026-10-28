@@ -29,7 +29,7 @@ from ook.config import config  # noqa: E402
 from ook.factory import Factory  # noqa: E402
 from ook.kafkabroker import kafka_broker  # noqa: E402
 from ook.services import intersphinx as intersphinx_service  # noqa: E402
-from ook.services.linkcheck import _urlchecker  # noqa: E402
+from ook.services.guardedhttp import _guard as guardedhttp_guard  # noqa: E402
 
 from .support.algoliasearch import (  # noqa: E402
     MockSearchClient,
@@ -75,9 +75,9 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
 
 @pytest.fixture(autouse=True, scope="session")
 def _patched_ssrf_guard_dns() -> Iterator[None]:
-    """Resolve every hostname to a public address so the SSRF guards in the
-    link-check URL checker and the intersphinx cache never perform real DNS
-    lookups.
+    """Resolve every hostname to a public address so the SSRF guard
+    (``ook.services.guardedhttp``) never performs real DNS lookups for the
+    link-check URL checker or the intersphinx cache.
 
     The application's Kafka consumer executes link checks in the
     background of any test that submits them, so DNS must resolve
@@ -86,17 +86,23 @@ def _patched_ssrf_guard_dns() -> Iterator[None]:
     intersphinx cache's guard likewise resolves origin hosts before a
     cold-miss fetch, so it must resolve deterministically too.
 
-    This is session-scoped because the ``UrlChecker`` singleton captures
-    ``_default_resolve_host`` when the shared application lifespan
-    constructs the process context, so the patch must be in place before
-    the session-scoped app starts and stay in place for the whole session.
+    The process context's ``UrlChecker`` has no injected resolver, so its
+    guard looks up ``guardedhttp``'s ``default_resolve_host`` at call
+    time, as does the guarded client's fail-closed fallback. A factory-built
+    intersphinx cache service instead reads its module's
+    ``_default_resolve_host`` (``guardedhttp``'s resolver, bound at import)
+    when it is constructed, so that module attribute is patched too. This
+    is session-scoped so the patch is in place before the session-scoped
+    app starts and stays in place for the whole session.
     """
     monkeypatch = pytest.MonkeyPatch()
 
     async def resolve_host(host: str) -> Sequence[str]:
         return ["93.184.216.34"]
 
-    monkeypatch.setattr(_urlchecker, "_default_resolve_host", resolve_host)
+    monkeypatch.setattr(
+        guardedhttp_guard, "default_resolve_host", resolve_host
+    )
     monkeypatch.setattr(
         intersphinx_service, "_default_resolve_host", resolve_host
     )

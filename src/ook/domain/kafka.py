@@ -56,6 +56,16 @@ class RecheckUrlsMessageV1(BaseModel):
         description=("Primary keys of the checked-URL records to recheck."),
     )
 
+    force: bool = Field(
+        False,
+        description=(
+            "Whether to recheck the URLs even if they are not due. Set for"
+            " the URLs the scheduled recheck enqueues because they match a"
+            " forcing filter such as a stored status code; messages without"
+            " the field are not forced."
+        ),
+    )
+
     class Meta:
         """Metadata for the model."""
 

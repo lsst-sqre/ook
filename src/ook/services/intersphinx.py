@@ -3,17 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
-import socket
 import time
 from collections import Counter
-from collections.abc import (
-    AsyncIterator,
-    Awaitable,
-    Callable,
-    Mapping,
-    Sequence,
-)
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -38,6 +30,14 @@ from ook.domain.redirects import (
     is_permanent_chain,
 )
 from ook.exceptions import InvalidInventoryUrlError, UpstreamInventoryError
+from ook.services.guardedhttp import (
+    HostResolutionError,
+    HostResolver,
+    NonPublicHostError,
+    default_resolve_host,
+    pinned_to,
+    resolve_and_validate,
+)
 from ook.storage.intersphinxstore import IntersphinxInventoryStore
 
 __all__ = [
@@ -194,8 +194,14 @@ class _BackoffWrite(Enum):
     """The write itself raised, so the row carries no backoff marker."""
 
 
-HostResolver = Callable[[str], Awaitable[Sequence[str]]]
-"""Type of a callable resolving a hostname to IP address strings."""
+_default_resolve_host: HostResolver = default_resolve_host
+"""The resolver the SSRF guard uses when the service is given none.
+
+`ook.services.guardedhttp`'s own ``getaddrinfo`` resolver, bound to a module
+attribute that a service built without an injected resolver reads at
+construction, so a test can swap resolution out for every service the
+factory builds.
+"""
 
 
 _DEFAULT_MAX_CONTENT_SIZE = 50 * 1024 * 1024
@@ -416,7 +422,13 @@ class IntersphinxCacheService:
     A URL the guard refuses for what it *is* — unparseable, not ``https``,
     or pointing at a non-public address — is a bad client request; a
     well-formed URL whose host simply will not resolve is not the client's
-    mistake and is treated as an upstream failure like any other.
+    mistake and is treated as an upstream failure like any other. The
+    host check is `ook.services.guardedhttp.resolve_and_validate`, and every
+    socket a fetch opens — for the requested URL, each redirect hop, and the
+    refresh path's re-guarded stored URL alike — connects to the address
+    the guard validated (see `_stream_hop`), so a DNS-rebinding answer
+    between the check and the connect cannot steer a socket anywhere the
+    guard did not accept.
 
     Every upstream fetch is hardened against a hostile or misbehaving
     origin: redirects are followed by hand, one guarded hop at a time and
@@ -459,7 +471,12 @@ class IntersphinxCacheService:
     Parameters
     ----------
     http_client
-        The shared HTTP client used to fetch origin inventories.
+        The HTTP client used to fetch origin inventories. In production this
+        is the process's guarded client from
+        `~ook.services.guardedhttp.create_guarded_client`, which is what
+        turns each hop's pin into the socket's connect target; a plain
+        client still runs the guard before every hop but connects by
+        hostname.
     inventory_store
         The store for cached inventories.
     session
@@ -492,7 +509,10 @@ class IntersphinxCacheService:
         cap is abandoned and treated as an upstream fetch failure.
     resolve_host
         Hostname resolver used by the SSRF guard, mainly injectable for
-        testing. Defaults to asyncio's ``getaddrinfo``.
+        testing. Defaults to the guard's own ``getaddrinfo`` resolver. The
+        address it returns is both validated by the guard and pinned as the
+        socket's connect target, so each request connects to the exact
+        address that was checked.
     """
 
     def __init__(
@@ -1036,9 +1056,12 @@ class IntersphinxCacheService:
             # Re-guard the stored URL before fetching: it passed the guard
             # when first cached, but DNS can rebind a once-public host to a
             # private address, so the cheap re-check preserves the SSRF
-            # invariant.
-            await self._guard_url(inventory.url)
-            fetch = await self._revalidate(inventory, deadline=deadline)
+            # invariant -- and the revalidation dials the address this
+            # re-check validated, not whatever the host resolves to next.
+            address = await self._guard_url(inventory.url)
+            fetch = await self._revalidate(
+                inventory, address=address, deadline=deadline
+            )
         response = fetch.response
         # Every field a successful refresh writes regardless of whether the
         # content changed, applied once so the next one added cannot land on
@@ -1095,7 +1118,7 @@ class IntersphinxCacheService:
         return _RefreshOutcome(result=result, inventory=written)
 
     async def _revalidate(
-        self, inventory: IntersphinxInventory, *, deadline: float
+        self, inventory: IntersphinxInventory, *, address: str, deadline: float
     ) -> _InventoryFetch:
         """Fetch one cached inventory conditionally, but only where it holds.
 
@@ -1161,6 +1184,7 @@ class IntersphinxCacheService:
             validators[_IF_MODIFIED_SINCE] = inventory.last_modified
         fetch = await self._fetch_inventory(
             inventory.url,
+            address=address,
             validators=validators,
             validator_url=inventory.resolved_url,
             deadline=deadline,
@@ -1229,11 +1253,13 @@ class IntersphinxCacheService:
         """
         try:
             async with self._fetch_budget() as deadline:
-                await self._guard_url(url)
+                address = await self._guard_url(url)
                 self._logger.info(
                     "Fetching intersphinx inventory on cache miss", url=url
                 )
-                fetch = await self._fetch_inventory(url, deadline=deadline)
+                fetch = await self._fetch_inventory(
+                    url, address=address, deadline=deadline
+                )
                 fetch.response.raise_for_status()
         except httpx.HTTPError as exc:
             await self._store_failure(url, error=exc)
@@ -1270,6 +1296,7 @@ class IntersphinxCacheService:
         self,
         url: str,
         *,
+        address: str,
         deadline: float,
         validators: Mapping[str, str] | None = None,
         validator_url: str | None = None,
@@ -1284,7 +1311,11 @@ class IntersphinxCacheService:
         `MAX_REDIRECTS` hops so a redirect loop terminates. Every *new* host
         in the chain is guarded; a host the guard already accepted within
         this same fetch is not resolved again, which is what keeps a chain
-        that leaves a host and returns from paying for that host twice.
+        that leaves a host and returns from paying for that host twice. A
+        socket a hop opens connects to the address the guard validated for
+        that hop's host — the one it just resolved, or for a returning host
+        the one it resolved earlier in the chain — rather than to whatever
+        the host resolves to at connect time; see `_stream_hop`.
 
         Only the terminal response's body is kept: a redirect hop's body is
         discarded and never counted against the size cap, and both the
@@ -1346,6 +1377,9 @@ class IntersphinxCacheService:
         ----------
         url
             The origin inventory URL to fetch.
+        address
+            The address the caller's guard validated for ``url``'s host,
+            which the first hop connects to.
         deadline
             The enclosing `_fetch_budget`'s monotonic expiry.
         validators
@@ -1377,15 +1411,19 @@ class IntersphinxCacheService:
             Propagated from the transport on a timeout or connection error.
         """
         current_url = url
+        current_address = address
         # This fetch's own copy, since a hop can strip a validator from it
         # and the caller's mapping is not this method's to edit.
         carried_validators = dict(validators or {})
         hops: list[int] = []
-        # Seeded with the requested URL's host, which both callers guard
-        # immediately before this fetch, so a chain that comes back to it
-        # does not resolve it a second time. Local to this fetch: a host is
-        # skipped only within the chain that just validated it.
-        validated_hosts = {host} if (host := httpx.URL(url).host) else set()
+        # Host -> validated address, seeded with the requested URL's host,
+        # which both callers guard immediately before this fetch, so a chain
+        # that comes back to it is pinned to the address already validated
+        # rather than resolving it a second time. Local to this fetch: a
+        # host is skipped only within the chain that just validated it.
+        validated_hosts = (
+            {host: address} if (host := httpx.URL(url).host) else {}
+        )
         while True:
             # A validator is an assertion about one resource, so it is sent
             # only where it holds: to the URL that minted it, or anywhere at
@@ -1396,11 +1434,10 @@ class IntersphinxCacheService:
                 else {}
             )
             try:
-                async with self._http_client.stream(
-                    "GET",
+                async with self._stream_hop(
                     current_url,
+                    address=current_address,
                     headers=request_validators,
-                    follow_redirects=False,
                     timeout=self._remaining_budget(deadline),
                 ) as response:
                     location = _first_location(response.headers)
@@ -1474,12 +1511,61 @@ class IntersphinxCacheService:
             # Guard outside the stream context so the hop's connection is
             # released — back to the pool, its body already drained — before
             # the guard's DNS lookup and the next hop's request.
-            await self._guard_redirect_url(
+            current_address = await self._guard_redirect_url(
                 next_url,
                 requested_url=url,
                 validated_hosts=validated_hosts,
             )
             current_url = next_url
+
+    @asynccontextmanager
+    async def _stream_hop(
+        self,
+        url: str,
+        *,
+        address: str,
+        headers: Mapping[str, str],
+        timeout: float,
+    ) -> AsyncIterator[httpx.Response]:
+        """Stream one hop's ``GET`` with its socket pinned to the address the
+        guard validated for that hop's host.
+
+        The request runs inside `~ook.services.guardedhttp.pinned_to`, so
+        the guarded client's network backend dials ``address`` rather than
+        re-resolving the hostname if it opens a socket, and a DNS-rebinding
+        answer between the guard's lookup and the connect cannot steer the
+        socket anywhere the guard did not accept. A hop that reuses a pooled
+        keep-alive connection for the same hostname opens no socket; that
+        connection was itself opened to a validated address. The URL itself
+        is never rewritten to the address, so TLS SNI, certificate
+        verification, the ``Host`` header, and the connection pool's key all
+        stay the hostname.
+
+        Parameters
+        ----------
+        url
+            The hop's URL, requested as is.
+        address
+            The address the guard validated for ``url``'s host.
+        headers
+            The request headers.
+        timeout
+            The per-call httpx timeout.
+
+        Yields
+        ------
+        httpx.Response
+            The hop's streamed response, redirects not followed.
+        """
+        with pinned_to(httpx.URL(url).host, address):
+            async with self._http_client.stream(
+                "GET",
+                url,
+                headers=headers,
+                follow_redirects=False,
+                timeout=timeout,
+            ) as response:
+                yield response
 
     async def _drain_hop_body(self, response: httpx.Response) -> None:
         """Read and discard a redirect hop's body so its connection is reused.
@@ -1706,14 +1792,17 @@ class IntersphinxCacheService:
             self._reject_url(url, f"URL could not be parsed: {exc}")
 
     async def _guard_url(
-        self, url: str, *, validated_hosts: set[str] | None = None
-    ) -> None:
-        """Reject a URL that must not be fetched from upstream.
+        self, url: str, *, validated_hosts: dict[str, str] | None = None
+    ) -> str:
+        """Reject a URL that must not be fetched from upstream, returning
+        the address to fetch it from.
 
         This SSRF guard runs before any upstream fetch: the URL must parse,
         it must use ``https``, and its host must not resolve to a private,
         link-local, or loopback address. A rejected URL is never fetched and
-        never stored.
+        never stored. The host check itself is
+        `ook.services.guardedhttp.resolve_and_validate`, the one Ook's other
+        guarded fetcher, the link checker, uses too.
 
         It refuses a URL in two distinguishable ways, and they are not the
         same kind of failure. Everything above is a fact about the URL the
@@ -1725,17 +1814,11 @@ class IntersphinxCacheService:
         Parsing comes first, and rejects before anything is resolved — see
         `_parse_url`.
 
-        The guard resolves the host itself, but httpx re-resolves at connect
-        time, so a DNS-rebinding answer could point the socket at a private
-        address in the window between this check and the connect. The
-        sibling link-check checker closes that window by pinning the
-        validated IP; here resolution is treated as advisory instead.
-        Because the fetch is ``https``-only, a host rebound to an internal
-        target between guard and connect would still have to present a TLS
-        certificate valid for the original hostname, and httpx's TLS
-        hostname verification would reject it. TLS hostname verification on
-        the https-only fetch is what backstops rebinding, so IP pinning is
-        unnecessary here.
+        The address the guard validated is returned so the caller can
+        connect to exactly it (see `_stream_hop`): were the transport left to
+        resolve the hostname again at connect time, a DNS-rebinding answer
+        could point the socket at a private address in the window between
+        this check and the connect.
 
         Parameters
         ----------
@@ -1743,15 +1826,23 @@ class IntersphinxCacheService:
             The URL to validate.
         validated_hosts
             Hosts this guard already accepted earlier in the same fetch, if
-            any. A host in the set skips *resolution* only — the scheme
-            check still runs on every URL, since https-only is what
-            backstops rebinding here — and an accepted host is added to the
-            set. Passing one is what makes a chain that revisits a host cost
-            a single resolution rather than one per hop, which matters
-            because the cluster has no caching resolver and ``ndots`` search
-            expansion multiplies every external-name lookup. Deliberately
-            per-fetch and never service-wide: "public a moment ago, in this
-            chain" is a far narrower claim than "public once".
+            any, each mapped to the address validated for it. A host in the
+            mapping skips *resolution* only — the scheme check still runs on
+            every URL — and the address recorded for it is returned, so a
+            hop back to that host is pinned to the address the chain already
+            validated; an accepted host is added to the mapping. Passing one
+            is what makes a chain that revisits a host cost a single
+            resolution rather than one per hop, which matters because the
+            cluster has no caching resolver and ``ndots`` search expansion
+            multiplies every external-name lookup. Deliberately per-fetch
+            and never service-wide: "public a moment ago, in this chain" is
+            a far narrower claim than "public once".
+
+        Returns
+        -------
+        str
+            The validated address to connect to: the host itself when it is
+            an IP literal, otherwise the first address it resolved to.
 
         Raises
         ------
@@ -1773,59 +1864,31 @@ class IntersphinxCacheService:
         if validated_hosts is not None and host in validated_hosts:
             # Already resolved and accepted earlier in this same fetch;
             # re-resolving it would answer the same question again.
-            return
+            return validated_hosts[host]
 
         try:
-            addresses = [ipaddress.ip_address(host)]
-        except ValueError:
-            # Not an IP literal: resolve the hostname to its addresses.
-            try:
-                resolved = list(await self._resolve_host(host))
-            except (OSError, UnicodeError) as exc:
-                # getaddrinfo reports a retired hostname or a transient DNS
-                # failure as socket.gaierror (an OSError) and a host label
-                # IDNA cannot encode as UnicodeEncodeError. Neither is an
-                # httpx.HTTPError, so left to propagate they escape both
-                # fetch paths' handlers; failing here keeps every
-                # resolution failure inside the upstream-failure taxonomy,
-                # which the redirect-hop wrapper then re-describes as a
-                # refused hop.
-                self._fail_resolution(
-                    url, f"Host {host!r} could not be resolved: {exc}"
-                )
-            addresses = [ipaddress.ip_address(a) for a in resolved]
-        if not addresses:
-            # Reachable only from the resolver, never from the IP-literal
-            # branch above, and an empty answer is the same absence of an
-            # answer a resolver error is.
-            self._fail_resolution(
-                url, f"Host {host!r} did not resolve to any address"
+            address = await resolve_and_validate(
+                host, resolve_host=self._resolve_host
             )
-        for address in addresses:
-            # For IPv4-mapped IPv6 addresses, guard the embedded IPv4
-            # address rather than the IPv6 wrapper.
-            candidate = (
-                address.ipv4_mapped
-                if isinstance(address, ipaddress.IPv6Address)
-                and address.ipv4_mapped is not None
-                else address
-            )
-            if not candidate.is_global:
-                self._reject_url(
-                    url,
-                    f"Host {host!r} resolves to the non-public address"
-                    f" {address}",
-                )
+        except NonPublicHostError as exc:
+            self._reject_url(url, str(exc))
+        except HostResolutionError as exc:
+            # A retired hostname, a transient DNS failure, an empty answer,
+            # or a label IDNA cannot encode: the absence of an answer, so it
+            # stays inside the upstream-failure taxonomy, which the
+            # redirect-hop wrapper then re-describes as a refused hop.
+            self._fail_resolution(url, str(exc))
         if validated_hosts is not None:
-            validated_hosts.add(host)
+            validated_hosts[host] = address
+        return address
 
     async def _guard_redirect_url(
         self,
         url: str,
         *,
         requested_url: str,
-        validated_hosts: set[str],
-    ) -> None:
+        validated_hosts: dict[str, str],
+    ) -> str:
         """Run the SSRF guard on a redirect hop's target, inside the budget.
 
         Same check as `_guard_url`, but a rejection is re-raised as an
@@ -1852,9 +1915,15 @@ class IntersphinxCacheService:
         requested_url
             The originally requested inventory URL, for the rejection log.
         validated_hosts
-            The fetch's set of already-accepted hosts, passed through to
-            `_guard_url` so a hop back to a host this chain already resolved
-            skips the repeat lookup.
+            The fetch's already-accepted hosts and their validated
+            addresses, passed through to `_guard_url` so a hop back to a
+            host this chain already resolved skips the repeat lookup and is
+            pinned to the address validated earlier.
+
+        Returns
+        -------
+        str
+            The validated address the hop's request must connect to.
 
         Raises
         ------
@@ -1864,7 +1933,7 @@ class IntersphinxCacheService:
             address.
         """
         try:
-            await self._guard_url(url, validated_hosts=validated_hosts)
+            return await self._guard_url(url, validated_hosts=validated_hosts)
         except (InvalidInventoryUrlError, _UpstreamFetchError) as exc:
             # Exactly the two classes `_guard_url` raises: a rejection of
             # the hop for what it is, and the absence of an answer about
@@ -1980,13 +2049,6 @@ def _malformed_redirect_detail(error: Exception) -> str:
     apart.
     """
     return f"Upstream redirected the inventory to a malformed URL: {error}"
-
-
-async def _default_resolve_host(host: str) -> Sequence[str]:
-    """Resolve a hostname to IP address strings with getaddrinfo."""
-    loop = asyncio.get_running_loop()
-    infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    return [str(info[4][0]) for info in infos]
 
 
 _GENERIC_UPSTREAM_ERROR = "Upstream fetch of the inventory failed"

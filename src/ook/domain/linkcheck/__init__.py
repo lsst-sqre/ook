@@ -1,6 +1,7 @@
 """Domain for external link checking."""
 
 from ._engine import (
+    TRANSIENT_CODES,
     accepts_contribution,
     canonicalize_url,
     contributed_outcome,
@@ -9,6 +10,7 @@ from ._engine import (
     normalize_origin_base_url,
 )
 from ._models import (
+    FORCEABLE_STATUSES,
     AcceptedContribution,
     CheckedUrlReport,
     CheckResult,
@@ -35,6 +37,8 @@ from ._models import (
 )
 
 __all__ = [
+    "FORCEABLE_STATUSES",
+    "TRANSIENT_CODES",
     "AcceptedContribution",
     "CheckResult",
     "CheckRunStatus",

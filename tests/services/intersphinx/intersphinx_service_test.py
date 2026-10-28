@@ -5,17 +5,19 @@ from __future__ import annotations
 import asyncio
 import socket
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 import pytest
+import pytest_asyncio
 import respx
 import structlog
 from httpx import Response
 from safir.database import create_async_session, create_database_engine
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from structlog.testing import capture_logs
 
 from ook.config import config
@@ -28,7 +30,18 @@ from ook.domain.redirects import MAX_REDIRECTS
 from ook.exceptions import InvalidInventoryUrlError, UpstreamInventoryError
 from ook.factory import Factory
 from ook.services import intersphinx as intersphinx_service
+from ook.services.guardedhttp import (
+    GuardedTransport,
+    HostResolver,
+    create_guarded_client,
+)
 from ook.storage.intersphinxstore import IntersphinxInventoryStore
+from tests.support.guardedhttp import (
+    FakeConnection,
+    FakeNetworkBackend,
+    FakeRequest,
+    raw_response,
+)
 
 INVENTORY_URL = "https://docs.example.com/en/latest/objects.inv"
 """An origin ``objects.inv`` URL used across the cold-miss tests."""
@@ -1694,10 +1707,8 @@ async def test_repeated_host_hop_is_still_scheme_checked(
 ) -> None:
     """A hop back to a validated host over ``http`` is still rejected.
 
-    The dedup skips the *resolution*, not the guard. TLS hostname
-    verification on the https-only fetch is what backstops rebinding here
-    in place of pinning the validated address, so the scheme check has to
-    run on every hop however familiar its host.
+    The dedup skips the *resolution*, not the guard, so the https-only
+    scheme check runs on every hop however familiar its host.
     """
     hop = "http://docs.example.com/en/21/objects.inv"
     respx_mock.get(INVENTORY_URL).mock(
@@ -3756,3 +3767,329 @@ async def test_a_revalidating_mode_still_raises_from_the_negative_cache(
         )
 
     assert route.call_count == 0
+
+
+# The tests below fetch through the guarded client over a fake network
+# backend, so they assert on the address each socket actually dials rather
+# than on what respx sees. respx patches the connection pool, above the
+# backend, so no respx router may be active in them: they take a database
+# session of their own rather than the ``factory`` fixture, whose GitHub
+# mock router would intercept every request before it reached a socket.
+
+PINNED_URL = "https://example.org/objects.inv"
+"""An origin inventory URL for the socket-pinning tests."""
+
+ORIGIN_IP = "151.101.0.223"
+"""The public address the pinning tests resolve the origin host to.
+
+Distinct from the conftest's patched default resolution, which is what
+the guarded transport's fail-closed fallback would dial for a request made
+without a pin, so a missing pin shows up as the wrong dial target.
+"""
+
+CDN_IP = "151.101.192.223"
+"""A second public address, for a redirect hop's host."""
+
+
+@pytest_asyncio.fixture
+async def unmocked_session(
+    database_engine: AsyncEngine, _empty_database: None
+) -> AsyncIterator[AsyncSession]:
+    """Return a session on an empty database with no respx router active."""
+    session = await create_async_session(database_engine)
+    try:
+        yield session
+    finally:
+        await session.close()
+
+
+def _recording_resolver(
+    addresses: Mapping[str, str], resolutions: list[str] | None = None
+) -> HostResolver:
+    """Return a resolver answering each host from ``addresses``.
+
+    Every lookup is appended to ``resolutions``, when given, so a test can
+    count them.
+    """
+
+    async def resolve(host: str) -> list[str]:
+        if resolutions is not None:
+            resolutions.append(host)
+        return [addresses[host]]
+
+    return resolve
+
+
+def _make_pinned_service(
+    session: AsyncSession,
+    http_client: httpx.AsyncClient,
+    resolve_host: HostResolver,
+) -> intersphinx_service.IntersphinxCacheService:
+    """Build a cache service fetching through ``http_client``."""
+    logger = structlog.get_logger("ook")
+    return intersphinx_service.IntersphinxCacheService(
+        http_client=http_client,
+        inventory_store=IntersphinxInventoryStore(
+            session=session, logger=logger
+        ),
+        session=session,
+        ttl=timedelta(hours=1),
+        negative_ttl=timedelta(hours=1),
+        active_window=timedelta(days=30),
+        logger=logger,
+        resolve_host=resolve_host,
+    )
+
+
+def _serve_inventory(
+    connection: FakeConnection, request: FakeRequest
+) -> bytes:
+    """Answer every request with the inventory body."""
+    return raw_response(200, body=INVENTORY_BODY)
+
+
+@pytest.mark.asyncio
+async def test_cold_miss_dials_the_guard_validated_address(
+    unmocked_session: AsyncSession,
+) -> None:
+    """A cold-miss fetch connects to the address the guard validated, while
+    the request URL keeps its hostname.
+
+    This closes the DNS-rebinding gap between the guard's lookup and the
+    connect: the socket dials the validated address instead of resolving
+    the hostname a second time, and TLS and the ``Host`` header still name
+    the hostname because the URL is never rewritten.
+    """
+    requests: list[httpx.Request] = []
+
+    async def record(request: httpx.Request) -> None:
+        requests.append(request)
+
+    backend = FakeNetworkBackend(_serve_inventory)
+    async with create_guarded_client(
+        network_backend=backend, event_hooks={"request": [record]}
+    ) as client:
+        service = _make_pinned_service(
+            unmocked_session,
+            client,
+            _recording_resolver({"example.org": ORIGIN_IP}),
+        )
+        async with unmocked_session.begin():
+            served = await service.get_inventory(PINNED_URL)
+
+    assert served.inventory.content == INVENTORY_BODY
+    assert backend.dialed == [(ORIGIN_IP, 443)]
+    [connection] = backend.connections
+    assert connection.server_hostname == "example.org"
+    assert [r.host_header for r in connection.requests] == ["example.org"]
+    [request] = requests
+    assert request.url.host == "example.org"
+
+
+@pytest.mark.asyncio
+async def test_factory_builds_the_cache_on_the_guarded_client(
+    factory: Factory,
+) -> None:
+    """The factory's cache service fetches through the process's guarded
+    client, whose transport is what turns each hop's pin into the socket's
+    connect target, rather than the plain shared client.
+    """
+    service = factory.create_intersphinx_cache_service()
+
+    assert service._http_client is factory.guarded_http_client
+    assert isinstance(service._http_client._transport, GuardedTransport)
+
+
+@pytest.mark.asyncio
+async def test_redirect_hops_dial_their_own_validated_addresses(
+    unmocked_session: AsyncSession,
+) -> None:
+    """Each redirect hop connects to the address the guard validated for
+    that hop's own host, not the first hop's.
+    """
+
+    def respond(connection: FakeConnection, request: FakeRequest) -> bytes:
+        if connection.server_hostname == "example.org":
+            return raw_response(
+                302, {"Location": "https://cdn.example.net/objects.inv"}
+            )
+        return raw_response(200, body=INVENTORY_BODY)
+
+    backend = FakeNetworkBackend(respond)
+    async with create_guarded_client(network_backend=backend) as client:
+        service = _make_pinned_service(
+            unmocked_session,
+            client,
+            _recording_resolver(
+                {"example.org": ORIGIN_IP, "cdn.example.net": CDN_IP}
+            ),
+        )
+        async with unmocked_session.begin():
+            served = await service.get_inventory(PINNED_URL)
+
+    assert served.inventory.content == INVENTORY_BODY
+    assert (
+        served.inventory.resolved_url == "https://cdn.example.net/objects.inv"
+    )
+    assert backend.dialed == [(ORIGIN_IP, 443), (CDN_IP, 443)]
+    assert [c.server_hostname for c in backend.connections] == [
+        "example.org",
+        "cdn.example.net",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_refresh_dials_the_address_its_re_guard_validated(
+    unmocked_session: AsyncSession,
+) -> None:
+    """The refresh path's re-guard of the stored URL pins the revalidation
+    to the address that re-guard validated.
+
+    The re-guard exists for DNS rebinding — a host that was public when it
+    was cached may not be now — so the revalidation must connect to what
+    the re-guard accepted, not to whatever the host resolves to next.
+    """
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    logger = structlog.get_logger("ook")
+    async with unmocked_session.begin():
+        await IntersphinxInventoryStore(
+            session=unmocked_session, logger=logger
+        ).upsert_inventory(
+            IntersphinxInventory(
+                url=PINNED_URL,
+                content=INVENTORY_BODY,
+                content_type="application/octet-stream",
+                etag='"stored-etag"',
+                last_modified=None,
+                date_fetched=now - timedelta(hours=2),
+                date_requested=now - timedelta(days=1),
+                last_fetch_status=InventoryFetchStatus.success,
+                last_fetch_error=None,
+                resolved_url=None,
+                resolved_redirect_permanent=None,
+                date_refresh_failed=None,
+            )
+        )
+
+    def respond(connection: FakeConnection, request: FakeRequest) -> bytes:
+        return raw_response(304)
+
+    backend = FakeNetworkBackend(respond)
+    async with create_guarded_client(network_backend=backend) as client:
+        service = _make_pinned_service(
+            unmocked_session,
+            client,
+            _recording_resolver({"example.org": CDN_IP}),
+        )
+        summary = await service.refresh_inventories(now=now)
+
+    assert summary.revalidated == 1
+    assert backend.dialed == [(CDN_IP, 443)]
+    assert [c.server_hostname for c in backend.connections] == ["example.org"]
+
+
+@pytest.mark.asyncio
+async def test_private_requested_host_is_never_dialed(
+    unmocked_session: AsyncSession,
+) -> None:
+    """A client URL whose host resolves to a private address is a 400
+    naming the reason, and no socket is ever opened for it.
+    """
+    backend = FakeNetworkBackend(_serve_inventory)
+    async with create_guarded_client(network_backend=backend) as client:
+        service = _make_pinned_service(
+            unmocked_session,
+            client,
+            _recording_resolver({"example.org": "10.0.0.1"}),
+        )
+        with pytest.raises(
+            InvalidInventoryUrlError, match=r"non-public address 10\.0\.0\.1"
+        ):
+            async with unmocked_session.begin():
+                await service.get_inventory(PINNED_URL)
+
+    assert backend.dialed == []
+
+
+@pytest.mark.asyncio
+async def test_private_redirect_hop_is_never_dialed(
+    unmocked_session: AsyncSession,
+) -> None:
+    """A redirect hop whose host resolves to a private address is the
+    generic 502, and only the public first hop is ever dialed.
+    """
+
+    def respond(connection: FakeConnection, request: FakeRequest) -> bytes:
+        return raw_response(
+            302, {"Location": "https://internal.example.net/objects.inv"}
+        )
+
+    backend = FakeNetworkBackend(respond)
+    async with create_guarded_client(network_backend=backend) as client:
+        service = _make_pinned_service(
+            unmocked_session,
+            client,
+            _recording_resolver(
+                {"example.org": ORIGIN_IP, "internal.example.net": "10.0.0.1"}
+            ),
+        )
+        with pytest.raises(UpstreamInventoryError) as excinfo:
+            await service.get_inventory(PINNED_URL)
+
+    assert str(excinfo.value) == intersphinx_service._UNSAFE_REDIRECT_DETAIL
+    assert backend.dialed == [(ORIGIN_IP, 443)]
+
+
+@pytest.mark.asyncio
+async def test_chain_return_to_a_validated_host_is_pinned_without_lookup(
+    unmocked_session: AsyncSession,
+) -> None:
+    """A hop back to a host the chain already validated is pinned to the
+    address validated earlier, without resolving the host again.
+
+    The first hop closes its connection, so the return to its host has to
+    dial a new socket: that dial landing on the first hop's validated
+    address is what shows the shortcut still pins.
+    """
+
+    def respond(connection: FakeConnection, request: FakeRequest) -> bytes:
+        if connection.server_hostname == "www.example.net":
+            return raw_response(
+                302, {"Location": "https://example.org/en/objects.inv"}
+            )
+        if request.target == "/objects.inv":
+            return raw_response(
+                302,
+                {
+                    "Location": "https://www.example.net/objects.inv",
+                    "Connection": "close",
+                },
+            )
+        return raw_response(200, body=INVENTORY_BODY)
+
+    resolutions: list[str] = []
+    backend = FakeNetworkBackend(respond)
+    async with create_guarded_client(network_backend=backend) as client:
+        service = _make_pinned_service(
+            unmocked_session,
+            client,
+            _recording_resolver(
+                {"example.org": ORIGIN_IP, "www.example.net": CDN_IP},
+                resolutions,
+            ),
+        )
+        async with unmocked_session.begin():
+            served = await service.get_inventory(PINNED_URL)
+
+    assert served.inventory.content == INVENTORY_BODY
+    assert resolutions == ["example.org", "www.example.net"]
+    assert backend.dialed == [
+        (ORIGIN_IP, 443),
+        (CDN_IP, 443),
+        (ORIGIN_IP, 443),
+    ]
+    assert [c.server_hostname for c in backend.connections] == [
+        "example.org",
+        "www.example.net",
+        "example.org",
+    ]

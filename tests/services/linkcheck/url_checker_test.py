@@ -15,14 +15,30 @@ import structlog
 
 import ook
 from ook.config import Configuration, config
-from ook.domain.linkcheck import CheckResult
+from ook.domain.linkcheck import (
+    CheckResult,
+    LinkState,
+    LinkStatus,
+    RetryLadderConfig,
+    evaluate_outcome,
+)
 from ook.domain.redirects import MAX_REDIRECTS
 from ook.factory import Factory
+from ook.services.guardedhttp import GuardedTransport, create_guarded_client
 from ook.services.linkcheck import HostResolver, UrlChecker
 from ook.services.linkcheck import _urlchecker as urlchecker
+from tests.support.guardedhttp import (
+    FakeConnection,
+    FakeNetworkBackend,
+    FakeRequest,
+    raw_response,
+)
 
 PUBLIC_IP = "93.184.216.34"
 """A public (globally-routable) IPv4 address for fake DNS resolution."""
+
+FASTLY_IP = "151.101.192.223"
+"""A Fastly address serving both pypi.org and docs.python.org."""
 
 
 def make_checker(
@@ -183,31 +199,104 @@ async def test_head_success(
 
 
 @pytest.mark.asyncio
-async def test_request_pinned_to_validated_address(
-    http_client: httpx.AsyncClient,
-    respx_mock: respx.Router,
-) -> None:
-    """The outbound request connects to the exact address the SSRF guard
-    validated, while the Host header preserves the original hostname.
+async def test_request_pinned_to_validated_address() -> None:
+    """The socket connects to the exact address the SSRF guard validated,
+    while the request URL keeps the hostname.
 
     This is the regression test for the DNS-rebinding TOCTOU fix: the
-    socket target must be the guard-validated IP so httpx cannot
-    re-resolve the hostname to an internal address at connect time.
+    socket target must be the guard-validated IP so the transport cannot
+    re-resolve the hostname to an internal address at connect time. The
+    pin lives at the socket layer, so the request itself is never
+    rewritten: its URL host stays the hostname, with no ``Host`` override
+    and no ``sni_hostname`` extension, and TLS uses the hostname.
     """
-    pinned_ip = "93.184.216.34"
-    respx_mock.route(
-        method="HEAD", path="/page", headers={"Host": "example.com"}
-    ).respond(200)
+    requests: list[httpx.Request] = []
 
-    checker = make_checker(http_client, ip_map={"example.com": [pinned_ip]})
-    outcome = await checker.check("https://example.com/page")
+    async def record(request: httpx.Request) -> None:
+        requests.append(request)
+
+    backend = FakeNetworkBackend()
+    async with create_guarded_client(
+        network_backend=backend, event_hooks={"request": [record]}
+    ) as client:
+        checker = make_checker(client, ip_map={"example.com": [FASTLY_IP]})
+        outcome = await checker.check("https://example.com/page")
+
     assert outcome.result is CheckResult.success
-    assert len(respx_mock.calls) == 1
-    request = respx_mock.calls.last.request
     # The socket target is the validated IP...
-    assert request.url.host == pinned_ip
-    # ...while the Host header (and TLS SNI) stay the hostname.
-    assert request.headers["Host"] == "example.com"
+    assert backend.dialed == [(FASTLY_IP, 443)]
+    [connection] = backend.connections
+    # ...while TLS SNI and the Host header stay the hostname...
+    assert connection.server_hostname == "example.com"
+    assert [r.host_header for r in connection.requests] == ["example.com"]
+    # ...because the request itself is never rewritten.
+    [request] = requests
+    assert request.url.host == "example.com"
+    assert "sni_hostname" not in request.extensions
+
+
+@pytest.mark.asyncio
+async def test_redirect_hop_dialed_at_its_own_validated_address() -> None:
+    """Each redirect hop connects to the address the guard validated for
+    that hop's own host, not the first hop's.
+    """
+
+    def respond(connection: FakeConnection, request: FakeRequest) -> bytes:
+        if connection.server_hostname == "example.com":
+            return raw_response(
+                301, {"Location": "https://docs.example.org/new"}
+            )
+        return raw_response(200)
+
+    backend = FakeNetworkBackend(respond)
+    async with create_guarded_client(network_backend=backend) as client:
+        checker = make_checker(
+            client,
+            ip_map={
+                "example.com": [PUBLIC_IP],
+                "docs.example.org": [FASTLY_IP],
+            },
+        )
+        outcome = await checker.check("https://example.com/old")
+
+    assert outcome.result is CheckResult.success
+    assert outcome.redirect_url == "https://docs.example.org/new"
+    assert backend.dialed == [(PUBLIC_IP, 443), (FASTLY_IP, 443)]
+    assert [c.server_hostname for c in backend.connections] == [
+        "example.com",
+        "docs.example.org",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hostnames_sharing_an_address_get_distinct_connections() -> None:
+    """Checking two hostnames that resolve to one address opens one
+    connection per hostname.
+
+    This is the 421 Misdirected Request regression (DM-56836): Fastly
+    serves pypi.org and docs.python.org from the same addresses with
+    different certificates, so a connection opened for one hostname must
+    never carry the other's request, as it did when pinning rewrote the
+    URL host to the IP and keyed the connection pool by address.
+    """
+    backend = FakeNetworkBackend()
+    async with create_guarded_client(network_backend=backend) as client:
+        checker = make_checker(
+            client,
+            ip_map={"pypi.org": [FASTLY_IP], "docs.python.org": [FASTLY_IP]},
+        )
+        first = await checker.check("https://pypi.org/")
+        second = await checker.check(
+            "https://docs.python.org/3/library/types.html"
+        )
+
+    assert first.result is second.result is CheckResult.success
+    assert backend.dialed == [(FASTLY_IP, 443), (FASTLY_IP, 443)]
+    assert [c.server_hostname for c in backend.connections] == [
+        "pypi.org",
+        "docs.python.org",
+    ]
+    assert [len(c.requests) for c in backend.connections] == [1, 1]
 
 
 @pytest.mark.asyncio
@@ -639,6 +728,37 @@ async def test_non_403_cloudflare_not_bot_annotated(
 
 
 @pytest.mark.asyncio
+async def test_varnish_edge_headers_in_failure_detail(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A failure served by a Fastly/Varnish edge carries its ``via`` and
+    ``x-served-by`` headers into the error detail, after the condition
+    label, so the edge that answered is identifiable from the stored
+    detail the way Cloudflare's ``server``/``cf-ray`` already are.
+    """
+    headers = {
+        "via": "1.1 varnish",
+        "x-served-by": "cache-xyz",
+        "server": "Varnish",
+    }
+    respx_mock.route(
+        method="HEAD", path="/misdirected", headers={"Host": "example.com"}
+    ).respond(421, headers=headers)
+    respx_mock.route(
+        method="GET", path="/misdirected", headers={"Host": "example.com"}
+    ).respond(421, headers=headers)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/misdirected")
+    assert outcome.result is CheckResult.failure
+    assert outcome.error == (
+        "HTTP 421 (misdirected request; server=Varnish; via=1.1 varnish; "
+        "x-served-by=cache-xyz)"
+    )
+
+
+@pytest.mark.asyncio
 async def test_503_is_transient(
     http_client: httpx.AsyncClient,
     respx_mock: respx.Router,
@@ -664,6 +784,93 @@ async def test_503_is_transient(
     assert outcome.error == "HTTP 503 (transient server error)"
     # 503 is not retried, so no wait occurs.
     assert sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_421_is_transient(
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A terminal 421 (misdirected request) is inconclusive immediately:
+    the server refused the connection the request arrived on, not the URL,
+    so ``is_transient`` is set, the error names the condition, and there is
+    no in-run retry.
+    """
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    methods: list[str] = []
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        return httpx.Response(421)
+
+    respx_mock.route().mock(side_effect=responder)
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/misdirected")
+    assert outcome.result is CheckResult.failure
+    assert outcome.status_code == 421
+    assert outcome.is_transient is True
+    assert outcome.is_bot_blocked is False
+    assert outcome.error == "HTTP 421 (misdirected request)"
+    # Only the usual HEAD→GET fallback; no wait and no retry on top.
+    assert methods == ["HEAD", "GET"]
+    assert sleeps == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "prior",
+    [
+        LinkState(
+            url="https://example.com/misdirected",
+            status=LinkStatus.ok,
+            date_checked=datetime(2026, 10, 1, tzinfo=UTC),
+            date_last_ok=datetime(2026, 10, 1, tzinfo=UTC),
+            status_code=200,
+        ),
+        LinkState(
+            url="https://example.com/misdirected",
+            status=LinkStatus.failing,
+            date_checked=datetime(2026, 10, 2, tzinfo=UTC),
+            date_last_ok=datetime(2026, 10, 1, tzinfo=UTC),
+            date_failing_since=datetime(2026, 10, 2, tzinfo=UTC),
+            failure_count=2,
+            status_code=404,
+        ),
+    ],
+    ids=["ok", "failing"],
+)
+async def test_421_never_advances_the_ladder(
+    prior: LinkState,
+    http_client: httpx.AsyncClient,
+    respx_mock: respx.Router,
+) -> None:
+    """A checked 421 lands in the inconclusive ``blocked`` disposition
+    against a prior ``ok`` or ``failing`` state, leaving the failing→broken
+    streak exactly as it was: a misdirected connection is no evidence the
+    link is broken, and no evidence it recovered either.
+    """
+    respx_mock.route().mock(return_value=httpx.Response(421))
+
+    checker = make_checker(http_client)
+    outcome = await checker.check("https://example.com/misdirected")
+    state = evaluate_outcome(
+        url="https://example.com/misdirected",
+        prior=prior,
+        outcome=outcome,
+        ladder=RetryLadderConfig(),
+    )
+    assert state.status is LinkStatus.blocked
+    assert state.status_code == 421
+    assert state.failure_count == prior.failure_count
+    assert state.date_failing_since == prior.date_failing_since
 
 
 @pytest.mark.asyncio
@@ -1369,11 +1576,12 @@ def test_linkcheck_user_agent_env_override(
 @pytest.mark.asyncio
 async def test_factory_provides_url_checker(factory: Factory) -> None:
     """The factory exposes a process-wide UrlChecker bound to the
-    shared HTTP client.
+    process's guarded HTTP client, not the plain shared one.
     """
     checker = factory.url_checker
     assert isinstance(checker, UrlChecker)
     # The checker is a process-context singleton so its concurrency cap
     # is shared by all consumers.
     assert factory.url_checker is checker
-    assert checker._http_client is factory.http_client
+    assert checker._http_client is factory.guarded_http_client
+    assert isinstance(checker._http_client._transport, GuardedTransport)

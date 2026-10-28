@@ -19,11 +19,6 @@ from ook.kafkabroker import kafka_broker
 from .support.github import GitHubMocker
 from .support.kafka import kafka_work_tracker, running_subscriptions
 
-PINNED_IP = "93.184.216.34"
-"""The address every host resolves to under the patched SSRF guard, and
-therefore the host of the outbound request respx sees.
-"""
-
 
 @pytest.mark.asyncio
 async def test_barrier_tracks_every_running_subscriber(
@@ -52,9 +47,9 @@ async def test_drain_completes_a_check_left_in_flight(
     at teardown -- makes that execution finish here, inside the test that
     published it, rather than during whichever test runs next.
     """
-    route = mock_github.router.route(
-        host=PINNED_IP, headers={"Host": "example.com"}
-    ).mock(return_value=httpx.Response(200))
+    route = mock_github.router.route(host="example.com").mock(
+        return_value=httpx.Response(200)
+    )
 
     response = await client.post(
         "/ook/linkcheck/checks",

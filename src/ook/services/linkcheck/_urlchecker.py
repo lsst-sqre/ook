@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
-import socket
 from collections import defaultdict
-from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -17,6 +14,7 @@ from httpx import AsyncClient
 from structlog.stdlib import BoundLogger
 
 from ook.domain.linkcheck import (
+    TRANSIENT_CODES,
     CheckResult,
     LinkCheckOutcome,
     is_supported_url,
@@ -28,6 +26,13 @@ from ook.domain.redirects import (
     TooManyRedirectsError,
     is_permanent_chain,
 )
+from ook.services.guardedhttp import (
+    HostResolutionError,
+    HostResolver,
+    NonPublicHostError,
+    pinned_to,
+    resolve_and_validate,
+)
 
 __all__ = ["HostResolver", "UrlChecker"]
 
@@ -36,22 +41,15 @@ _ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 default automation Accept as suspicious do not block link-check requests.
 """
 
-HostResolver = Callable[[str], Awaitable[Sequence[str]]]
-"""Type of a callable resolving a hostname to IP address strings."""
-
 _SUCCESS_CODES = range(200, 300)
 """HTTP status codes counted as a successful resolution."""
 
 _RATE_LIMITED_CODE = 429
 """HTTP status code signalling the client is being rate limited."""
 
-_TRANSIENT_CODES = frozenset({429, 503})
-"""HTTP status codes treated as transient server conditions.
-
-Following Sphinx linkcheck, a persistent 429 (rate limit) or a 503
-(server-side outage) says nothing about whether the link is broken, so
-these outcomes are inconclusive: they never escalate the failing→broken
-ladder.
+_MISDIRECTED_REQUEST_CODE = 421
+"""HTTP status code signalling the server refused the connection the
+request arrived on as not authoritative for the request's hostname.
 """
 
 _MAX_RETRY_AFTER_SECONDS = 60.0
@@ -60,10 +58,18 @@ header cannot stall a check indefinitely. The effective cap is further
 bounded by the per-request timeout budget.
 """
 
-_DIAGNOSTIC_HEADERS = ("server", "cf-mitigated", "cf-ray")
+_DIAGNOSTIC_HEADERS = (
+    "server",
+    "cf-mitigated",
+    "cf-ray",
+    "via",
+    "x-served-by",
+)
 """Terminal-response headers captured into failure error details, in the
-order they are rendered. These surface whether a 4xx/5xx block came from an
-edge mitigation (e.g. a Cloudflare challenge) rather than the origin.
+order they are rendered, each only when the response carries it. These
+surface whether a 4xx/5xx came from a CDN edge rather than the origin, and
+which edge: Cloudflare's ``server``/``cf-mitigated``/``cf-ray``, and the
+``via``/``x-served-by`` that Fastly and other Varnish-based edges stamp.
 """
 
 
@@ -119,12 +125,13 @@ class _FetchResult:
 
     @property
     def is_transient(self) -> bool:
-        """Whether this is a transient server condition (429/503).
+        """Whether this is a transient, inconclusive condition
+        (`~ook.domain.linkcheck.TRANSIENT_CODES`: 421/429/503).
 
-        A persistent rate limit or a server-side outage is inconclusive:
-        it does not confirm the link is broken.
+        A misdirected request, a persistent rate limit, or a server-side
+        outage does not confirm the link is broken.
         """
-        return self.status_code in _TRANSIENT_CODES
+        return self.status_code in TRANSIENT_CODES
 
     @property
     def is_bot_blocked(self) -> bool:
@@ -188,16 +195,26 @@ class UrlChecker:
     through this instance, and spaces requests to the same host by a
     politeness interval.
 
-    To close a DNS-rebinding TOCTOU gap, each request connects to the
-    exact address the SSRF guard validated: the guard resolves and
-    validates the host, and the outbound socket is pinned to that
-    address while the original hostname is preserved for the ``Host``
-    header and for TLS SNI plus certificate verification.
+    To close a DNS-rebinding TOCTOU gap, each socket a request opens
+    connects to the exact address the SSRF guard validated: the guard
+    (`ook.services.guardedhttp.resolve_and_validate`) resolves and
+    validates each hop's host, and the request is made inside
+    `~ook.services.guardedhttp.pinned_to` that address, so the guarded
+    client's network backend dials it rather than re-resolving the
+    hostname. The request URL itself keeps the hostname, so the ``Host``
+    header, TLS SNI and certificate verification, and the connection
+    pool's key all stay the hostname: a connection opened for one
+    hostname is never reused for another that shares its address.
 
     Parameters
     ----------
     http_client
-        The shared HTTP client used to make requests.
+        The HTTP client used to make requests. In production this is the
+        process's guarded client from
+        `~ook.services.guardedhttp.create_guarded_client`, which is what
+        turns each request's pin into the socket's connect target; a plain
+        client still runs the guard before every hop but connects by
+        hostname.
     logger
         A logger for check diagnostics.
     request_timeout
@@ -211,10 +228,10 @@ class UrlChecker:
         redirect hops).
     resolve_host
         Hostname resolver used by the SSRF guard, mainly injectable for
-        testing. Defaults to asyncio's ``getaddrinfo``. The address it
-        returns is both validated by the guard and pinned as the socket
-        connection target, so the request connects to the exact address
-        that was checked.
+        testing. Defaults to the guard's own ``getaddrinfo`` resolver. The
+        address it returns is both validated by the guard and pinned as
+        the socket connection target, so the request connects to the exact
+        address that was checked.
     """
 
     def __init__(
@@ -233,7 +250,7 @@ class UrlChecker:
         self._timeout_seconds = request_timeout.total_seconds()
         self._host_interval = host_interval.total_seconds()
         self._user_agent = user_agent
-        self._resolve_host = resolve_host or _default_resolve_host
+        self._resolve_host = resolve_host
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._host_locks: defaultdict[str, asyncio.Lock] = defaultdict(
             asyncio.Lock
@@ -264,7 +281,7 @@ class UrlChecker:
         except _UnsupportedUrlError as e:
             return self._unsupported_outcome(str(e))
         except _ResolutionFailedError as e:
-            return self._failure_outcome(f"DNS resolution failed: {e}")
+            return self._failure_outcome(str(e))
         except _InvalidRedirectError as e:
             return self._failure_outcome(str(e))
         except httpx.InvalidURL as e:
@@ -411,16 +428,16 @@ class UrlChecker:
         self, method: str, url: str, pinned: str
     ) -> httpx.Response:
         """Make one HTTP request under the concurrency cap and the
-        per-host politeness interval, connecting to the guard-validated
-        address while preserving the hostname for Host and TLS.
+        per-host politeness interval, with its socket pinned to the
+        guard-validated address.
 
         Parameters
         ----------
         method
             The HTTP method.
         url
-            The hostname URL. Politeness is keyed on this hostname, not
-            the pinned IP, so per-host spacing stays correct.
+            The hostname URL, requested as is. Politeness is keyed on this
+            hostname, not the pinned IP, so per-host spacing stays correct.
         pinned
             The guard-validated address to connect to.
         """
@@ -429,34 +446,28 @@ class UrlChecker:
         # address.
         host = urlsplit(url).hostname or ""
         await self._wait_for_host_slot(host)
-        # Pin the socket to the guard-validated address while keeping the
-        # original hostname for routing and TLS: the URL host becomes the
-        # validated IP (so the socket connects there), the ``Host`` header
-        # preserves virtual-host routing, and the ``sni_hostname``
-        # extension drives both TLS SNI and certificate hostname
-        # verification against the original hostname. A DNS-rebinding
-        # answer at httpx-connect time therefore cannot redirect the
-        # socket to an internal address. Link-check targets carry no
-        # proxy or userinfo, so pinning the first validated address
-        # (trading httpx's multi-address failover for SSRF safety) is
-        # acceptable.
-        original = httpx.URL(url)
-        sni_host = original.host  # original hostname (bare, unbracketed)
-        authority = original.netloc.decode("ascii")  # host[:port], v6 in []
-        request_url = original.copy_with(host=pinned)
+        # The pin hands the validated address to the guarded client's
+        # network backend, which dials it instead of re-resolving the
+        # hostname, so a DNS-rebinding answer at connect time cannot steer
+        # the socket to an internal address. The URL is never rewritten to
+        # the IP: that would key the connection pool by address and, on a
+        # CDN serving several hostnames from one address, send this
+        # request down a connection opened for another hostname (a 421).
+        # Link-check targets carry no proxy or userinfo, so pinning the
+        # first validated address (trading multi-address failover for SSRF
+        # safety) is acceptable.
         async with self._semaphore:
-            return await self._http_client.request(
-                method,
-                request_url,
-                headers={
-                    "Host": authority,
-                    "User-Agent": self._user_agent,
-                    "Accept": _ACCEPT,
-                },
-                extensions={"sni_hostname": sni_host},
-                follow_redirects=False,
-                timeout=self._timeout_seconds,
-            )
+            with pinned_to(host, pinned):
+                return await self._http_client.request(
+                    method,
+                    url,
+                    headers={
+                        "User-Agent": self._user_agent,
+                        "Accept": _ACCEPT,
+                    },
+                    follow_redirects=False,
+                    timeout=self._timeout_seconds,
+                )
 
     async def _wait_for_host_slot(self, host: str) -> None:
         """Sleep until this request's slot on the host's politeness
@@ -497,6 +508,8 @@ class UrlChecker:
             detail_parts.append("likely blocked by bot protection")
         elif result.status_code == _RATE_LIMITED_CODE:
             detail_parts.append("rate limited")
+        elif result.status_code == _MISDIRECTED_REQUEST_CODE:
+            detail_parts.append("misdirected request")
         elif result.is_transient:
             detail_parts.append("transient server error")
         detail_parts.extend(
@@ -521,9 +534,10 @@ class UrlChecker:
         the connection should be pinned to.
 
         The URL must be a well-formed http(s) URL whose host resolves
-        only to globally-routable addresses. The returned address is the
-        exact one validated here, so the caller can connect to it and
-        close the DNS-rebinding TOCTOU gap.
+        only to globally-routable addresses
+        (`ook.services.guardedhttp.resolve_and_validate`). The returned
+        address is the exact one validated here, so the caller can connect
+        to it and close the DNS-rebinding TOCTOU gap.
 
         Returns
         -------
@@ -546,47 +560,18 @@ class UrlChecker:
         host = urlsplit(url).hostname
         if host is None:
             raise _UnsupportedUrlError(f"URL has no host: {url!r}")
-
         try:
-            addresses = [ipaddress.ip_address(host)]
-        except ValueError:
-            # Not an IP literal: resolve the hostname.
-            try:
-                resolved = list(await self._resolve_host(host))
-            except (OSError, UnicodeError) as e:
-                # getaddrinfo reports an unknown host or a transient DNS
-                # failure as socket.gaierror (an OSError), and a host
-                # label IDNA cannot encode — an empty label, or an
-                # all-ASCII one over 63 characters, both of which survive
-                # is_supported_url and httpx's own parsing — as
-                # UnicodeEncodeError. Neither is an httpx.HTTPError, and
-                # only the first was ever caught by check(); funnelling
-                # both into one failure here keeps a hostile hostname
-                # from escaping check() and taking every other URL's
-                # outcome in the batch with it.
-                raise _ResolutionFailedError(_describe_error(e)) from e
-            addresses = [ipaddress.ip_address(a) for a in resolved]
-        else:
-            resolved = [host]
-        if not addresses:
-            raise _ResolutionFailedError(f"No addresses found for {host!r}")
-        for address in addresses:
-            # For IPv4-mapped IPv6 addresses, guard the embedded IPv4
-            # address rather than the IPv6 wrapper.
-            candidate = (
-                address.ipv4_mapped
-                if isinstance(address, ipaddress.IPv6Address)
-                and address.ipv4_mapped is not None
-                else address
+            return await resolve_and_validate(
+                host, resolve_host=self._resolve_host
             )
-            if not candidate.is_global:
-                raise _UnsupportedUrlError(
-                    f"Host {host!r} resolves to the non-public address"
-                    f" {address}"
-                )
-        # Pin to the first validated address as resolved (for a literal,
-        # the host itself). The socket connects to this exact address.
-        return resolved[0]
+        except NonPublicHostError as e:
+            raise _UnsupportedUrlError(str(e)) from e
+        except HostResolutionError as e:
+            # Not an httpx.HTTPError: funnelling it into one failure here
+            # keeps a hostile hostname (an unknown host, or a label IDNA
+            # cannot encode) from escaping check() and taking every other
+            # URL's outcome in the batch with it.
+            raise _ResolutionFailedError(str(e)) from e
 
     def _unsupported_outcome(self, error: str) -> LinkCheckOutcome:
         return LinkCheckOutcome(
@@ -686,10 +671,3 @@ def _describe_error(error: Exception) -> str:
     if message:
         return f"{type(error).__name__}: {message}"
     return type(error).__name__
-
-
-async def _default_resolve_host(host: str) -> Sequence[str]:
-    """Resolve a hostname to IP address strings with getaddrinfo."""
-    loop = asyncio.get_running_loop()
-    infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    return [str(info[4][0]) for info in infos]

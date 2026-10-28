@@ -28,13 +28,6 @@ from tests.support.github import GitHubMocker
 POLL_TIMEOUT = 60.0
 """Seconds to wait for the Kafka consumer to complete a check."""
 
-PINNED_IP = "93.184.216.34"
-"""The address every host resolves to under the ``_patched_linkcheck_dns``
-fixture. The SSRF guard pins each request to the validated address, so the
-outbound request URL host is this IP while the ``Host`` header keeps the
-original hostname.
-"""
-
 
 async def _poll_until_complete(
     client: AsyncClient, location: str
@@ -71,13 +64,9 @@ async def test_post_enqueues_and_consumer_executes(
             return httpx.Response(404)
         return httpx.Response(200)
 
-    # The SSRF guard pins each request to the validated address, so the
-    # request URL host is the resolved IP; match on that (the router's
-    # api.github.com base_url would otherwise default the host) while the
-    # Host header still carries the original hostname.
-    mock_github.router.route(
-        host=PINNED_IP, headers={"Host": "example.com"}
-    ).mock(side_effect=handler)
+    # Match on the checked hostname, which the request URL keeps (the
+    # router's api.github.com base_url would otherwise default the host).
+    mock_github.router.route(host="example.com").mock(side_effect=handler)
 
     # A submission with due URLs is enqueued and executed.
     response = await client.post(
@@ -125,11 +114,9 @@ async def test_recheck_message_advances_ladder(
     statuses through the retry ladder: a failing link past the broken
     threshold becomes broken.
     """
-    # The SSRF guard pins each request to the validated address; match on
-    # that IP while the Host header still carries the original hostname.
-    mock_github.router.route(
-        host=PINNED_IP, headers={"Host": "recheck.example.com"}
-    ).mock(return_value=httpx.Response(404))
+    mock_github.router.route(host="recheck.example.com").mock(
+        return_value=httpx.Response(404)
+    )
 
     url = "https://recheck.example.com/gone"
     now = datetime.now(tz=UTC).replace(microsecond=0)
@@ -188,3 +175,67 @@ async def test_recheck_message_advances_ladder(
             )
         await asyncio.sleep(0.2)
     assert data["failure_count"] == 4
+
+
+@pytest.mark.asyncio
+async def test_forced_recheck_message_rechecks_not_due_url(
+    mock_github: GitHubMocker,
+    client: AsyncClient,
+) -> None:
+    """A forced RecheckUrlsMessage re-checks a URL whose recheck time has
+    not arrived, which an unforced message would skip as not due.
+    """
+    mock_github.router.route(host="forced.example.com").mock(
+        return_value=httpx.Response(200)
+    )
+
+    url = "https://forced.example.com/misdirected"
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    engine = create_database_engine(
+        config.database_url, config.database_password
+    )
+    try:
+        session = await create_async_session(engine)
+        try:
+            store = LinkCheckStore(
+                session=session, logger=structlog.get_logger("test")
+            )
+            async with session.begin():
+                # A 421 stored as blocked, not due for hours.
+                await store.upsert_url_state(
+                    LinkState(
+                        url=url,
+                        status=LinkStatus.blocked,
+                        date_checked=now - timedelta(minutes=5),
+                        date_last_ok=now - timedelta(days=2),
+                        status_code=421,
+                        error="HTTP 421 (misdirected request)",
+                        date_next_check=now + timedelta(hours=6),
+                    )
+                )
+                ids = await store.upsert_checked_urls([url])
+        finally:
+            await session.close()
+    finally:
+        await engine.dispose()
+
+    message = RecheckUrlsMessageV1(url_ids=[ids[url]], force=True)
+    await kafka_broker.publish(
+        message.model_dump(mode="json"), topic=config.linkcheck_kafka_topic
+    )
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + POLL_TIMEOUT
+    while True:
+        response = await client.get("/ook/linkcheck/urls", params={"url": url})
+        assert response.status_code == 200
+        data = response.json()
+        if data["status"] == "ok":
+            break
+        if loop.time() > deadline:
+            pytest.fail(
+                f"URL {url} did not become ok within {POLL_TIMEOUT}s;"
+                f" last status was {data['status']!r}"
+            )
+        await asyncio.sleep(0.2)
+    assert data["status_code"] == 200

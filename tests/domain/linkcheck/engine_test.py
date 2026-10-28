@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from ook.domain.linkcheck import (
+    TRANSIENT_CODES,
     CheckResult,
     ContributedResult,
     LinkCheckOutcome,
@@ -456,6 +457,14 @@ def test_transient_never_seen_ok_is_blocked_not_broken() -> None:
     assert state.date_next_check == T0 + LADDER.blocked_recheck_interval
 
 
+def test_transient_codes() -> None:
+    """The inconclusive transient status codes are a misdirected request
+    (421), a rate limit (429), and a server-side outage (503), defined
+    once for both the URL checker and contributed results.
+    """
+    assert frozenset({421, 429, 503}) == TRANSIENT_CODES
+
+
 def make_blocked_state(
     date_checked: datetime, consecutive_blocked_count: int
 ) -> LinkState:
@@ -541,6 +550,171 @@ def test_hard_failure_resets_blocked_count() -> None:
         url=URL, prior=prior, outcome=fail_at(date_checked), ladder=LADDER
     )
     assert state.consecutive_blocked_count == 0
+
+
+FORCED_BLOCKED_NEXT_CHECK = T0 + timedelta(hours=4)
+"""The recheck time already scheduled for the blocked prior state the
+forced-recheck tests start from.
+"""
+
+
+def make_backed_off_blocked_state() -> LinkState:
+    """Create a blocked prior state three blocks into its backoff, with its
+    next recheck already scheduled.
+    """
+    return LinkState(
+        url=URL,
+        status=LinkStatus.blocked,
+        date_checked=T0,
+        date_last_ok=T0 - timedelta(days=1),
+        consecutive_blocked_count=3,
+        status_code=403,
+        error="HTTP 403 (likely blocked by bot protection; server=cloudflare)",
+        date_next_check=FORCED_BLOCKED_NEXT_CHECK,
+    )
+
+
+def test_forced_inconclusive_recheck_keeps_blocked_backoff() -> None:
+    """A forced recheck of a blocked link that comes back inconclusive
+    again is schedule-neutral: the blocked counter and the next recheck
+    time stay where the schedule left them, while the check time, status
+    code and error reflect the new response.
+    """
+    prior = make_backed_off_blocked_state()
+    date_checked = T0 + timedelta(hours=1)
+    state = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=transient_at(date_checked, 421),
+        ladder=LADDER,
+        forced=True,
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.consecutive_blocked_count == 3
+    assert state.date_next_check == FORCED_BLOCKED_NEXT_CHECK
+    assert state.date_checked == date_checked
+    assert state.status_code == 421
+    assert state.error == "HTTP 421 (transient server error)"
+    assert state.date_last_ok == prior.date_last_ok
+
+
+def test_scheduled_inconclusive_recheck_extends_blocked_backoff() -> None:
+    """The same inconclusive outcome on a scheduled (unforced) recheck
+    counts as another block and backs the next recheck off further.
+    """
+    prior = make_backed_off_blocked_state()
+    date_checked = T0 + timedelta(hours=4)
+    state = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=transient_at(date_checked, 421),
+        ladder=LADDER,
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.consecutive_blocked_count == 4
+    # Fourth consecutive block: 1h base doubled three times = 8h.
+    assert state.date_next_check == date_checked + timedelta(hours=8)
+
+
+def test_forced_inconclusive_recheck_of_unscheduled_blocked_link() -> None:
+    """A forced recheck of a blocked link that has no scheduled recheck
+    cannot preserve a schedule it does not have: it takes the computed
+    backoff like a scheduled recheck, so the row never stays unscheduled.
+    """
+    prior = make_backed_off_blocked_state().model_copy(
+        update={"date_next_check": None}
+    )
+    date_checked = T0 + timedelta(hours=1)
+    state = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=transient_at(date_checked, 421),
+        ladder=LADDER,
+        forced=True,
+    )
+    scheduled = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=transient_at(date_checked, 421),
+        ladder=LADDER,
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.date_next_check is not None
+    assert state == scheduled
+
+
+@pytest.mark.parametrize(
+    "prior",
+    [
+        make_ok_state(T0),
+        LinkState(
+            url=URL,
+            status=LinkStatus.broken,
+            date_checked=T0,
+            date_failing_since=T0 - timedelta(days=3),
+            failure_count=4,
+            status_code=404,
+            error="HTTP 404",
+            date_next_check=T0 + timedelta(hours=24),
+        ),
+    ],
+    ids=["ok", "broken"],
+)
+def test_forced_inconclusive_recheck_of_unblocked_link_starts_backoff(
+    prior: LinkState,
+) -> None:
+    """A forced recheck of a link that was not blocked starts the blocked
+    backoff when it comes back inconclusive, exactly as a scheduled check
+    would: only an already-blocked link's backoff is held in place.
+    """
+    date_checked = T0 + timedelta(hours=1)
+    state = evaluate_outcome(
+        url=URL,
+        prior=prior,
+        outcome=transient_at(date_checked, 421),
+        ladder=LADDER,
+        forced=True,
+    )
+    assert state.status == LinkStatus.blocked
+    assert state.consecutive_blocked_count == 1
+    assert state.date_next_check == (
+        date_checked + LADDER.blocked_recheck_interval
+    )
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        LinkCheckOutcome(
+            date_checked=T0 + timedelta(hours=1),
+            result=CheckResult.success,
+            status_code=200,
+        ),
+        LinkCheckOutcome(
+            date_checked=T0 + timedelta(hours=1),
+            result=CheckResult.success,
+            status_code=200,
+            redirect_status_code=301,
+            redirect_url="https://example.com/moved",
+        ),
+        fail_at(T0 + timedelta(hours=1)),
+    ],
+    ids=["ok", "redirected", "failure"],
+)
+def test_forced_conclusive_recheck_of_blocked_link_is_unchanged(
+    outcome: LinkCheckOutcome,
+) -> None:
+    """A forced recheck of a blocked link that settles it is evaluated
+    exactly as a scheduled recheck would be.
+    """
+    prior = make_backed_off_blocked_state()
+    forced = evaluate_outcome(
+        url=URL, prior=prior, outcome=outcome, ladder=LADDER, forced=True
+    )
+    scheduled = evaluate_outcome(
+        url=URL, prior=prior, outcome=outcome, ladder=LADDER
+    )
+    assert forced == scheduled
 
 
 def test_unsupported_outcome_is_unsupported() -> None:
@@ -668,6 +842,7 @@ def test_contributed_success_stamps_the_receipt_time() -> None:
     ("status_code", "is_bot_blocked", "is_transient"),
     [
         (403, True, False),
+        (421, False, True),
         (429, False, True),
         (503, False, True),
         (404, False, False),
@@ -694,6 +869,35 @@ def test_contributed_failure_classification(
     assert outcome.is_transient is is_transient
     assert outcome.error is not None
     assert f"HTTP {status_code}" in outcome.error
+
+
+@pytest.mark.parametrize(
+    "prior",
+    [make_ok_state(T0), make_failing_state(T0, 2)],
+    ids=["ok", "failing"],
+)
+def test_contributed_421_is_inconclusive(prior: LinkState) -> None:
+    """A contributed 421 (misdirected request) is inconclusive exactly like
+    a server-checked one: it says the client's connection was refused, not
+    that the link is broken, so it lands ``blocked`` without advancing or
+    resetting the failing→broken streak.
+    """
+    date_checked = T0 + timedelta(hours=12)
+    result = ContributedResult(url=URL, status_code=421, date_checked=T0)
+
+    outcome = contributed_outcome(
+        result, repository="lsst-sqre/documenteer", received_at=date_checked
+    )
+
+    assert outcome.is_transient is True
+    assert outcome.error == "HTTP 421 (misdirected request)"
+    state = evaluate_outcome(
+        url=URL, prior=prior, outcome=outcome, ladder=LADDER
+    )
+    assert state.status is LinkStatus.blocked
+    assert state.status_code == 421
+    assert state.failure_count == prior.failure_count
+    assert state.date_failing_since == prior.date_failing_since
 
 
 def test_contributed_result_without_a_response_is_a_failure() -> None:

@@ -627,6 +627,120 @@ async def test_get_due_urls_referenced_only(factory: Factory) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_referenced_urls_by_state_status_code(
+    factory: Factory,
+) -> None:
+    """Enumerating by stored HTTP status code selects matching,
+    still-referenced URLs regardless of their recheck schedule.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+
+        def make_state(url: str, status_code: int) -> LinkState:
+            # Freshly checked with a recheck time in the future: none of
+            # these URLs is due.
+            return LinkState(
+                url=url,
+                status=LinkStatus.blocked,
+                date_checked=now,
+                date_last_ok=now - timedelta(days=1),
+                status_code=status_code,
+                date_next_check=now + timedelta(hours=6),
+            )
+
+        await store.upsert_url_state(
+            make_state("https://docs.example.com/misdirected", 421)
+        )
+        await store.upsert_url_state(
+            make_state("https://docs.example.com/throttled", 429)
+        )
+        await store.upsert_url_state(
+            make_state("https://docs.example.com/orphan", 421)
+        )
+        await store.replace_origin_occurrences(
+            origin_base_url="https://sqr-000.lsst.io",
+            occurrences=[
+                UrlOccurrence(
+                    url="https://docs.example.com/misdirected",
+                    origin_path="index",
+                ),
+                UrlOccurrence(
+                    url="https://docs.example.com/throttled",
+                    origin_path="index",
+                ),
+            ],
+        )
+
+        matched = await store.get_referenced_urls_by_state(
+            status_codes=[421], statuses=[]
+        )
+        assert [m.url for m in matched] == [
+            "https://docs.example.com/misdirected"
+        ]
+
+
+@pytest.mark.asyncio
+async def test_get_referenced_urls_by_state_statuses(
+    factory: Factory,
+) -> None:
+    """Enumerating by stored status selects the union of the given
+    statuses and status codes, once per URL, and never unsupported URLs.
+    """
+    async with factory.db_session.begin():
+        store = factory.create_linkcheck_store()
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+
+        states = {
+            "https://example.com/broken": (LinkStatus.broken, 404),
+            "https://example.com/blocked": (LinkStatus.blocked, 403),
+            "https://example.com/failing": (LinkStatus.failing, 500),
+            "https://example.com/ok": (LinkStatus.ok, 200),
+            # Matches both the blocked status and the 421 code.
+            "https://example.com/both": (LinkStatus.blocked, 421),
+            "mailto:someone@example.com": (LinkStatus.unsupported, None),
+        }
+        for url, (status, status_code) in states.items():
+            await store.upsert_url_state(
+                LinkState(
+                    url=url,
+                    status=status,
+                    date_checked=now,
+                    status_code=status_code,
+                    date_next_check=now + timedelta(hours=24),
+                )
+            )
+        await store.replace_origin_occurrences(
+            origin_base_url="https://sqr-000.lsst.io",
+            occurrences=[
+                UrlOccurrence(url=url, origin_path="index") for url in states
+            ],
+        )
+
+        matched = await store.get_referenced_urls_by_state(
+            status_codes=[421],
+            statuses=[
+                LinkStatus.broken,
+                LinkStatus.blocked,
+                LinkStatus.unsupported,
+            ],
+        )
+        assert sorted(m.url for m in matched) == [
+            "https://example.com/blocked",
+            "https://example.com/both",
+            "https://example.com/broken",
+        ]
+
+        # No filters match nothing.
+        assert (
+            await store.get_referenced_urls_by_state(
+                status_codes=[], statuses=[]
+            )
+            == []
+        )
+
+
+@pytest.mark.asyncio
 async def test_purge_expired_checks(factory: Factory) -> None:
     """Purging expired checks deletes checks (and their memberships)
     older than the retention period while keeping recent checks.

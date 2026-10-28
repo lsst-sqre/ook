@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from itertools import batched
@@ -26,6 +27,7 @@ from ook.config import config
 from ook.database import init_database
 from ook.domain.algoliarecord import MinimalDocumentModel
 from ook.domain.kafka import RecheckUrlsMessageV1
+from ook.domain.linkcheck import FORCEABLE_STATUSES, LinkStatus
 from ook.factory import Factory
 from ook.services.algoliadocindex import AlgoliaDocIndexService
 from ook.services.ingest.intersphinx import IntersphinxIngestSummary
@@ -262,7 +264,15 @@ class LinkcheckRecheckSummary:
     """The result of a scheduled link-recheck run."""
 
     enqueued_url_ids: list[int]
-    """The ids of the due, still-referenced URLs enqueued for recheck."""
+    """The ids of the still-referenced URLs enqueued for recheck: the due
+    URLs first, then the forced URLs.
+    """
+
+    forced_url_count: int
+    """The number of enqueued URLs that were not due but matched a forcing
+    filter (a stored status code or status), and so are rechecked
+    regardless of their recheck schedule.
+    """
 
     batch_count: int
     """The number of Kafka messages the URL ids were batched into."""
@@ -275,7 +285,11 @@ class LinkcheckRecheckSummary:
 
 
 async def run_linkcheck_recheck(
-    factory: Factory, *, batch_size: int = 100
+    factory: Factory,
+    *,
+    batch_size: int = 100,
+    include_status_codes: Sequence[int] = (),
+    include_statuses: Sequence[LinkStatus] = (),
 ) -> LinkcheckRecheckSummary:
     """Enqueue due link rechecks and purge expired link-check records.
 
@@ -289,6 +303,15 @@ async def run_linkcheck_recheck(
         A factory with a database session and a connected Kafka broker.
     batch_size
         The maximum number of URL ids per recheck message.
+    include_status_codes
+        Also force a recheck of the still-referenced URLs whose stored
+        HTTP status code is one of these, even if they are not due. Only
+        URLs stored broken, blocked or failing are forced: a URL stored
+        ok, redirected or unsupported is never forced by its status code.
+    include_statuses
+        Also force a recheck of the still-referenced URLs whose stored
+        status is one of these, even if they are not due. Only the
+        broken, blocked and failing statuses can match.
 
     Returns
     -------
@@ -299,27 +322,41 @@ async def run_linkcheck_recheck(
     service = factory.create_linkcheck_service()
     async with factory.db_session.begin():
         due_urls = await service.list_due_recheck_urls()
+        matched_urls = await service.list_forced_recheck_urls(
+            status_codes=include_status_codes, statuses=include_statuses
+        )
         purge_result = await service.purge_expired_records()
 
-    batch_count = 0
-    for batch in batched(
-        [due_url.id for due_url in due_urls], batch_size, strict=False
-    ):
-        message = RecheckUrlsMessageV1(url_ids=list(batch))
-        await factory.kafka_linkcheck_publisher.publish(
-            message.model_dump(mode="json")
-        )
-        batch_count += 1
+    # A URL that is due anyway is enqueued once, with the due URLs.
+    due_url_ids = [due_url.id for due_url in due_urls]
+    due_id_set = set(due_url_ids)
+    forced_url_ids = [
+        matched_url.id
+        for matched_url in matched_urls
+        if matched_url.id not in due_id_set
+    ]
 
+    batch_count = 0
+    for url_ids, force in ((due_url_ids, False), (forced_url_ids, True)):
+        for batch in batched(url_ids, batch_size, strict=False):
+            message = RecheckUrlsMessageV1(url_ids=list(batch), force=force)
+            await factory.kafka_linkcheck_publisher.publish(
+                message.model_dump(mode="json")
+            )
+            batch_count += 1
+
+    enqueued_url_ids = due_url_ids + forced_url_ids
     logger.info(
         "Completed linkcheck-recheck",
-        enqueued_url_count=len(due_urls),
+        enqueued_url_count=len(enqueued_url_ids),
+        forced_url_count=len(forced_url_ids),
         batch_count=batch_count,
         purged_check_count=purge_result.check_count,
         purged_url_count=purge_result.url_count,
     )
     return LinkcheckRecheckSummary(
-        enqueued_url_ids=[due_url.id for due_url in due_urls],
+        enqueued_url_ids=enqueued_url_ids,
+        forced_url_count=len(forced_url_ids),
         batch_count=batch_count,
         purged_check_count=purge_result.check_count,
         purged_url_count=purge_result.url_count,
@@ -333,8 +370,37 @@ async def run_linkcheck_recheck(
     type=click.IntRange(min=1),
     help="Maximum number of URL ids per recheck Kafka message.",
 )
+@click.option(
+    "--include-status-code",
+    "include_status_codes",
+    multiple=True,
+    type=click.IntRange(min=100, max=599),
+    help=(
+        "Also recheck still-referenced URLs whose stored HTTP status code"
+        " is this value, even if they are not due. Repeatable. Only URLs"
+        " stored broken, blocked or failing are forced: a URL stored ok,"
+        " redirected or unsupported keeps its schedule whatever its code."
+    ),
+)
+@click.option(
+    "--include-status",
+    "include_statuses",
+    multiple=True,
+    type=click.Choice(list(FORCEABLE_STATUSES)),
+    help=(
+        "Also recheck still-referenced URLs whose stored status is this"
+        " value, even if they are not due. Repeatable. A forced recheck"
+        " never lengthens a still-blocked URL's backoff: one that comes"
+        " back inconclusive again keeps its next scheduled recheck."
+    ),
+)
 @run_with_asyncio
-async def linkcheck_recheck(*, batch_size: int) -> None:
+async def linkcheck_recheck(
+    *,
+    batch_size: int,
+    include_status_codes: tuple[int, ...],
+    include_statuses: tuple[LinkStatus, ...],
+) -> None:
     """Enqueue rechecks for due link-check URLs and purge expired
     records.
 
@@ -342,6 +408,18 @@ async def linkcheck_recheck(*, batch_size: int) -> None:
     for the consumer to recheck; URL records with no remaining
     occurrences and checks older than the retention period are purged.
     Intended to run as a daily cron job.
+
+    The --include-status-code and --include-status options additionally
+    force a one-off recheck of the still-referenced URLs whose stored
+    result matches any of them, regardless of when they are next due:
+    for example, to re-verify rows stored before a change in how a
+    status code is classified. Forced rechecks only reach unhealthy
+    rows: a URL stored ok, redirected or unsupported is never forced,
+    even when its stored status code matches. A forced recheck never
+    lengthens a still-blocked URL's backoff: a blocked URL that comes
+    back inconclusive again keeps its blocked count and next scheduled
+    recheck, while a URL the forced recheck settles is updated as a
+    scheduled recheck would update it.
     """
     logger = structlog.get_logger("ook")
     engine = create_database_engine(
@@ -350,7 +428,12 @@ async def linkcheck_recheck(*, batch_size: int) -> None:
     async with Factory.create_standalone(
         logger=logger, engine=engine
     ) as factory:
-        await run_linkcheck_recheck(factory, batch_size=batch_size)
+        await run_linkcheck_recheck(
+            factory,
+            batch_size=batch_size,
+            include_status_codes=include_status_codes,
+            include_statuses=include_statuses,
+        )
     await engine.dispose()
 
 
