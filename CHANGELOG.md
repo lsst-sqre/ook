@@ -2,6 +2,13 @@
 
 <!-- scriv-insert-here -->
 
+<a id='changelog-0.29.1'></a>
+## 0.29.1 (2026-10-29)
+
+### Bug fixes
+
+- Fix a race in the Algolia document index that could delete a document's records right after a re-ingest. Ook saved the new records and then immediately browsed the index for records with a different surrogate key to delete, but Algolia applies writes asynchronously, so that browse could still see the previous ingest's records. Because object IDs are derived from the URL and section headings, those records share IDs with the fresh ones, and deleting them wiped the document from the index until the next audit re-ingested it. The service now snapshots the object IDs indexed for the URL *before* saving and deletes only the IDs absent from the new record set, so the decision no longer depends on whether this ingest's save has been applied yet.
+
 <a id='changelog-0.29.0'></a>
 ## 0.29.0 (2026-10-28)
 
