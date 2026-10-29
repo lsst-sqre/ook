@@ -31,20 +31,14 @@ from ook.kafkabroker import kafka_broker  # noqa: E402
 from ook.services import intersphinx as intersphinx_service  # noqa: E402
 from ook.services.guardedhttp import _guard as guardedhttp_guard  # noqa: E402
 
-from .support.algoliasearch import (  # noqa: E402
-    MockSearchClient,
-    patch_algoliasearch,
-)
+from .support.algoliasearch import MockSearchClient, patch_algoliasearch  # noqa: E402
 from .support.database import (  # noqa: E402
     ddl_database_url,
     invalidate_schema,
     reset_database_for_test,
 )
 from .support.github import GitHubMocker  # noqa: E402
-from .support.kafka import (  # noqa: E402
-    kafka_work_tracker,
-    running_subscriptions,
-)
+from .support.kafka import kafka_work_tracker, running_subscriptions  # noqa: E402
 from .support.unitsession import (  # noqa: E402
     infrastructure_fixture,
     reject_infrastructure_fixtures,

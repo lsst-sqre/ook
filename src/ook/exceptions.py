@@ -6,10 +6,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import status
 from safir.fastapi import ClientRequestError
-from safir.slack.webhook import (  # type: ignore[attr-defined]
-    SlackException,
-    SlackMessage,
-)
+from safir.slack.webhook import SlackException, SlackMessage  # type: ignore[attr-defined]
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

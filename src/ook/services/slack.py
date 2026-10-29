@@ -4,16 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from safir.slack.webhook import (  # type: ignore[attr-defined]
-    SlackMessage,
-    SlackWebhookClient,
-)
+from safir.slack.webhook import SlackMessage, SlackWebhookClient  # type: ignore[attr-defined]
 from structlog import get_logger
 
 if TYPE_CHECKING:
-    from safir.slack.webhook import (  # type: ignore[attr-defined]
-        SlackException,
-    )
+    from safir.slack.webhook import SlackException  # type: ignore[attr-defined]
 
     from ook.config import Configuration
     from ook.domain.authors import Author
