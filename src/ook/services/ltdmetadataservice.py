@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import datetime
 
-from httpx import AsyncClient
+from httpx import AsyncClient, Response
 from safir.datetime import parse_isodatetime
 from structlog.stdlib import BoundLogger
+
+from ook.exceptions import LtdProjectNotFoundError
 
 
 class LtdMetadataService:
@@ -34,23 +36,38 @@ class LtdMetadataService:
         return response.json()["products"]
 
     async def get_project(self, product_slug: str) -> dict:
-        """Get the LTD project metadata for a given product slug."""
+        """Get the LTD project metadata for a given product slug.
+
+        Raises
+        ------
+        LtdProjectNotFoundError
+            Raised if the LTD API does not have the project.
+        """
         url = self.get_product_api_url(product_slug)
         response = await self._http_client.get(url)
-        response.raise_for_status()
+        self._raise_for_status(response, product_slug)
         return response.json()
 
     async def get_edition(
         self, product_slug: str, edition_slug: str = "main"
     ) -> dict:
-        """Get the LTD edition metadata for a given product and edition."""
+        """Get the LTD edition metadata for a given product and edition.
+
+        Raises
+        ------
+        LtdProjectNotFoundError
+            Raised if the LTD API does not have the project or one of its
+            editions.
+        RuntimeError
+            Raised if the project does not have an edition with that slug.
+        """
         editions_url = f"{self._base}/products/{product_slug}/editions/"
         response = await self._http_client.get(editions_url)
-        response.raise_for_status()
+        self._raise_for_status(response, product_slug)
         editions = response.json()
         for edition_url in editions["editions"]:
             response = await self._http_client.get(edition_url)
-            response.raise_for_status()
+            self._raise_for_status(response, product_slug)
             edition = response.json()
             if edition["slug"] == edition_slug:
                 return edition
@@ -76,13 +93,23 @@ class LtdMetadataService:
             The slug of the project that was updated recently.
         """
         for project_url in await self.get_project_urls():
-            r = await self._http_client.get(project_url)
-            project = r.json()
-            project_slug = project["slug"]
+            # The slug is the last component of the API URL
+            project_slug = project_url.rstrip("/").split("/")[-1]
             try:
+                r = await self._http_client.get(project_url)
+                self._raise_for_status(r, project_slug)
+                project = r.json()
+                project_slug = project["slug"]
                 edition = await self.get_edition(
                     product_slug=project_slug, edition_slug=edition_slug
                 )
+            except LtdProjectNotFoundError as e:
+                self._logger.warning(
+                    "Skipping LTD project that could not be found",
+                    slug=e.product_slug,
+                    url=e.url,
+                )
+                continue
             except RuntimeError:
                 continue
             try:
@@ -91,3 +118,14 @@ class LtdMetadataService:
                 continue
             if date_rebuilt >= since:
                 yield project_slug
+
+    @staticmethod
+    def _raise_for_status(response: Response, product_slug: str) -> None:
+        """Raise for an error response, mapping a 404 to
+        `~ook.exceptions.LtdProjectNotFoundError`.
+        """
+        if response.status_code == 404:
+            raise LtdProjectNotFoundError(
+                product_slug=product_slug, url=str(response.request.url)
+            )
+        response.raise_for_status()
