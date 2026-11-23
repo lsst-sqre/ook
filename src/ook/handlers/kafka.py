@@ -2,6 +2,7 @@
 
 from typing import Annotated
 
+import httpx
 from fastapi import Depends
 
 from ook.config import config
@@ -41,27 +42,38 @@ async def handle_ltd_document_ingest(
 
     content_type = message.content_type
 
-    if content_type == DocumentSourceType.LTD_TECHNOTE:
-        technote_service = factory.create_technote_ingest_service()
-        await technote_service.ingest(
-            published_url=message.url,
-            project_url=message.project.url,
-            edition_url=message.edition.url,
+    try:
+        if content_type == DocumentSourceType.LTD_TECHNOTE:
+            technote_service = factory.create_technote_ingest_service()
+            await technote_service.ingest(
+                published_url=message.url,
+                project_url=message.project.url,
+                edition_url=message.edition.url,
+            )
+        elif content_type == DocumentSourceType.LTD_SPHINX_TECHNOTE:
+            sphinx_technote_service = (
+                factory.create_sphinx_technote_ingest_service()
+            )
+            await sphinx_technote_service.ingest(
+                published_url=message.url,
+                project_url=message.project.url,
+                edition_url=message.edition.url,
+            )
+        elif content_type == DocumentSourceType.LTD_LANDER_JSONLD:
+            lander_service = factory.create_lander_ingest_service()
+            await lander_service.ingest(
+                published_url=message.url,
+            )
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code != 404:
+            raise
+        # A project can be queued and then disappear (or not be published
+        # yet). Skip it rather than failing the consumer.
+        logger.warning(
+            "Skipping ingest for LTD project that could not be found",
+            url=str(e.request.url),
         )
-    elif content_type == DocumentSourceType.LTD_SPHINX_TECHNOTE:
-        sphinx_technote_service = (
-            factory.create_sphinx_technote_ingest_service()
-        )
-        await sphinx_technote_service.ingest(
-            published_url=message.url,
-            project_url=message.project.url,
-            edition_url=message.edition.url,
-        )
-    elif content_type == DocumentSourceType.LTD_LANDER_JSONLD:
-        lander_service = factory.create_lander_ingest_service()
-        await lander_service.ingest(
-            published_url=message.url,
-        )
+        return
 
     logger.info("Finished processing LTD document ingest request.")
 

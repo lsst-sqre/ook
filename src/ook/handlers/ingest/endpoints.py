@@ -69,7 +69,7 @@ async def post_ingest_ltd(
     async with asyncio.TaskGroup() as task_group:
         if ingest_request.product_slug is not None:
             task_group.create_task(
-                classifier.queue_ingest_for_ltd_product_slug(
+                classifier.queue_ingest_for_ltd_product_slug_if_found(
                     product_slug=ingest_request.product_slug,
                     edition_slug=ingest_request.edition_slug,
                 )
@@ -77,7 +77,7 @@ async def post_ingest_ltd(
         if ingest_request.product_slugs is not None:
             for product_slug in ingest_request.product_slugs:
                 task_group.create_task(
-                    classifier.queue_ingest_for_ltd_product_slug(
+                    classifier.queue_ingest_for_ltd_product_slug_if_found(
                         product_slug=product_slug,
                         edition_slug=ingest_request.edition_slug,
                     )

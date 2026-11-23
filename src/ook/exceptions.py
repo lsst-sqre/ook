@@ -24,6 +24,7 @@ __all__ = [
     "InvalidOrcidError",
     "InventoryParseError",
     "LinkCheckTooManyUrlsError",
+    "LtdProjectNotFoundError",
     "LtdSlugClassificationError",
     "NotFoundError",
     "UpstreamInventoryError",
@@ -63,6 +64,30 @@ class LtdSlugClassificationError(Exception):
         if self.error is not None:
             message += f"\n\n{self.error}"
         return message
+
+
+class LtdProjectNotFoundError(Exception):
+    """An LTD project, or its published site, could not be found (HTTP 404).
+
+    Ingest pipelines treat this as a skippable condition: the project is
+    logged as a warning and the rest of the batch carries on. A project can
+    be registered in the LTD API before its site is published (or after it is
+    removed), so a 404 for one project is not a failure of the whole ingest.
+
+    Parameters
+    ----------
+    product_slug
+        The slug of the LTD project.
+    url
+        The URL that returned a 404.
+    """
+
+    def __init__(self, *, product_slug: str, url: str) -> None:
+        self.product_slug = product_slug
+        self.url = url
+        super().__init__(
+            f"LTD project {product_slug} could not be found (404 for {url})"
+        )
 
 
 class DocumentParsingError(Exception):

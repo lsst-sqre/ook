@@ -21,7 +21,7 @@ from ook.domain.kafka import (
 )
 from ook.services.ltdmetadataservice import LtdMetadataService
 
-from ..exceptions import LtdSlugClassificationError
+from ..exceptions import LtdProjectNotFoundError, LtdSlugClassificationError
 from .githubmetadata import GitHubMetadataService
 
 __all__ = ["ClassificationService"]
@@ -66,6 +66,9 @@ class ClassificationService:
     ) -> None:
         """Queue an ingest for all updated LSST the Docs projects.
 
+        Projects that cannot be found (a 404 from the LTD API or from the
+        published site) are logged as warnings and skipped.
+
         Parameters
         ----------
         window
@@ -73,26 +76,63 @@ class ClassificationService:
         """
         since = datetime.now(tz=UTC) - window
         updated_project_count = 0
+        not_found_count = 0
         async for project_slug in self._ltd_service.iter_updated_projects(
             since
         ):
-            await self.queue_ingest_for_ltd_product_slug(
+            if await self.queue_ingest_for_ltd_product_slug_if_found(
                 product_slug=project_slug,
                 edition_slug="main",
-            )
-            self._logger.info(
-                "Queued ingest for updated LTD project", slug=project_slug
-            )
-            updated_project_count += 1
+            ):
+                self._logger.info(
+                    "Queued ingest for updated LTD project", slug=project_slug
+                )
+                updated_project_count += 1
+            else:
+                not_found_count += 1
         self._logger.info(
             "Finished queueing ingest for updated LTD projects",
             count=updated_project_count,
+            not_found=not_found_count,
         )
+
+    async def queue_ingest_for_ltd_product_slug_if_found(
+        self, *, product_slug: str, edition_slug: str
+    ) -> bool:
+        """Queue an ingest for a LSST the Docs product slug, skipping the
+        project with a warning if it cannot be found.
+
+        Returns
+        -------
+        bool
+            `True` if the ingest was queued, or `False` if the project was
+            skipped because the LTD API or the published site returned a 404.
+        """
+        try:
+            await self.queue_ingest_for_ltd_product_slug(
+                product_slug=product_slug, edition_slug=edition_slug
+            )
+        except LtdProjectNotFoundError as e:
+            self._logger.warning(
+                "Skipping ingest for LTD project that could not be found",
+                slug=product_slug,
+                edition_slug=edition_slug,
+                url=e.url,
+            )
+            return False
+        return True
 
     async def queue_ingest_for_ltd_product_slug(
         self, *, product_slug: str, edition_slug: str
     ) -> None:
-        """Queue an ingest for a LSST the Docs product slug."""
+        """Queue an ingest for a LSST the Docs product slug.
+
+        Raises
+        ------
+        LtdProjectNotFoundError
+            Raised if the LTD API or the published site returns a 404 for
+            the project.
+        """
         product_data = await self._ltd_service.get_project(product_slug)
         edition_data = await self._ltd_service.get_edition(
             product_slug, edition_slug=edition_slug
@@ -156,7 +196,11 @@ class ClassificationService:
     async def queue_ingest_for_ltd_product_slug_pattern(
         self, *, product_slug_pattern: str, edition_slug: str
     ) -> None:
-        """Queue an ingest for a LSST the Docs project slug pattern."""
+        """Queue an ingest for a LSST the Docs project slug pattern.
+
+        Matching projects that cannot be found are logged as warnings and
+        skipped.
+        """
         pattern = re.compile(product_slug_pattern)
         project_urls = await self._ltd_service.get_project_urls()
         async with asyncio.TaskGroup() as task_group:
@@ -165,7 +209,7 @@ class ClassificationService:
                 project_slug = project_url.split("/")[-1]
                 if pattern.match(project_slug) is not None:
                     task_group.create_task(
-                        self.queue_ingest_for_ltd_product_slug(
+                        self.queue_ingest_for_ltd_product_slug_if_found(
                             product_slug=project_slug,
                             edition_slug=edition_slug,
                         )
@@ -189,7 +233,9 @@ class ClassificationService:
         ContentType
             The known site type.
         """
-        html_classification = await self._inspect_html(published_url)
+        html_classification = await self._inspect_html(
+            product_slug=product_slug, published_url=published_url
+        )
         if html_classification:
             return html_classification
 
@@ -205,13 +251,15 @@ class ClassificationService:
             return DocumentSourceType.LTD_GENERIC
 
     async def _inspect_html(
-        self, published_url: str
+        self, *, product_slug: str, published_url: str
     ) -> DocumentSourceType | None:
         """Inspect the HTML of a site to determine its type based on metadata
         and other elements in the HTML.
 
         Parameters
         ----------
+        product_slug
+            The LTD Product resource's slug.
         published_url
             The published URL of the site (which should provide the index.html
             document).
@@ -221,8 +269,17 @@ class ClassificationService:
         `DocumentSourceType` or `None`
             The content type of the site or `None` if it could not be
             determined.
+
+        Raises
+        ------
+        LtdProjectNotFoundError
+            Raised if the published site returns a 404.
         """
         r = await self._http_client.get(published_url)
+        if r.status_code == 404:
+            raise LtdProjectNotFoundError(
+                product_slug=product_slug, url=published_url
+            )
         r.raise_for_status()
         html = r.text
         doc = lxml.html.document_fromstring(html)
